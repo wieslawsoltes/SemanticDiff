@@ -286,6 +286,18 @@ public sealed partial class MainPage : Page
         await ViewModel.SetSemanticAnalysisModeAsync(SemanticAnalysisMode.FastSyntaxOnly);
     }
 
+    private async void OnLayoutModeSelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (sender is not ComboBox { SelectedItem: ViewModels.LayoutModeOptionViewModel option })
+        {
+            return;
+        }
+
+        await ViewModel.SetLayoutModeAsync(option.Mode, DiffCanvas.Scene);
+        DiffCanvas.Scene = ViewModel.Scene;
+        DiffCanvas.FitToScene();
+    }
+
     private async void OnVisualizationToggleClicked(object sender, RoutedEventArgs args)
     {
         if (sender is ToggleButton { Tag: string layer } toggleButton)

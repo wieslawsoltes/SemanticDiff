@@ -13,10 +13,28 @@ public sealed class GridGraphLayoutEngine : IGraphLayoutEngine
 
     public ValueTask<GraphLayoutResult> LayoutAsync(GraphLayoutRequest request, CancellationToken cancellationToken)
     {
+        var mode = request.LayoutMode == GraphLayoutMode.Auto ? GraphLayoutMode.Grid : request.LayoutMode;
+        var nodes = mode switch
+        {
+            GraphLayoutMode.CompactGrid => LayoutGrid(request, cancellationToken, 48, 44, columnsBias: 1.35),
+            GraphLayoutMode.StatusLanes => LayoutStatusLanes(request, cancellationToken),
+            _ => LayoutGrid(request, cancellationToken, 96, 96, columnsBias: 1)
+        };
+
+        return new ValueTask<GraphLayoutResult>(new GraphLayoutResult(LayoutStabilizer.Apply(request, nodes)));
+    }
+
+    private static ImmutableArray<DiffNodeLayout> LayoutGrid(
+        GraphLayoutRequest request,
+        CancellationToken cancellationToken,
+        double horizontalGap,
+        double verticalGap,
+        double columnsBias)
+    {
         var builder = ImmutableArray.CreateBuilder<DiffNodeLayout>(request.Documents.Length);
-        var columns = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(request.Documents.Length)));
-        var horizontalSpacing = request.DefaultNodeSize.Width + 96;
-        var verticalSpacing = request.DefaultNodeSize.Height + 96;
+        var columns = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(request.Documents.Length * columnsBias)));
+        var horizontalSpacing = request.DefaultNodeSize.Width + horizontalGap;
+        var verticalSpacing = request.DefaultNodeSize.Height + verticalGap;
 
         for (var documentIndex = 0; documentIndex < request.Documents.Length; documentIndex++)
         {
@@ -27,8 +45,51 @@ public sealed class GridGraphLayoutEngine : IGraphLayoutEngine
             builder.Add(new DiffNodeLayout(request.Documents[documentIndex].Id, bounds));
         }
 
-        return new ValueTask<GraphLayoutResult>(new GraphLayoutResult(LayoutStabilizer.Apply(request, builder.ToImmutable())));
+        return builder.ToImmutable();
     }
+
+    private static ImmutableArray<DiffNodeLayout> LayoutStatusLanes(GraphLayoutRequest request, CancellationToken cancellationToken)
+    {
+        var builder = ImmutableArray.CreateBuilder<DiffNodeLayout>(request.Documents.Length);
+        var laneLeft = 0.0;
+        var horizontalSpacing = request.DefaultNodeSize.Width + 58;
+        var verticalSpacing = request.DefaultNodeSize.Height + 52;
+
+        foreach (var group in request.Documents.GroupBy(document => document.Metadata.Status).OrderBy(group => StatusLaneOrder(group.Key)))
+        {
+            var documents = group.OrderBy(document => document.Metadata.Path, StringComparer.OrdinalIgnoreCase).ToArray();
+            var laneColumns = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(documents.Length * 0.9)));
+
+            for (var documentIndex = 0; documentIndex < documents.Length; documentIndex++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var column = documentIndex % laneColumns;
+                var row = documentIndex / laneColumns;
+                var bounds = new Rect2(
+                    laneLeft + column * horizontalSpacing,
+                    row * verticalSpacing,
+                    request.DefaultNodeSize.Width,
+                    request.DefaultNodeSize.Height);
+                builder.Add(new DiffNodeLayout(documents[documentIndex].Id, bounds));
+            }
+
+            laneLeft += laneColumns * horizontalSpacing + 120;
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static int StatusLaneOrder(DiffFileStatus status) => status switch
+    {
+        DiffFileStatus.Conflicted => 0,
+        DiffFileStatus.Added => 1,
+        DiffFileStatus.Untracked => 2,
+        DiffFileStatus.Modified => 3,
+        DiffFileStatus.Renamed => 4,
+        DiffFileStatus.Copied => 5,
+        DiffFileStatus.Deleted => 6,
+        _ => 7
+    };
 }
 
 public sealed class MsaglGraphLayoutEngine : IGraphLayoutEngine
@@ -39,6 +100,12 @@ public sealed class MsaglGraphLayoutEngine : IGraphLayoutEngine
 
     public ValueTask<GraphLayoutResult> LayoutAsync(GraphLayoutRequest request, CancellationToken cancellationToken)
     {
+        var layoutMode = ResolveLayoutMode(request);
+        if (layoutMode != GraphLayoutMode.Layered)
+        {
+            return fallback.LayoutAsync(request with { LayoutMode = layoutMode }, cancellationToken);
+        }
+
         try
         {
             var geometryGraph = new GeometryGraph();
@@ -96,6 +163,21 @@ public sealed class MsaglGraphLayoutEngine : IGraphLayoutEngine
         {
             return fallback.LayoutAsync(request, cancellationToken);
         }
+    }
+
+    private static GraphLayoutMode ResolveLayoutMode(GraphLayoutRequest request)
+    {
+        if (request.LayoutMode != GraphLayoutMode.Auto)
+        {
+            return request.LayoutMode;
+        }
+
+        if (request.Documents.Length >= 150)
+        {
+            return GraphLayoutMode.CompactGrid;
+        }
+
+        return request.SemanticGraph.Edges.IsDefaultOrEmpty ? GraphLayoutMode.Grid : GraphLayoutMode.Layered;
     }
 }
 

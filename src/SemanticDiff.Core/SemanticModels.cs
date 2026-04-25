@@ -73,11 +73,21 @@ public enum SemanticAnalysisMode
 
 public sealed record DiffNodeLayout(DiffDocumentId DocumentId, Rect2 Bounds, bool IsPinned = false, double FontSize = 12.5);
 
+public enum GraphLayoutMode
+{
+    Auto,
+    Layered,
+    Grid,
+    CompactGrid,
+    StatusLanes
+}
+
 public sealed record GraphLayoutRequest(
     ImmutableArray<DiffDocumentSnapshot> Documents,
     SemanticGraph SemanticGraph,
     Size2 DefaultNodeSize,
     ImmutableArray<DiffNodeLayout> PreviousNodes = default,
-    ImmutableHashSet<DiffDocumentId>? PinnedDocumentIds = null);
+    ImmutableHashSet<DiffDocumentId>? PinnedDocumentIds = null,
+    GraphLayoutMode LayoutMode = GraphLayoutMode.Auto);
 
 public sealed record GraphLayoutResult(ImmutableArray<DiffNodeLayout> Nodes);

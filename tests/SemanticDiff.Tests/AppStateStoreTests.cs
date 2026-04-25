@@ -32,6 +32,7 @@ public sealed class AppStateStoreTests
                 ShowNavigation: false,
                 ShowContext: true),
             SemanticAnalysisMode: SemanticAnalysisMode.FastSyntaxOnly,
+            LayoutMode: GraphLayoutMode.StatusLanes,
             LeftPaneWidth: 344);
 
         try
@@ -54,6 +55,7 @@ public sealed class AppStateStoreTests
             Assert.False(loaded.EffectiveAnnotationVisibility.ShowReview);
             Assert.False(loaded.EffectiveAnnotationVisibility.ShowNavigation);
             Assert.Equal(SemanticAnalysisMode.FastSyntaxOnly, loaded.SemanticAnalysisMode);
+            Assert.Equal(GraphLayoutMode.StatusLanes, loaded.LayoutMode);
             Assert.Equal(344, loaded.LeftPaneWidth);
             var node = Assert.Single(loaded.EffectiveLayoutNodes);
             Assert.Equal("A.cs", node.DocumentId);

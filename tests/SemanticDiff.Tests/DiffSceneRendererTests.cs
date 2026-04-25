@@ -2,6 +2,7 @@ using SemanticDiff.Diff;
 using SemanticDiff.Core;
 using SemanticDiff.Rendering;
 using SkiaSharp;
+using System.Collections.Immutable;
 
 namespace SemanticDiff.Tests;
 
@@ -117,6 +118,44 @@ public sealed class DiffSceneRendererTests
         Assert.NotEqual(deleted, renamed);
     }
 
+    [Fact]
+    public void Render_CullsNodesOutsideWorldViewport()
+    {
+        var documents = CreateDocuments(48);
+        var layout = documents
+            .Select((document, index) => new DiffNodeLayout(
+                document.Id,
+                index == 0
+                    ? new Rect2(0, 0, 620, 420)
+                    : new Rect2(20_000 + index * 720, 20_000, 620, 420)))
+            .ToImmutableArray();
+        var scene = DiffCanvasScene.FromDocuments(documents, layoutResult: new GraphLayoutResult(layout));
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(640, 480));
+
+        renderer.Render(surface.Canvas, new SKSize(640, 480), scene, DiffCanvasColorTheme.Dark);
+
+        Assert.Equal(documents.Length, renderer.LastRenderStats.TotalNodeCount);
+        Assert.Equal(1, renderer.LastRenderStats.DrawnNodeCount);
+    }
+
+    [Fact]
+    public void Render_UsesCompactNodeShellsWhenZoomedOut()
+    {
+        var documents = CreateDocuments(80);
+        var scene = DiffCanvasScene.FromDocuments(documents);
+        scene.FitToGraph(new Size2(320, 240));
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(320, 240));
+
+        renderer.Render(surface.Canvas, new SKSize(320, 240), scene, DiffCanvasColorTheme.Dark);
+
+        Assert.True(renderer.LastRenderStats.DrawnNodeCount > 0);
+        Assert.Equal(0, renderer.LastRenderStats.DetailedNodeCount);
+    }
+
     private static SKColor RenderStatusBadgePixel(DiffFileStatus status)
     {
         var factory = new DiffDocumentFactory();
@@ -131,5 +170,15 @@ public sealed class DiffSceneRendererTests
 
         using var image = surface.Snapshot();
         return image.PeekPixels().GetPixelColor(48, 48);
+    }
+
+    private static ImmutableArray<DiffDocumentSnapshot> CreateDocuments(int count)
+    {
+        var factory = new DiffDocumentFactory();
+        return Enumerable.Range(0, count)
+            .Select(index => factory.CreateFromText(
+                new DiffDocumentMetadata(new DiffDocumentId($"File{index:000}.cs"), $"File{index:000}.cs", null, DiffFileStatus.Modified, "C#", 0, 0),
+                "class Sample { }"))
+            .ToImmutableArray();
     }
 }

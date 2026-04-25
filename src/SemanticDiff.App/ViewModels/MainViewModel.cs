@@ -177,6 +177,14 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string semanticAnalysisModeText = "MSBuild";
 
+    public ImmutableArray<LayoutModeOptionViewModel> LayoutModeOptions { get; } = LayoutModeOptionViewModel.All;
+
+    [ObservableProperty]
+    private LayoutModeOptionViewModel selectedLayoutModeOption = LayoutModeOptionViewModel.All[0];
+
+    [ObservableProperty]
+    private string layoutModeText = "Auto";
+
     [ObservableProperty]
     private bool isSemanticWorkspaceModeSelected = true;
 
@@ -477,6 +485,21 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         await SaveOptionsAsync(CancellationToken.None);
         AddDiagnostic("Info", $"Semantic mode changed to {FormatSemanticAnalysisMode(analysisMode)}");
         await LoadRepositoryAsync(loadAppState: false, operationMessage: "Reloading semantic analysis");
+    }
+
+    public async Task SetLayoutModeAsync(GraphLayoutMode layoutMode, DiffCanvasScene? currentScene)
+    {
+        if (appState.LayoutMode == layoutMode)
+        {
+            ApplyAppStateToPresentation();
+            return;
+        }
+
+        appState = appState with { LayoutMode = layoutMode, LayoutNodes = null };
+        ApplyAppStateToPresentation();
+        await SaveOptionsAsync(CancellationToken.None);
+        AddDiagnostic("Info", $"Layout mode changed to {FormatLayoutMode(layoutMode)}");
+        await RelayoutAsync(currentScene);
     }
 
     public async Task SetVisualizationLayerAsync(string layer, bool isEnabled)
@@ -852,7 +875,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         return Task.Run(async () =>
         {
             var layoutEngine = new MsaglGraphLayoutEngine();
-            return await layoutEngine.LayoutAsync(new GraphLayoutRequest(documents, semanticGraph, new Size2(620, 420), previousNodes, pinnedIds), cancellationToken).ConfigureAwait(false);
+            return await layoutEngine.LayoutAsync(new GraphLayoutRequest(documents, semanticGraph, new Size2(620, 420), previousNodes, pinnedIds, appState.LayoutMode), cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
 
@@ -969,6 +992,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             ShowSemanticEdges = IsSemanticEdgesEnabled,
             AnnotationVisibility = appState.EffectiveAnnotationVisibility,
             SemanticAnalysisMode = appState.SemanticAnalysisMode,
+            LayoutMode = appState.LayoutMode,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth),
             LayoutNodes = currentDocumentsAreRepositoryDocuments ? layoutNodes : appState.LayoutNodes
         };
@@ -991,6 +1015,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             ShowSemanticEdges = IsSemanticEdgesEnabled,
             AnnotationVisibility = appState.EffectiveAnnotationVisibility,
             SemanticAnalysisMode = appState.SemanticAnalysisMode,
+            LayoutMode = appState.LayoutMode,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth)
         };
         await appStateStore.SaveAsync(appState, cancellationToken);
@@ -1024,6 +1049,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         IsSemanticEdgesEnabled = appState.ShowSemanticEdges;
         SemanticEdgesText = appState.ShowSemanticEdges ? "Edges on" : "Edges off";
         SemanticAnalysisModeText = FormatSemanticAnalysisMode(appState.SemanticAnalysisMode);
+        LayoutModeText = FormatLayoutMode(appState.LayoutMode);
+        SelectedLayoutModeOption = LayoutModeOptions.FirstOrDefault(option => option.Mode == appState.LayoutMode) ?? LayoutModeOptions[0];
         IsSemanticWorkspaceModeSelected = appState.SemanticAnalysisMode == SemanticAnalysisMode.WorkspaceThenSyntax;
         IsSemanticFastModeSelected = appState.SemanticAnalysisMode == SemanticAnalysisMode.FastSyntaxOnly;
         ApplyAnnotationVisibilityToPresentation();
@@ -1233,6 +1260,15 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         SemanticAnalysisMode.FastSyntaxOnly => "Fast syntax",
         _ => "MSBuild"
+    };
+
+    private static string FormatLayoutMode(GraphLayoutMode layoutMode) => layoutMode switch
+    {
+        GraphLayoutMode.Layered => "Layered",
+        GraphLayoutMode.Grid => "Grid",
+        GraphLayoutMode.CompactGrid => "Compact grid",
+        GraphLayoutMode.StatusLanes => "Status lanes",
+        _ => "Auto"
     };
 
     private void SelectExplorerItem(ExplorerItemViewModel? item)
@@ -1625,6 +1661,20 @@ public sealed record ExplorerItemViewModel(string Path, DiffFileStatus Status, s
         DiffFileStatus.Conflicted => "!",
         _ => "M"
     };
+}
+
+public sealed record LayoutModeOptionViewModel(GraphLayoutMode Mode, string DisplayName)
+{
+    public static ImmutableArray<LayoutModeOptionViewModel> All { get; } =
+    [
+        new(GraphLayoutMode.Auto, "Auto"),
+        new(GraphLayoutMode.Layered, "Layered"),
+        new(GraphLayoutMode.Grid, "Grid"),
+        new(GraphLayoutMode.CompactGrid, "Compact grid"),
+        new(GraphLayoutMode.StatusLanes, "Status lanes")
+    ];
+
+    public override string ToString() => DisplayName;
 }
 
 public sealed record SemanticNavigationItemViewModel(

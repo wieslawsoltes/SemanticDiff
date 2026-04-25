@@ -30,6 +30,13 @@ public readonly record struct Rect2(double X, double Y, double Width, double Hei
 
     public bool Contains(Point2 point) => point.X >= Left && point.X <= Right && point.Y >= Top && point.Y <= Bottom;
 
+    public bool Intersects(Rect2 rectangle) => !IsEmpty &&
+        !rectangle.IsEmpty &&
+        rectangle.Right >= Left &&
+        rectangle.Left <= Right &&
+        rectangle.Bottom >= Top &&
+        rectangle.Top <= Bottom;
+
     public Rect2 Translate(double deltaX, double deltaY) => new(X + deltaX, Y + deltaY, Width, Height);
 
     public Rect2 Inflate(double amount) => new(X - amount, Y - amount, Width + amount * 2, Height + amount * 2);

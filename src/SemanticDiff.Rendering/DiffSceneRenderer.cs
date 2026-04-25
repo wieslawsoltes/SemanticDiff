@@ -9,6 +9,16 @@ public enum DiffCanvasColorTheme
     Light
 }
 
+public sealed record DiffSceneRenderStats(
+    int TotalNodeCount,
+    int DrawnNodeCount,
+    int DetailedNodeCount,
+    int TotalEdgeCount,
+    int DrawnEdgeCount)
+{
+    public static DiffSceneRenderStats Empty { get; } = new(0, 0, 0, 0, 0);
+}
+
 public sealed class DiffSceneRenderer
 {
     private static readonly RendererPalette DarkPalette = new(
@@ -83,11 +93,29 @@ public sealed class DiffSceneRenderer
         NodeUntracked: new SKColor(26, 127, 55),
         NodeConflict: new SKColor(188, 76, 0));
 
+    public DiffSceneRenderStats LastRenderStats { get; private set; } = DiffSceneRenderStats.Empty;
+
     public void Render(SKCanvas canvas, SKSize canvasSize, DiffCanvasScene scene, DiffCanvasColorTheme colorTheme = DiffCanvasColorTheme.Dark)
     {
         var palette = colorTheme == DiffCanvasColorTheme.Light ? LightPalette : DarkPalette;
         canvas.Clear(palette.Background);
         DrawGrid(canvas, canvasSize, scene.Camera, palette);
+
+        var worldViewport = GetWorldViewport(scene.Camera, canvasSize)
+            .Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 96));
+        var nodesById = scene.Nodes.ToDictionary(node => node.Document.Id.Value, StringComparer.Ordinal);
+        var visibleNodes = scene.Nodes
+            .Where(node => node.Bounds.Intersects(worldViewport))
+            .ToArray();
+        var visibleDocumentIds = visibleNodes
+            .Select(node => node.Document.Id)
+            .ToHashSet();
+        var annotationsByDocument = scene.Annotations
+            .Where(annotation => visibleDocumentIds.Contains(annotation.DocumentId) && scene.AnnotationVisibility.IsVisible(annotation.Kind))
+            .GroupBy(annotation => annotation.DocumentId)
+            .ToDictionary(group => group.Key, group => group.OrderBy(AnnotationPriority).ToArray());
+        var drawnEdges = 0;
+        var detailedNodes = 0;
 
         canvas.Save();
         canvas.Translate((float)scene.Camera.OffsetX, (float)scene.Camera.OffsetY);
@@ -95,19 +123,50 @@ public sealed class DiffSceneRenderer
 
         foreach (var edge in scene.Edges)
         {
-            DrawEdge(canvas, scene, edge, palette);
+            if (!nodesById.TryGetValue(edge.SourceNodeId, out var source) ||
+                !nodesById.TryGetValue(edge.TargetNodeId, out var target) ||
+                !GetEdgeBounds(source, target).Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 80)).Intersects(worldViewport))
+            {
+                continue;
+            }
+
+            DrawEdge(canvas, edge, source, target, palette);
+            drawnEdges++;
         }
 
-        var visibleAnnotations = scene.Annotations
-            .Where(annotation => scene.AnnotationVisibility.IsVisible(annotation.Kind))
-            .ToArray();
-
-        foreach (var node in scene.Nodes)
+        foreach (var node in visibleNodes)
         {
-            DrawNode(canvas, node, palette, visibleAnnotations.Where(annotation => annotation.DocumentId == node.Document.Id).ToArray(), scene.Camera.Scale);
+            var drawDetails = ShouldDrawNodeDetails(node, scene.Camera.Scale);
+            if (drawDetails)
+            {
+                detailedNodes++;
+            }
+
+            DrawNode(
+                canvas,
+                node,
+                palette,
+                annotationsByDocument.GetValueOrDefault(node.Document.Id) ?? [],
+                scene.Camera.Scale,
+                drawDetails);
         }
 
+        LastRenderStats = new(scene.Nodes.Count, visibleNodes.Length, detailedNodes, scene.Edges.Count, drawnEdges);
         canvas.Restore();
+    }
+
+    private static Rect2 GetWorldViewport(CameraState camera, SKSize canvasSize)
+    {
+        if (canvasSize.Width <= 0 || canvasSize.Height <= 0)
+        {
+            return Rect2.Empty;
+        }
+
+        var topLeft = camera.ScreenToWorld(Point2.Zero);
+        var bottomRight = camera.ScreenToWorld(new Point2(canvasSize.Width, canvasSize.Height));
+        var left = Math.Min(topLeft.X, bottomRight.X);
+        var top = Math.Min(topLeft.Y, bottomRight.Y);
+        return new Rect2(left, top, Math.Abs(bottomRight.X - topLeft.X), Math.Abs(bottomRight.Y - topLeft.Y));
     }
 
     private static void DrawGrid(SKCanvas canvas, SKSize canvasSize, CameraState camera, RendererPalette palette)
@@ -128,16 +187,8 @@ public sealed class DiffSceneRenderer
         }
     }
 
-    private static void DrawEdge(SKCanvas canvas, DiffCanvasScene scene, GraphEdge edge, RendererPalette palette)
+    private static void DrawEdge(SKCanvas canvas, GraphEdge edge, DiffNode source, DiffNode target, RendererPalette palette)
     {
-        var source = scene.Nodes.FirstOrDefault(node => node.Document.Id.Value == edge.SourceNodeId);
-        var target = scene.Nodes.FirstOrDefault(node => node.Document.Id.Value == edge.TargetNodeId);
-
-        if (source is null || target is null)
-        {
-            return;
-        }
-
         var sourcePoint = new SKPoint((float)source.Bounds.Right, (float)source.Bounds.Center.Y);
         var targetPoint = new SKPoint((float)target.Bounds.Left, (float)target.Bounds.Center.Y);
         var controlOffset = Math.Max(120, Math.Abs(targetPoint.X - sourcePoint.X) * 0.35f);
@@ -157,7 +208,26 @@ public sealed class DiffSceneRenderer
         canvas.DrawPath(path, paint);
     }
 
-    private static void DrawNode(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, double cameraScale)
+    private static Rect2 GetEdgeBounds(DiffNode source, DiffNode target)
+    {
+        var sourceX = source.Bounds.Right;
+        var sourceY = source.Bounds.Center.Y;
+        var targetX = target.Bounds.Left;
+        var targetY = target.Bounds.Center.Y;
+        var controlOffset = Math.Max(120, Math.Abs(targetX - sourceX) * 0.35);
+        var left = Math.Min(Math.Min(sourceX, targetX), Math.Min(sourceX + controlOffset, targetX - controlOffset));
+        var right = Math.Max(Math.Max(sourceX, targetX), Math.Max(sourceX + controlOffset, targetX - controlOffset));
+        var top = Math.Min(sourceY, targetY);
+        var bottom = Math.Max(sourceY, targetY);
+        return new Rect2(left, top, right - left, bottom - top);
+    }
+
+    private static bool ShouldDrawNodeDetails(DiffNode node, double cameraScale) =>
+        node.FontSize * cameraScale >= 6.5 &&
+        node.Bounds.Width * cameraScale >= 220 &&
+        node.BodyBounds.Height * cameraScale >= 120;
+
+    private static void DrawNode(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, double cameraScale, bool drawDetails)
     {
         var bounds = ToRect(node.Bounds);
         var statusColor = NodeStatusColor(node.Document.Metadata.Status, palette);
@@ -167,6 +237,13 @@ public sealed class DiffSceneRenderer
         canvas.DrawRoundRect(bounds, 6, 6, backgroundPaint);
         DrawNodeStatusAccent(canvas, bounds, statusColor);
         canvas.DrawRoundRect(bounds, 6, 6, borderPaint);
+
+        if (!drawDetails)
+        {
+            DrawResizeHandles(canvas, node, palette, cameraScale);
+            return;
+        }
+
         DrawTitle(canvas, node, palette, cameraScale);
         DrawDocumentBody(canvas, node, palette, annotations, cameraScale);
         DrawFooter(canvas, node, palette, annotations);

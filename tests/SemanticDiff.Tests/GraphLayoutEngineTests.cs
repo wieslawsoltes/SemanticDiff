@@ -57,11 +57,50 @@ public sealed class GraphLayoutEngineTests
             await engine.LayoutAsync(request, cancellationTokenSource.Token).AsTask());
     }
 
+    [Fact]
+    public async Task AutoLayout_UsesCompactGridForLargeChangeSets()
+    {
+        var documents = CreateDocuments(Enumerable.Range(0, 180).Select(index => $"File{index:000}.cs").ToArray());
+        var request = new GraphLayoutRequest(documents, SemanticGraph.Empty, new Size2(620, 420));
+        var engine = new MsaglGraphLayoutEngine();
+
+        var result = await engine.LayoutAsync(request, CancellationToken.None);
+
+        Assert.Equal(documents.Length, result.Nodes.Length);
+        var secondNode = Assert.Single(result.Nodes, node => node.DocumentId == documents[1].Id);
+        Assert.Equal(668, secondNode.Bounds.X, precision: 3);
+        Assert.Equal(0, secondNode.Bounds.Y, precision: 3);
+    }
+
+    [Fact]
+    public async Task StatusLaneLayout_GroupsDocumentsByStatus()
+    {
+        var documents = CreateDocuments(
+            ("Deleted.cs", DiffFileStatus.Deleted),
+            ("Added.cs", DiffFileStatus.Added),
+            ("Modified.cs", DiffFileStatus.Modified));
+        var request = new GraphLayoutRequest(documents, SemanticGraph.Empty, new Size2(620, 420), LayoutMode: GraphLayoutMode.StatusLanes);
+        var engine = new GridGraphLayoutEngine();
+
+        var result = await engine.LayoutAsync(request, CancellationToken.None);
+
+        var addedNode = Assert.Single(result.Nodes, node => node.DocumentId == documents[1].Id);
+        var modifiedNode = Assert.Single(result.Nodes, node => node.DocumentId == documents[2].Id);
+        var deletedNode = Assert.Single(result.Nodes, node => node.DocumentId == documents[0].Id);
+        Assert.True(addedNode.Bounds.X < modifiedNode.Bounds.X);
+        Assert.True(modifiedNode.Bounds.X < deletedNode.Bounds.X);
+    }
+
     private static ImmutableArray<DiffDocumentSnapshot> CreateDocuments(params string[] paths)
     {
+        return CreateDocuments(paths.Select(path => (path, DiffFileStatus.Modified)).ToArray());
+    }
+
+    private static ImmutableArray<DiffDocumentSnapshot> CreateDocuments(params (string Path, DiffFileStatus Status)[] files)
+    {
         var factory = new DiffDocumentFactory();
-        return paths
-            .Select(path => factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId(path), path, null, DiffFileStatus.Modified, "C#", 0, 0), "class Sample { }"))
+        return files
+            .Select(file => factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId(file.Path), file.Path, null, file.Status, "C#", 0, 0), "class Sample { }"))
             .ToImmutableArray();
     }
 }

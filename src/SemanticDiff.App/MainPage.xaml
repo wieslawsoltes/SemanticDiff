@@ -83,6 +83,19 @@
       <Setter Property="FontSize" Value="12" />
     </Style>
 
+    <Style x:Key="CompactComboBoxStyle" TargetType="ComboBox">
+      <Setter Property="Height" Value="28" />
+      <Setter Property="MinWidth" Value="0" />
+      <Setter Property="Padding" Value="8,0" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Background" Value="{ThemeResource PanelRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{ThemeResource BorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Foreground" Value="{ThemeResource PrimaryTextBrush}" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+
     <Style x:Key="TreeDisclosureButtonStyle" TargetType="Button">
       <Setter Property="Width" Value="18" />
       <Setter Property="Height" Value="22" />
@@ -380,6 +393,18 @@
                     <ToggleButton Content="MSBuild" IsChecked="{x:Bind ViewModel.IsSemanticWorkspaceModeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnSemanticWorkspaceModeClicked" />
                     <ToggleButton Grid.Column="1" Content="Fast syntax" IsChecked="{x:Bind ViewModel.IsSemanticFastModeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnSemanticFastModeClicked" />
                   </Grid>
+                </StackPanel>
+
+                <StackPanel Spacing="8">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Text="Layout" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.LayoutModeText, Mode=OneWay}" Foreground="{ThemeResource AccentBrush}" FontSize="10" />
+                  </Grid>
+                  <ComboBox ItemsSource="{x:Bind ViewModel.LayoutModeOptions, Mode=OneWay}"
+                            SelectedItem="{x:Bind ViewModel.SelectedLayoutModeOption, Mode=TwoWay}"
+                            DisplayMemberPath="DisplayName"
+                            Style="{StaticResource CompactComboBoxStyle}"
+                            SelectionChanged="OnLayoutModeSelectionChanged" />
                 </StackPanel>
 
                 <StackPanel Spacing="8">
