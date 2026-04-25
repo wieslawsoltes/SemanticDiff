@@ -153,6 +153,7 @@ public sealed class DiffSceneRenderer
         LastRenderStats = new(scene.Nodes.Count, visibleNodes.Length, visibleNodes.Length, scene.Edges.Count, drawnEdges);
         canvas.Restore();
         DrawGroupLabels(canvas, scene.Camera, visibleGroups, palette, canvasSize);
+        DrawFontControls(canvas, scene.Camera, visibleNodes, palette, canvasSize);
     }
 
     private static void DrawGroupRegion(SKCanvas canvas, GraphGroup group, RendererPalette palette, double cameraScale)
@@ -280,7 +281,7 @@ public sealed class DiffSceneRenderer
         canvas.DrawRoundRect(bounds, 6, 6, backgroundPaint);
         DrawNodeStatusAccent(canvas, bounds, statusColor);
         canvas.DrawRoundRect(bounds, 6, 6, borderPaint);
-        DrawTitle(canvas, node, palette, cameraScale);
+        DrawTitle(canvas, node, palette);
         DrawDocumentBody(canvas, node, palette, annotations, cameraScale);
         DrawFooter(canvas, node, palette, annotations);
         DrawResizeHandles(canvas, node, palette, cameraScale);
@@ -323,7 +324,7 @@ public sealed class DiffSceneRenderer
         }
     }
 
-    private static void DrawTitle(SKCanvas canvas, DiffNode node, RendererPalette palette, double cameraScale)
+    private static void DrawTitle(SKCanvas canvas, DiffNode node, RendererPalette palette)
     {
         var titleRect = SKRect.Create((float)node.Bounds.X, (float)node.Bounds.Y, (float)node.Bounds.Width, (float)DiffNode.TitleHeight);
         var statusColor = NodeStatusColor(node.Document.Metadata.Status, palette);
@@ -344,34 +345,35 @@ public sealed class DiffSceneRenderer
             canvas.DrawText("PIN", titleRect.Right - 188, titleRect.Top + 20, metaStyle.Font, metaStyle.Paint);
         }
 
-        DrawFontControls(canvas, node, palette, cameraScale);
         canvas.DrawText($"{node.Document.LineCount:N0} lines", titleRect.Right - 100, titleRect.Top + 20, metaStyle.Font, metaStyle.Paint);
     }
 
-    private static void DrawFontControls(SKCanvas canvas, DiffNode node, RendererPalette palette, double cameraScale)
+    private static void DrawFontControls(SKCanvas canvas, CameraState camera, IReadOnlyList<DiffNode> nodes, RendererPalette palette, SKSize canvasSize)
     {
-        if (!node.CanShowFontSizeButtons(cameraScale))
-        {
-            return;
-        }
-
         using var fillPaint = new SKPaint { Color = palette.NodeBackground.WithAlpha(230), Style = SKPaintStyle.Fill, IsAntialias = true };
-        using var strokePaint = new SKPaint { Color = palette.NodeBorder, Style = SKPaintStyle.Stroke, StrokeWidth = (float)DiffCanvasScene.ScreenStableWorldLength(cameraScale, 1), IsAntialias = true };
-        using var textStyle = CreateUiTextStyle((float)DiffCanvasScene.ScreenStableWorldLength(cameraScale, 11), palette.TextColor, true);
+        using var strokePaint = new SKPaint { Color = palette.NodeBorder, Style = SKPaintStyle.Stroke, StrokeWidth = 1, IsAntialias = true };
+        using var textStyle = CreateUiTextStyle(11, palette.TextColor, true);
 
-        DrawFontButton(canvas, node.GetFontSizeButtonBounds(DiffNodeFontSizeAction.Decrease, cameraScale), "-", fillPaint, strokePaint, textStyle);
-        DrawFontButton(canvas, node.GetFontSizeButtonBounds(DiffNodeFontSizeAction.Increase, cameraScale), "+", fillPaint, strokePaint, textStyle);
+        foreach (var node in nodes)
+        {
+            if (!node.CanShowFontSizeButtons(camera.Scale))
+            {
+                continue;
+            }
+
+            DrawFontButton(canvas, ToScreenRect(camera, node.GetFontSizeButtonBounds(DiffNodeFontSizeAction.Decrease, camera.Scale)), "-", fillPaint, strokePaint, textStyle, canvasSize);
+            DrawFontButton(canvas, ToScreenRect(camera, node.GetFontSizeButtonBounds(DiffNodeFontSizeAction.Increase, camera.Scale)), "+", fillPaint, strokePaint, textStyle, canvasSize);
+        }
     }
 
-    private static void DrawFontButton(SKCanvas canvas, Rect2 bounds, string text, SKPaint fillPaint, SKPaint strokePaint, TextStyle textStyle)
+    private static void DrawFontButton(SKCanvas canvas, SKRect rect, string text, SKPaint fillPaint, SKPaint strokePaint, TextStyle textStyle, SKSize canvasSize)
     {
-        if (bounds.IsEmpty)
+        if (rect.IsEmpty || rect.Right < 0 || rect.Left > canvasSize.Width || rect.Bottom < 0 || rect.Top > canvasSize.Height)
         {
             return;
         }
 
-        var rect = ToRect(bounds);
-        var radius = (float)Math.Max(1, bounds.Width * 0.22);
+        const float radius = 4.5f;
         canvas.DrawRoundRect(rect, radius, radius, fillPaint);
         canvas.DrawRoundRect(rect, radius, radius, strokePaint);
         var textWidth = textStyle.Font.MeasureText(text, textStyle.Paint);
@@ -642,6 +644,20 @@ public sealed class DiffSceneRenderer
     }
 
     private static SKRect ToRect(Rect2 rectangle) => SKRect.Create((float)rectangle.X, (float)rectangle.Y, (float)rectangle.Width, (float)rectangle.Height);
+
+    private static SKRect ToScreenRect(CameraState camera, Rect2 rectangle)
+    {
+        if (rectangle.IsEmpty)
+        {
+            return SKRect.Empty;
+        }
+
+        var topLeft = camera.WorldToScreen(new Point2(rectangle.Left, rectangle.Top));
+        var bottomRight = camera.WorldToScreen(new Point2(rectangle.Right, rectangle.Bottom));
+        var left = Math.Min(topLeft.X, bottomRight.X);
+        var top = Math.Min(topLeft.Y, bottomRight.Y);
+        return SKRect.Create((float)left, (float)top, (float)Math.Abs(bottomRight.X - topLeft.X), (float)Math.Abs(bottomRight.Y - topLeft.Y));
+    }
 
     private static string StatusText(DiffFileStatus status) => status switch
     {

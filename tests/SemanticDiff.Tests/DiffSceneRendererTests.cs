@@ -194,6 +194,42 @@ public sealed class DiffSceneRendererTests
         Assert.True(differingPixels > 0);
     }
 
+    [Fact]
+    public void Render_KeepsGraphGroupLabelsScreenStableAcrossZoom()
+    {
+        var group = new GraphGroup("folder:src/App", GraphGroupingMode.Folder, "src/App", new Rect2(100, 120, 2, 2), 4, 10, 3, 0);
+        var normalScene = new DiffCanvasScene([], [], [group]);
+        var zoomedScene = new DiffCanvasScene([], [], [group]);
+        zoomedScene.ZoomAt(Point2.Zero, 2.0);
+
+        var normalBounds = MeasureGroupLabelBounds(normalScene, group);
+        var zoomedBounds = MeasureGroupLabelBounds(zoomedScene, group);
+
+        Assert.InRange(normalBounds.Height, 18, 26);
+        Assert.InRange(zoomedBounds.Height, 18, 26);
+        Assert.True(Math.Abs(normalBounds.Height - zoomedBounds.Height) <= 2);
+    }
+
+    [Fact]
+    public void Render_KeepsFontControlButtonsScreenStableAcrossZoom()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/MainPage.xaml.cs"), "src/App/MainPage.xaml.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class MainPage { }");
+        var normalScene = DiffCanvasScene.FromDocuments([document], groupingMode: GraphGroupingMode.None);
+        var zoomedScene = DiffCanvasScene.FromDocuments([document], groupingMode: GraphGroupingMode.None);
+        zoomedScene.ZoomAt(Point2.Zero, 2.0);
+
+        var normalBounds = MeasureFontButtonBounds(normalScene, normalScene.Nodes[0]);
+        var zoomedBounds = MeasureFontButtonBounds(zoomedScene, zoomedScene.Nodes[0]);
+
+        Assert.InRange(normalBounds.Width, 17, 23);
+        Assert.InRange(normalBounds.Height, 17, 23);
+        Assert.InRange(zoomedBounds.Width, 17, 23);
+        Assert.InRange(zoomedBounds.Height, 17, 23);
+        Assert.True(Math.Abs(normalBounds.Width - zoomedBounds.Width) <= 2);
+        Assert.True(Math.Abs(normalBounds.Height - zoomedBounds.Height) <= 2);
+    }
+
     private static SKColor RenderStatusBadgePixel(DiffFileStatus status)
     {
         var factory = new DiffDocumentFactory();
@@ -210,6 +246,94 @@ public sealed class DiffSceneRendererTests
         return image.PeekPixels().GetPixelColor(48, 48);
     }
 
+    private static PixelBounds MeasureGroupLabelBounds(DiffCanvasScene scene, GraphGroup group)
+    {
+        var plainScene = new DiffCanvasScene([], []);
+        var renderer = new DiffSceneRenderer();
+        using var groupedSurface = SKSurface.Create(new SKImageInfo(800, 520));
+        using var plainSurface = SKSurface.Create(new SKImageInfo(800, 520));
+        plainScene.ApplyViewState(scene.CaptureViewState());
+
+        renderer.Render(groupedSurface.Canvas, new SKSize(800, 520), scene, DiffCanvasColorTheme.Dark);
+        renderer.Render(plainSurface.Canvas, new SKSize(800, 520), plainScene, DiffCanvasColorTheme.Dark);
+
+        using var groupedImage = groupedSurface.Snapshot();
+        using var plainImage = plainSurface.Snapshot();
+        var labelPoint = scene.Camera.WorldToScreen(new Point2(group.Bounds.Left + 14, group.Bounds.Top + 9));
+        return MeasureDifferentPixelBounds(
+            plainImage.PeekPixels(),
+            groupedImage.PeekPixels(),
+            new PixelClip((int)Math.Floor(labelPoint.X), (int)Math.Floor(labelPoint.Y), 320, 64));
+    }
+
+    private static PixelBounds MeasureFontButtonBounds(DiffCanvasScene scene, DiffNode node)
+    {
+        var renderer = new DiffSceneRenderer();
+        using var surface = SKSurface.Create(new SKImageInfo(1_600, 900));
+        renderer.Render(surface.Canvas, new SKSize(1_600, 900), scene, DiffCanvasColorTheme.Dark);
+
+        using var image = surface.Snapshot();
+        var pixels = image.PeekPixels();
+        var button = ToScreenRect(scene.Camera, node.GetFontSizeButtonBounds(DiffNodeFontSizeAction.Increase, scene.Camera.Scale));
+        return MeasurePixelsExceptColor(
+            pixels,
+            new PixelClip((int)Math.Floor(button.Left) - 2, (int)Math.Floor(button.Top) - 2, (int)Math.Ceiling(button.Width) + 4, (int)Math.Ceiling(button.Height) + 4),
+            new SKColor(20, 28, 39));
+    }
+
+    private static SKRect ToScreenRect(CameraState camera, Rect2 rectangle)
+    {
+        var topLeft = camera.WorldToScreen(new Point2(rectangle.Left, rectangle.Top));
+        var bottomRight = camera.WorldToScreen(new Point2(rectangle.Right, rectangle.Bottom));
+        return SKRect.Create(
+            (float)Math.Min(topLeft.X, bottomRight.X),
+            (float)Math.Min(topLeft.Y, bottomRight.Y),
+            (float)Math.Abs(bottomRight.X - topLeft.X),
+            (float)Math.Abs(bottomRight.Y - topLeft.Y));
+    }
+
+    private static PixelBounds MeasureDifferentPixelBounds(SKPixmap baseline, SKPixmap rendered, PixelClip clip)
+    {
+        return MeasurePixels(clip, baseline.Width, baseline.Height, (x, y) => baseline.GetPixelColor(x, y) != rendered.GetPixelColor(x, y));
+    }
+
+    private static PixelBounds MeasurePixelsExceptColor(SKPixmap pixels, PixelClip clip, SKColor excludedColor)
+    {
+        return MeasurePixels(clip, pixels.Width, pixels.Height, (x, y) => pixels.GetPixelColor(x, y) != excludedColor);
+    }
+
+    private static PixelBounds MeasurePixels(PixelClip clip, int imageWidth, int imageHeight, Func<int, int, bool> predicate)
+    {
+        var left = Math.Clamp(clip.Left, 0, imageWidth - 1);
+        var top = Math.Clamp(clip.Top, 0, imageHeight - 1);
+        var right = Math.Clamp(clip.Left + clip.Width, 0, imageWidth);
+        var bottom = Math.Clamp(clip.Top + clip.Height, 0, imageHeight);
+        var minX = imageWidth;
+        var minY = imageHeight;
+        var maxX = -1;
+        var maxY = -1;
+
+        for (var y = top; y < bottom; y++)
+        {
+            for (var x = left; x < right; x++)
+            {
+                if (!predicate(x, y))
+                {
+                    continue;
+                }
+
+                minX = Math.Min(minX, x);
+                minY = Math.Min(minY, y);
+                maxX = Math.Max(maxX, x);
+                maxY = Math.Max(maxY, y);
+            }
+        }
+
+        return maxX < minX || maxY < minY
+            ? PixelBounds.Empty
+            : new PixelBounds(maxX - minX + 1, maxY - minY + 1);
+    }
+
     private static ImmutableArray<DiffDocumentSnapshot> CreateDocuments(int count)
     {
         var factory = new DiffDocumentFactory();
@@ -218,5 +342,12 @@ public sealed class DiffSceneRendererTests
                 new DiffDocumentMetadata(new DiffDocumentId($"File{index:000}.cs"), $"File{index:000}.cs", null, DiffFileStatus.Modified, "C#", 0, 0),
                 "class Sample { }"))
             .ToImmutableArray();
+    }
+
+    private readonly record struct PixelClip(int Left, int Top, int Width, int Height);
+
+    private readonly record struct PixelBounds(int Width, int Height)
+    {
+        public static PixelBounds Empty { get; } = new(0, 0);
     }
 }

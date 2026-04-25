@@ -958,6 +958,16 @@ Current status: complete. Branch-mode graphs now fit correctly at very large wor
 
 Current status: complete. The canvas can now overlay folder, semantic, language, or status group regions on top of any layout mode, making large change sets easier to scan by repository area or semantic purpose without hiding individual document nodes.
 
+### Phase 40: Zoom-Stable Canvas Labels and Controls
+
+- [x] Keep graph group title labels rendered as screen-space chrome so their text size stays readable while zooming in or out.
+- [x] Move node font-size `-` and `+` controls out of the scaled world transform and render them as screen-space overlays above visible nodes.
+- [x] Preserve existing hit testing by continuing to derive font-control world bounds from the camera scale before projecting them to screen coordinates for rendering.
+- [x] Add renderer regression coverage that measures group-label and font-control pixel extents at different zoom levels.
+- [x] Validate the change with focused renderer tests and the full solution test suite.
+
+Current status: complete. Group labels and per-node font controls now keep stable device-pixel sizing during zoom, improving readability on large grouped layouts without changing node geometry or interaction behavior.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.
