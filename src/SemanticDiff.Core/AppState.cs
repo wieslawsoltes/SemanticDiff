@@ -6,7 +6,6 @@ namespace SemanticDiff.Core;
 public sealed record SemanticDiffAppState(
     string? RepositoryPath = null,
     GitDiffScope DiffScope = GitDiffScope.Worktree,
-    int MaxInitialGitFiles = 24,
     bool WatchRepositoryChanges = true,
     int AutoReloadDelayMs = 700,
     SemanticDiffThemeMode ThemeMode = SemanticDiffThemeMode.Dark,

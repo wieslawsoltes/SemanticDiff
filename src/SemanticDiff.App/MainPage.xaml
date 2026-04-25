@@ -366,14 +366,8 @@
                     <TextBlock Text="Repository" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
                     <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.WatchStatusText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="10" />
                   </Grid>
-                  <Grid ColumnDefinitions="*,58,Auto" ColumnSpacing="6">
+                  <Grid>
                     <ToggleButton Content="Auto refresh" IsChecked="{x:Bind ViewModel.IsAutoRefreshEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnAutoRefreshClicked" />
-                    <TextBox Grid.Column="1"
-                             Text="{x:Bind ViewModel.MaxInitialGitFilesText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             Style="{StaticResource CompactTextBoxStyle}"
-                             PlaceholderText="Max"
-                             InputScope="Number" />
-                    <Button Grid.Column="2" Content="Apply" Style="{StaticResource ChromeButtonStyle}" Click="OnApplyOptionsClicked" />
                   </Grid>
                 </StackPanel>
 

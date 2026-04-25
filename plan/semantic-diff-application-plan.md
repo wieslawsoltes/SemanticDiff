@@ -898,6 +898,18 @@ Current status: complete. Per-node font controls now behave predictably across z
 
 Current status: complete. Diff scope loading now preserves newly added files across unstaged and current-branch review, handles copy/rename/conflict records more accurately, and avoids letting the initial file cap hide structural changes behind a long modified-file list.
 
+### Phase 35: Full Change-Set Surfacing Across Explorer, Symbols, and Graph
+
+- [x] Reproduce branch-mode behavior against `/Users/wieslawsoltes/GitHub/Dock` on `dock-uno-platform-port` and confirm Git reports 405 changed files while the app surfaced only 24 nodes.
+- [x] Remove the document-loading cap from the Git document snapshot path so every file reported by the selected diff scope becomes a document, explorer item, and graph node.
+- [x] Keep branch/worktree/range scope metadata counts aligned with the actual document count used by the canvas and navigation models.
+- [x] Merge Roslyn syntax analysis back into workspace-backed analysis when `MSBuildWorkspace` only covers part of the changed C# file set.
+- [x] Analyze XAML/XML files from the current repository file text when available, falling back to diff hunks for deleted or unavailable files.
+- [x] Add regression coverage for all-files document loading below the previous max-file cap, C# files outside loaded projects, and XAML hunks that require full file text.
+- [x] Validate the change with compiler diagnostics and the full solution test suite.
+
+Current status: complete. Branch mode and the other diff scopes now surface the full changed-file set consistently through the file explorer, semantic symbol index, and node graph instead of truncating the working model to the old initial load limit.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.

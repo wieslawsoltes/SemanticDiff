@@ -163,9 +163,6 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private string watchStatusText = "Watch ready";
 
     [ObservableProperty]
-    private string maxInitialGitFilesText = "24";
-
-    [ObservableProperty]
     private string documentCountText = "0 files";
 
     [ObservableProperty]
@@ -510,29 +507,6 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         AddDiagnostic("Info", $"{layer} visualization {(isEnabled ? "shown" : "hidden")}");
     }
 
-    public async Task ApplyOptionsAsync()
-    {
-        if (!int.TryParse(MaxInitialGitFilesText, out var maxInitialGitFiles))
-        {
-            MaxInitialGitFilesText = appState.MaxInitialGitFiles.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            AddDiagnostic("Warning", "Max files must be a number");
-            return;
-        }
-
-        maxInitialGitFiles = Math.Clamp(maxInitialGitFiles, 1, 500);
-        MaxInitialGitFilesText = maxInitialGitFiles.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        if (appState.MaxInitialGitFiles == maxInitialGitFiles)
-        {
-            await SaveOptionsAsync(CancellationToken.None);
-            return;
-        }
-
-        appState = appState with { MaxInitialGitFiles = maxInitialGitFiles };
-        await SaveOptionsAsync(CancellationToken.None);
-        AddDiagnostic("Info", $"Max files changed to {maxInitialGitFiles}");
-        await LoadRepositoryAsync(loadAppState: false, operationMessage: "Reloading options");
-    }
-
     public async Task SetLeftPaneWidthAsync(double width)
     {
         var normalizedWidth = NormalizeLeftPaneWidth(width);
@@ -730,7 +704,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             var documentService = new GitDiffDocumentService();
             var request = new GitDiffRequest(repositoryRoot, appState.DiffScope, NormalizeRef(appState.BaseRef), NormalizeRef(appState.HeadRef));
             ReportProgress(0.25, "Loading Git diff", cancellationToken);
-            var snapshot = await documentService.LoadDocumentsAsync(request, Math.Max(1, appState.MaxInitialGitFiles), appState.DiffContextMode, cancellationToken);
+            var snapshot = await documentService.LoadDocumentsAsync(request, appState.DiffContextMode, cancellationToken);
 
             if (snapshot.Documents.Length == 0)
             {
@@ -984,7 +958,6 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         {
             RepositoryPath = currentRepositoryPath ?? appState.RepositoryPath,
             DiffScope = appState.DiffScope,
-            MaxInitialGitFiles = Math.Max(1, appState.MaxInitialGitFiles),
             WatchRepositoryChanges = IsAutoRefreshEnabled,
             AutoReloadDelayMs = Math.Clamp(appState.AutoReloadDelayMs, 250, 10_000),
             ThemeMode = IsLightThemeEnabled ? SemanticDiffThemeMode.Light : SemanticDiffThemeMode.Dark,
@@ -1007,7 +980,6 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         appState = appState with
         {
             RepositoryPath = currentRepositoryPath ?? appState.RepositoryPath,
-            MaxInitialGitFiles = Math.Max(1, appState.MaxInitialGitFiles),
             WatchRepositoryChanges = IsAutoRefreshEnabled,
             AutoReloadDelayMs = Math.Clamp(appState.AutoReloadDelayMs, 250, 10_000),
             ThemeMode = IsLightThemeEnabled ? SemanticDiffThemeMode.Light : SemanticDiffThemeMode.Dark,
@@ -1055,7 +1027,6 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         IsSemanticWorkspaceModeSelected = appState.SemanticAnalysisMode == SemanticAnalysisMode.WorkspaceThenSyntax;
         IsSemanticFastModeSelected = appState.SemanticAnalysisMode == SemanticAnalysisMode.FastSyntaxOnly;
         ApplyAnnotationVisibilityToPresentation();
-        MaxInitialGitFilesText = Math.Max(1, appState.MaxInitialGitFiles).ToString(System.Globalization.CultureInfo.InvariantCulture);
         LeftPaneWidth = NormalizeLeftPaneWidth(appState.LeftPaneWidth);
         RepositoryPathText = string.IsNullOrWhiteSpace(appState.RepositoryPath) ? "No repository selected" : appState.RepositoryPath;
         if (!IsAutoRefreshEnabled)

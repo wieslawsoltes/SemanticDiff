@@ -19,7 +19,7 @@ public sealed class XamlSemanticProvider : ISemanticProvider
                extension.Equals(".xml", StringComparison.OrdinalIgnoreCase);
     }
 
-    public ValueTask<SemanticGraph> AnalyzeAsync(SemanticAnalysisRequest request, CancellationToken cancellationToken)
+    public async ValueTask<SemanticGraph> AnalyzeAsync(SemanticAnalysisRequest request, CancellationToken cancellationToken)
     {
         var anchors = ImmutableArray.CreateBuilder<SemanticAnchor>();
         var edges = ImmutableArray.CreateBuilder<SemanticEdge>();
@@ -27,16 +27,31 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         foreach (var document in request.Documents.Where(IsXamlLike))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            AddXamlAnchors(document, parser.Parse(CreateSourceText(document)), anchors, edges);
+            var sourceText = await LoadAnalysisTextAsync(request.RepositoryPath, document, cancellationToken).ConfigureAwait(false);
+            AddXamlAnchors(document, parser.Parse(sourceText), anchors, edges);
         }
 
-        return new ValueTask<SemanticGraph>(new SemanticGraph(anchors.ToImmutable(), edges.ToImmutable()));
+        return new SemanticGraph(anchors.ToImmutable(), edges.ToImmutable());
     }
 
     private static bool IsXamlLike(DiffDocumentSnapshot document) =>
         document.Metadata.Path.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase) ||
         document.Metadata.Path.EndsWith(".axaml", StringComparison.OrdinalIgnoreCase) ||
         document.Metadata.Path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<string> LoadAnalysisTextAsync(string repositoryPath, DiffDocumentSnapshot document, CancellationToken cancellationToken)
+    {
+        if (document.Metadata.Status != DiffFileStatus.Deleted && !string.IsNullOrWhiteSpace(repositoryPath))
+        {
+            var filePath = Path.Combine(repositoryPath, document.Metadata.Path);
+            if (File.Exists(filePath))
+            {
+                return await File.ReadAllTextAsync(filePath, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        return CreateSourceText(document);
+    }
 
     private static string CreateSourceText(DiffDocumentSnapshot document) => string.Join(Environment.NewLine, document.Lines
         .Where(line => line.Kind != DiffLineKind.Metadata && line.Kind != DiffLineKind.Imaginary)

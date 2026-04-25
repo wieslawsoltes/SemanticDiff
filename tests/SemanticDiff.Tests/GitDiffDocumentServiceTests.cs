@@ -20,7 +20,6 @@ public sealed class GitDiffDocumentServiceTests
 
         var snapshot = await documentService.LoadDocumentsAsync(
             new GitDiffRequest("/repo", GitDiffScope.Worktree),
-            4,
             DiffContextMode.ChangedHunks,
             CancellationToken.None);
 
@@ -42,7 +41,6 @@ public sealed class GitDiffDocumentServiceTests
 
         var snapshot = await documentService.LoadDocumentsAsync(
             new GitDiffRequest("/repo", GitDiffScope.Worktree),
-            4,
             DiffContextMode.FullFileDiff,
             CancellationToken.None);
 
@@ -64,7 +62,6 @@ public sealed class GitDiffDocumentServiceTests
 
         var snapshot = await documentService.LoadDocumentsAsync(
             new GitDiffRequest("/repo", GitDiffScope.Worktree),
-            4,
             DiffContextMode.CurrentFile,
             CancellationToken.None);
 
@@ -75,7 +72,7 @@ public sealed class GitDiffDocumentServiceTests
     }
 
     [Fact]
-    public async Task LoadDocumentsAsync_PrioritizesStructuralChangesWhenMaxFilesCapsInitialLoad()
+    public async Task LoadDocumentsAsync_IncludesAllGitFilesInSnapshotDocuments()
     {
         var fileChanges = ImmutableArray.Create(
             CreateFileChange("src/Modified1.cs", DiffFileStatus.Modified),
@@ -90,12 +87,13 @@ public sealed class GitDiffDocumentServiceTests
 
         var snapshot = await documentService.LoadDocumentsAsync(
             new GitDiffRequest("/repo", GitDiffScope.Branch),
-            2,
             DiffContextMode.ChangedHunks,
             CancellationToken.None);
 
         Assert.Equal(5, snapshot.GitSnapshot.Files.Length);
-        Assert.Equal(["src/New.cs", "src/Copied.cs"], snapshot.Documents.Select(document => document.Metadata.Path).ToArray());
+        Assert.Equal(
+            ["src/Modified1.cs", "src/Modified2.cs", "src/Modified3.cs", "src/New.cs", "src/Copied.cs"],
+            snapshot.Documents.Select(document => document.Metadata.Path).ToArray());
     }
 
     private static GitFileChange CreateFileChange(string path, DiffFileStatus status, string? oldPath = null) =>

@@ -11,20 +11,19 @@ public sealed class AppStateStoreTests
         var filePath = Path.Combine(directoryPath, "app-state.json");
         var store = new JsonAppStateStore(filePath);
         var state = new SemanticDiffAppState(
-            "/repo",
-            GitDiffScope.Worktree,
-            12,
-            true,
-            700,
-            SemanticDiffThemeMode.Light,
-            DiffContextMode.FullFileDiff,
-            DiffReviewMode.IgnoreWhitespace,
-            true,
-            [new DiffNodeLayoutState("A.cs", 10, 20, 620, 420, true, 15.5)],
-            "origin/main",
-            "feature/work",
-            false,
-            new DiffAnnotationVisibilityState(
+            RepositoryPath: "/repo",
+            DiffScope: GitDiffScope.Worktree,
+            WatchRepositoryChanges: true,
+            AutoReloadDelayMs: 700,
+            ThemeMode: SemanticDiffThemeMode.Light,
+            DiffContextMode: DiffContextMode.FullFileDiff,
+            ReviewMode: DiffReviewMode.IgnoreWhitespace,
+            CollapseUnchangedContext: true,
+            LayoutNodes: [new DiffNodeLayoutState("A.cs", 10, 20, 620, 420, true, 15.5)],
+            BaseRef: "origin/main",
+            HeadRef: "feature/work",
+            ShowSemanticEdges: false,
+            AnnotationVisibility: new DiffAnnotationVisibilityState(
                 ShowGitStatus: true,
                 ShowSemantic: false,
                 ShowDiagnostics: true,
@@ -32,8 +31,8 @@ public sealed class AppStateStoreTests
                 ShowHistory: true,
                 ShowNavigation: false,
                 ShowContext: true),
-            SemanticAnalysisMode.FastSyntaxOnly,
-            344);
+            SemanticAnalysisMode: SemanticAnalysisMode.FastSyntaxOnly,
+            LeftPaneWidth: 344);
 
         try
         {
@@ -42,7 +41,6 @@ public sealed class AppStateStoreTests
             var loaded = await store.LoadAsync(CancellationToken.None);
 
             Assert.Equal("/repo", loaded.RepositoryPath);
-            Assert.Equal(12, loaded.MaxInitialGitFiles);
             Assert.True(loaded.WatchRepositoryChanges);
             Assert.Equal(700, loaded.AutoReloadDelayMs);
             Assert.Equal(SemanticDiffThemeMode.Light, loaded.ThemeMode);

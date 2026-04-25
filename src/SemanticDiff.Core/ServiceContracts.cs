@@ -41,7 +41,7 @@ public interface IGitRepositoryDiscovery
 
 public interface IGitDiffDocumentService
 {
-    Task<GitDiffDocumentSnapshot> LoadDocumentsAsync(GitDiffRequest request, int maxFiles, DiffContextMode contextMode, CancellationToken cancellationToken);
+    Task<GitDiffDocumentSnapshot> LoadDocumentsAsync(GitDiffRequest request, DiffContextMode contextMode, CancellationToken cancellationToken);
 }
 
 public interface IGitReviewService

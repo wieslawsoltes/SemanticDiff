@@ -306,11 +306,6 @@ public sealed partial class MainPage : Page
         await ViewModel.SetContextFoldingAsync(isContextFoldingEnabled);
     }
 
-    private async void OnApplyOptionsClicked(object sender, RoutedEventArgs args)
-    {
-        await ViewModel.ApplyOptionsAsync();
-    }
-
     private async void OnStageSelectedFileClicked(object sender, RoutedEventArgs args)
     {
         await ViewModel.StageSelectedFileAsync();

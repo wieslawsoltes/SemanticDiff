@@ -23,18 +23,16 @@ public sealed class GitDiffDocumentService : IGitDiffDocumentService
 
     public async Task<GitDiffDocumentSnapshot> LoadDocumentsAsync(
         GitDiffRequest request,
-        int maxFiles,
         DiffContextMode contextMode,
         CancellationToken cancellationToken)
     {
         var gitSnapshot = await gitDiffService.GetDiffAsync(request, cancellationToken).ConfigureAwait(false);
-        var documentCapacity = Math.Min(Math.Max(0, maxFiles), gitSnapshot.Files.Length);
-        var documents = ImmutableArray.CreateBuilder<DiffDocumentSnapshot>(documentCapacity);
+        var documents = ImmutableArray.CreateBuilder<DiffDocumentSnapshot>(gitSnapshot.Files.Length);
         var diffRequest = contextMode == DiffContextMode.FullFileDiff
             ? request with { ContextLines = FullFileContextLines }
             : request;
 
-        foreach (var fileChange in SelectFilesForInitialLoad(gitSnapshot.Files, maxFiles))
+        foreach (var fileChange in gitSnapshot.Files)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var fileDiff = await gitDiffService.GetFileDiffAsync(diffRequest, fileChange, cancellationToken).ConfigureAwait(false);
@@ -47,37 +45,6 @@ public sealed class GitDiffDocumentService : IGitDiffDocumentService
 
         return new GitDiffDocumentSnapshot(gitSnapshot, documents.ToImmutable());
     }
-
-    private static IEnumerable<GitFileChange> SelectFilesForInitialLoad(ImmutableArray<GitFileChange> files, int maxFiles)
-    {
-        var limit = Math.Max(0, maxFiles);
-        if (limit == 0 || files.IsDefaultOrEmpty)
-        {
-            return [];
-        }
-
-        if (files.Length <= limit)
-        {
-            return files;
-        }
-
-        return files
-            .Select((file, index) => new { File = file, Index = index })
-            .OrderBy(item => GetInitialLoadPriority(item.File.Status))
-            .ThenBy(item => item.Index)
-            .Take(limit)
-            .Select(item => item.File);
-    }
-
-    private static int GetInitialLoadPriority(DiffFileStatus status) => status switch
-    {
-        DiffFileStatus.Conflicted => 0,
-        DiffFileStatus.Added or DiffFileStatus.Untracked or DiffFileStatus.Copied => 1,
-        DiffFileStatus.Renamed => 2,
-        DiffFileStatus.Deleted => 3,
-        DiffFileStatus.Modified => 4,
-        _ => 5
-    };
 
     private static DiffDocumentMetadata CreateMetadata(GitFileChange fileChange, string unifiedDiff)
     {

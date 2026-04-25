@@ -53,6 +53,45 @@ public sealed class CSharpSemanticProviderTests
         Assert.Contains(graph.Anchors, anchor => anchor.Kind == SemanticAnchorKind.Type && anchor.DisplayName == "Sample.ShellViewModel");
     }
 
+    [Fact]
+    public async Task AnalyzeAsync_WorkspaceModeKeepsSyntaxCoverageForFilesOutsideLoadedProject()
+    {
+        var repositoryPath = Path.Combine(Path.GetTempPath(), $"SemanticDiffTests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(repositoryPath);
+        await File.WriteAllTextAsync(Path.Combine(repositoryPath, "Sample.csproj"), """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+              </PropertyGroup>
+              <ItemGroup>
+                <Compile Include="Included.cs" />
+              </ItemGroup>
+            </Project>
+            """);
+        await File.WriteAllTextAsync(Path.Combine(repositoryPath, "Included.cs"), "namespace Sample; public sealed class Included { }");
+        await File.WriteAllTextAsync(Path.Combine(repositoryPath, "AddedOutsideProject.cs"), "namespace Sample; public sealed class AddedOutsideProject { }");
+
+        try
+        {
+            var documents = CreateDocuments(
+                ("Included.cs", "namespace Sample; public sealed class Included { }"),
+                ("AddedOutsideProject.cs", "namespace Sample; public sealed class AddedOutsideProject { }"));
+            var provider = new CSharpSemanticProvider();
+
+            var graph = await provider.AnalyzeAsync(
+                new SemanticAnalysisRequest(repositoryPath, null, documents, SemanticAnalysisMode.WorkspaceThenSyntax),
+                CancellationToken.None);
+
+            Assert.Contains(graph.Anchors, anchor => anchor.Kind == SemanticAnchorKind.Type && anchor.DisplayName == "Sample.Included");
+            Assert.Contains(graph.Anchors, anchor => anchor.Kind == SemanticAnchorKind.Type && anchor.DisplayName == "Sample.AddedOutsideProject");
+        }
+        finally
+        {
+            Directory.Delete(repositoryPath, recursive: true);
+        }
+    }
+
     private static ImmutableArray<DiffDocumentSnapshot> CreateDocuments(params (string Path, string Text)[] sources)
     {
         var factory = new DiffDocumentFactory();
