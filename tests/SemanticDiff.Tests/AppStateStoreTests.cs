@@ -5,6 +5,14 @@ namespace SemanticDiff.Tests;
 public sealed class AppStateStoreTests
 {
     [Fact]
+    public void SemanticDiffAppState_DefaultsToLayeredLayout()
+    {
+        var state = new SemanticDiffAppState();
+
+        Assert.Equal(GraphLayoutMode.Layered, state.LayoutMode);
+    }
+
+    [Fact]
     public async Task JsonAppStateStore_RoundTripsRepositoryAndLayoutState()
     {
         var directoryPath = Path.Combine(Path.GetTempPath(), $"SemanticDiffState-{Guid.NewGuid():N}");

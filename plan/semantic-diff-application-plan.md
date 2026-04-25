@@ -924,6 +924,16 @@ Current status: complete. Branch mode and the other diff scopes now surface the 
 
 Current status: complete. Large branch-mode layouts now avoid drawing offscreen nodes while keeping visible zoomed-out nodes rendered with their normal document detail, the graph engine can choose compact visualizations for hundreds of changed files, and the Settings rail exposes persisted layout modes so reviewers can switch between semantic layering, deterministic grids, compact grids, and status-grouped lanes.
 
+### Phase 37: Layered Layout Default
+
+- [x] Make Layered the default graph layout mode for new app state and layout requests.
+- [x] Keep Auto available as an explicit user-selectable option rather than the initial default.
+- [x] Initialize the Settings layout dropdown to Layered before persisted state is loaded.
+- [x] Add regression coverage for default app-state and graph-layout request modes.
+- [x] Validate the change with focused tests and the full solution test suite.
+
+Current status: complete. New sessions now start with the semantic layered graph layout by default, while Auto, Grid, Compact grid, and Status lanes remain available from the layout dropdown.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.

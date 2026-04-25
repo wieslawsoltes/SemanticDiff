@@ -18,7 +18,7 @@ public sealed record SemanticDiffAppState(
     bool ShowSemanticEdges = true,
     DiffAnnotationVisibilityState? AnnotationVisibility = null,
     SemanticAnalysisMode SemanticAnalysisMode = SemanticAnalysisMode.WorkspaceThenSyntax,
-    GraphLayoutMode LayoutMode = GraphLayoutMode.Auto,
+    GraphLayoutMode LayoutMode = GraphLayoutMode.Layered,
     double LeftPaneWidth = 260)
 {
     public DiffNodeLayoutState[] EffectiveLayoutNodes => LayoutNodes ?? [];

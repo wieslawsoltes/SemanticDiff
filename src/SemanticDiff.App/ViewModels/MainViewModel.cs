@@ -180,10 +180,10 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public ImmutableArray<LayoutModeOptionViewModel> LayoutModeOptions { get; } = LayoutModeOptionViewModel.All;
 
     [ObservableProperty]
-    private LayoutModeOptionViewModel selectedLayoutModeOption = LayoutModeOptionViewModel.All[0];
+    private LayoutModeOptionViewModel selectedLayoutModeOption = LayoutModeOptionViewModel.All[1];
 
     [ObservableProperty]
-    private string layoutModeText = "Auto";
+    private string layoutModeText = "Layered";
 
     [ObservableProperty]
     private bool isSemanticWorkspaceModeSelected = true;
@@ -1050,7 +1050,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         SemanticEdgesText = appState.ShowSemanticEdges ? "Edges on" : "Edges off";
         SemanticAnalysisModeText = FormatSemanticAnalysisMode(appState.SemanticAnalysisMode);
         LayoutModeText = FormatLayoutMode(appState.LayoutMode);
-        SelectedLayoutModeOption = LayoutModeOptions.FirstOrDefault(option => option.Mode == appState.LayoutMode) ?? LayoutModeOptions[0];
+        SelectedLayoutModeOption = LayoutModeOptions.FirstOrDefault(option => option.Mode == appState.LayoutMode) ?? LayoutModeOptions[1];
         IsSemanticWorkspaceModeSelected = appState.SemanticAnalysisMode == SemanticAnalysisMode.WorkspaceThenSyntax;
         IsSemanticFastModeSelected = appState.SemanticAnalysisMode == SemanticAnalysisMode.FastSyntaxOnly;
         ApplyAnnotationVisibilityToPresentation();

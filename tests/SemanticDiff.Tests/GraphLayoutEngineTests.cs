@@ -8,6 +8,14 @@ namespace SemanticDiff.Tests;
 public sealed class GraphLayoutEngineTests
 {
     [Fact]
+    public void GraphLayoutRequest_DefaultsToLayeredLayout()
+    {
+        var request = new GraphLayoutRequest([], SemanticGraph.Empty, new Size2(620, 420));
+
+        Assert.Equal(GraphLayoutMode.Layered, request.LayoutMode);
+    }
+
+    [Fact]
     public async Task GridLayout_PreservesPinnedNodeBoundsFromPreviousLayout()
     {
         var documents = CreateDocuments("A.cs", "B.cs");
@@ -61,7 +69,7 @@ public sealed class GraphLayoutEngineTests
     public async Task AutoLayout_UsesCompactGridForLargeChangeSets()
     {
         var documents = CreateDocuments(Enumerable.Range(0, 180).Select(index => $"File{index:000}.cs").ToArray());
-        var request = new GraphLayoutRequest(documents, SemanticGraph.Empty, new Size2(620, 420));
+        var request = new GraphLayoutRequest(documents, SemanticGraph.Empty, new Size2(620, 420), LayoutMode: GraphLayoutMode.Auto);
         var engine = new MsaglGraphLayoutEngine();
 
         var result = await engine.LayoutAsync(request, CancellationToken.None);

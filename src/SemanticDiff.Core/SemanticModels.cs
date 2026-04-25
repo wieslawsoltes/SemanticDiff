@@ -88,6 +88,6 @@ public sealed record GraphLayoutRequest(
     Size2 DefaultNodeSize,
     ImmutableArray<DiffNodeLayout> PreviousNodes = default,
     ImmutableHashSet<DiffDocumentId>? PinnedDocumentIds = null,
-    GraphLayoutMode LayoutMode = GraphLayoutMode.Auto);
+    GraphLayoutMode LayoutMode = GraphLayoutMode.Layered);
 
 public sealed record GraphLayoutResult(ImmutableArray<DiffNodeLayout> Nodes);
