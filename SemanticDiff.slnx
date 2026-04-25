@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SemanticDiff.App/SemanticDiff.App.csproj" />
+    <Project Path="src/SemanticDiff.Core/SemanticDiff.Core.csproj" />
+    <Project Path="src/SemanticDiff.Diff/SemanticDiff.Diff.csproj" />
+    <Project Path="src/SemanticDiff.Git/SemanticDiff.Git.csproj" />
+    <Project Path="src/SemanticDiff.Layout/SemanticDiff.Layout.csproj" />
+    <Project Path="src/SemanticDiff.Rendering/SemanticDiff.Rendering.csproj" />
+    <Project Path="src/SemanticDiff.Semantics.Roslyn/SemanticDiff.Semantics.Roslyn.csproj" />
+    <Project Path="src/SemanticDiff.Semantics.Xaml/SemanticDiff.Semantics.Xaml.csproj" />
+    <Project Path="src/SemanticDiff.Semantics/SemanticDiff.Semantics.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SemanticDiff.Tests/SemanticDiff.Tests.csproj" />
+  </Folder>
+</Solution>
