@@ -46,8 +46,8 @@ public sealed class SemanticNavigationIndex
                 Math.Max(1, anchor.Range.Line),
                 Math.Max(1, anchor.Range.Column),
                 edgeCounts.GetValueOrDefault(anchor.Id)))
-            .OrderBy(item => pathsByDocumentId[item.DocumentId], StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => KindSortOrder(item.Kind))
+            .OrderBy(item => KindSortOrder(item.Kind))
+            .ThenBy(item => pathsByDocumentId[item.DocumentId], StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.Line)
             .ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToImmutableArray();

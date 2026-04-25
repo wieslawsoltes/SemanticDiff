@@ -54,6 +54,26 @@ public sealed class CSharpSemanticProviderTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_FastSyntaxMode_EmitsSymbolsForLargeChangedCSharpSet()
+    {
+        var sources = Enumerable.Range(0, 120)
+            .Select(index => ($"src/Changed{index}.cs", $"namespace Sample; public sealed class Changed{index} {{ public void Run{index}() {{ }} }}"))
+            .Append(("src/ColumnBase`1.cs", "namespace Sample; public class ColumnBase<T> { public T? Value { get; set; } }"))
+            .ToArray();
+        var documents = CreateDocuments(sources);
+        var provider = new CSharpSemanticProvider();
+
+        var graph = await provider.AnalyzeAsync(
+            new SemanticAnalysisRequest("/repo", null, documents, SemanticAnalysisMode.FastSyntaxOnly),
+            CancellationToken.None);
+
+        Assert.True(graph.Anchors.Count(anchor => anchor.Kind == SemanticAnchorKind.Type) >= 121);
+        Assert.Contains(graph.Anchors, anchor => anchor.Kind == SemanticAnchorKind.Type && anchor.DisplayName == "Sample.Changed119");
+        Assert.Contains(graph.Anchors, anchor => anchor.Kind == SemanticAnchorKind.Type && anchor.DisplayName == "Sample.ColumnBase<T>");
+        Assert.Contains(graph.Anchors, anchor => anchor.Kind == SemanticAnchorKind.Member && anchor.DisplayName == "Run119");
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_WorkspaceModeKeepsSyntaxCoverageForFilesOutsideLoadedProject()
     {
         var repositoryPath = Path.Combine(Path.GetTempPath(), $"SemanticDiffTests-{Guid.NewGuid():N}");

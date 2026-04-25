@@ -994,6 +994,18 @@ Current status: complete. Opening repositories back-to-back now keeps only the n
 
 Current status: complete. Repository loading now produces a usable graph in progressive stages, reduces redundant Git process work, parallelizes independent file diff reads, and keeps full MSBuild-backed semantic quality as a cancellable refinement rather than a first-paint blocker.
 
+### Phase 43: Complete Symbol Navigation for Large Mixed Branches
+
+- [x] Reproduce the symbol-navigation symptom against `/Users/wieslawsoltes/GitHub/Avalonia.Controls.TreeDataGrid` on `feat/uno-treedatagrid-port`, confirming branch mode has 185 changed C# files plus XAML/XML changes.
+- [x] Remove the silent 80-item Symbols rail cap so all filtered semantic navigation entries are surfaced instead of hiding C# symbols behind early XAML paths.
+- [x] Prefer code type/member symbols before resource-heavy XAML anchors in the default semantic navigation order while preserving search over all symbols.
+- [x] Optimize C# semantic provider anchor and edge deduplication with hash sets so large C# branches do not pay quadratic duplicate checks while emitting many symbols.
+- [x] Optimize XAML semantic provider deduplication with the same hash-set strategy to keep mixed XAML/C# branch analysis responsive.
+- [x] Add regression coverage for large changed C# symbol sets, generic-looking C# file names, more-than-80 mixed semantic navigation entries, and C# symbol priority over XAML resources.
+- [x] Validate the change with focused semantic-provider/navigation tests and the full solution test suite.
+
+Current status: complete. Large mixed branches now load and display complete semantic navigation results, including C# type/member symbols that were previously loaded or loadable but hidden by the rail cap and path-first ordering.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.

@@ -196,6 +196,8 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
     {
         var anchors = ImmutableArray.CreateBuilder<SemanticAnchor>();
         var edges = ImmutableArray.CreateBuilder<SemanticEdge>();
+        var anchorIds = new HashSet<string>(StringComparer.Ordinal);
+        var edgeIds = new HashSet<string>(StringComparer.Ordinal);
         var typeAnchorsByFullName = new Dictionary<string, List<SemanticAnchor>>(StringComparer.Ordinal);
         var typeAnchorsBySimpleName = new Dictionary<string, List<SemanticAnchor>>(StringComparer.Ordinal);
         var memberAnchorsBySymbolKey = new Dictionary<string, SemanticAnchor>(StringComparer.Ordinal);
@@ -206,7 +208,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
         {
             cancellationToken.ThrowIfCancellationRequested();
             var root = await context.SyntaxTree.GetRootAsync(cancellationToken).ConfigureAwait(false);
-            var fileAnchor = AddAnchor(anchors, new SemanticAnchor(
+            var fileAnchor = AddAnchor(anchors, anchorIds, new SemanticAnchor(
                 $"{context.Snapshot.Id}:file",
                 context.Snapshot.Id,
                 new TextRange(0, 0, 1, 1),
@@ -217,13 +219,13 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
             foreach (var namespaceDeclaration in root.DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>())
             {
                 var range = GetTextRange(context.SourceText, namespaceDeclaration.Name.Span);
-                var namespaceAnchor = AddAnchor(anchors, new SemanticAnchor(
+                var namespaceAnchor = AddAnchor(anchors, anchorIds, new SemanticAnchor(
                     $"{context.Snapshot.Id}:namespace:{namespaceDeclaration.Name}",
                     context.Snapshot.Id,
                     range,
                     SemanticAnchorKind.Namespace,
                     namespaceDeclaration.Name.ToString()));
-                AddEdge(edges, fileAnchor.Id, namespaceAnchor.Id, SemanticEdgeKind.Contains, 0.95, "namespace");
+                AddEdge(edges, edgeIds, fileAnchor.Id, namespaceAnchor.Id, SemanticEdgeKind.Contains, 0.95, "namespace");
             }
 
             foreach (var declaration in root.DescendantNodes().OfType<BaseTypeDeclarationSyntax>())
@@ -231,7 +233,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
                 var symbol = context.SemanticModel.GetDeclaredSymbol(declaration, cancellationToken) as INamedTypeSymbol;
                 var fullName = GetTypeKey(symbol, declaration);
                 var simpleName = declaration.Identifier.ValueText;
-                var anchor = AddAnchor(anchors, new SemanticAnchor(
+                var anchor = AddAnchor(anchors, anchorIds, new SemanticAnchor(
                     $"{context.Snapshot.Id}:type:{fullName}",
                     context.Snapshot.Id,
                     GetTextRange(context.SourceText, declaration.Identifier.Span),
@@ -241,7 +243,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
                 AddToLookup(typeAnchorsByFullName, fullName, anchor);
                 AddToLookup(typeAnchorsBySimpleName, simpleName, anchor);
                 typeDeclarationAnchors[declaration] = anchor;
-                AddEdge(edges, fileAnchor.Id, anchor.Id, SemanticEdgeKind.Contains, 0.96, declaration.Kind().ToString());
+                AddEdge(edges, edgeIds, fileAnchor.Id, anchor.Id, SemanticEdgeKind.Contains, 0.96, declaration.Kind().ToString());
             }
         }
 
@@ -257,7 +259,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
                     continue;
                 }
 
-                AddMemberAnchors(context, declaration, sourceAnchor, anchors, edges, memberAnchorsBySymbolKey, cancellationToken);
+                AddMemberAnchors(context, declaration, sourceAnchor, anchors, anchorIds, edges, edgeIds, memberAnchorsBySymbolKey, cancellationToken);
 
                 if (declaration.BaseList is not null)
                 {
@@ -266,16 +268,16 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
                         var targetAnchor = ResolveTypeAnchor(context.SemanticModel, baseType.Type, typeAnchorsByFullName, typeAnchorsBySimpleName, cancellationToken);
                         if (targetAnchor is not null && targetAnchor.Id != sourceAnchor.Id)
                         {
-                            AddEdge(edges, sourceAnchor.Id, targetAnchor.Id, SemanticEdgeKind.TypeInheritance, 0.86, baseType.Type.ToString());
+                            AddEdge(edges, edgeIds, sourceAnchor.Id, targetAnchor.Id, SemanticEdgeKind.TypeInheritance, 0.86, baseType.Type.ToString());
                         }
                     }
                 }
             }
 
-            AddReferenceEdges(context, typeDeclarationAnchors, typeAnchorsByFullName, typeAnchorsBySimpleName, memberAnchorsBySymbolKey, edges, cancellationToken);
+            AddReferenceEdges(context, typeDeclarationAnchors, typeAnchorsByFullName, typeAnchorsBySimpleName, memberAnchorsBySymbolKey, edges, edgeIds, cancellationToken);
         }
 
-        AddPartialClassEdges(typeAnchorsByFullName, edges);
+        AddPartialClassEdges(typeAnchorsByFullName, edges, edgeIds);
         return new SemanticGraph(anchors.ToImmutable(), edges.ToImmutable());
     }
 
@@ -284,7 +286,9 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
         BaseTypeDeclarationSyntax declaration,
         SemanticAnchor typeAnchor,
         ImmutableArray<SemanticAnchor>.Builder anchors,
+        HashSet<string> anchorIds,
         ImmutableArray<SemanticEdge>.Builder edges,
+        HashSet<string> edgeIds,
         Dictionary<string, SemanticAnchor> memberAnchorsBySymbolKey,
         CancellationToken cancellationToken)
     {
@@ -304,7 +308,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
             }
 
             var memberKey = GetSymbolKey(symbol);
-            var anchor = AddAnchor(anchors, new SemanticAnchor(
+            var anchor = AddAnchor(anchors, anchorIds, new SemanticAnchor(
                 $"{context.Snapshot.Id}:member:{memberKey}",
                 context.Snapshot.Id,
                 GetTextRange(context.SourceText, nameSpan.Value),
@@ -312,7 +316,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
                 symbol.Name));
 
             memberAnchorsBySymbolKey.TryAdd(memberKey, anchor);
-            AddEdge(edges, typeAnchor.Id, anchor.Id, SemanticEdgeKind.Contains, 0.92, symbol.Kind.ToString());
+            AddEdge(edges, edgeIds, typeAnchor.Id, anchor.Id, SemanticEdgeKind.Contains, 0.92, symbol.Kind.ToString());
         }
     }
 
@@ -323,6 +327,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
         Dictionary<string, List<SemanticAnchor>> typeAnchorsBySimpleName,
         Dictionary<string, SemanticAnchor> memberAnchorsBySymbolKey,
         ImmutableArray<SemanticEdge>.Builder edges,
+        HashSet<string> edgeIds,
         CancellationToken cancellationToken)
     {
         var root = context.SyntaxTree.GetRoot(cancellationToken);
@@ -347,19 +352,19 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
 
             if (targetAnchor is not null && targetAnchor.Id != sourceAnchor.Id)
             {
-                AddEdge(edges, sourceAnchor.Id, targetAnchor.Id, SemanticEdgeKind.SymbolReference, 0.72, identifier.Identifier.ValueText);
+                AddEdge(edges, edgeIds, sourceAnchor.Id, targetAnchor.Id, SemanticEdgeKind.SymbolReference, 0.72, identifier.Identifier.ValueText);
             }
         }
     }
 
-    private static void AddPartialClassEdges(Dictionary<string, List<SemanticAnchor>> typeAnchorsByFullName, ImmutableArray<SemanticEdge>.Builder edges)
+    private static void AddPartialClassEdges(Dictionary<string, List<SemanticAnchor>> typeAnchorsByFullName, ImmutableArray<SemanticEdge>.Builder edges, HashSet<string> edgeIds)
     {
         foreach (var group in typeAnchorsByFullName.Values.Where(group => group.Select(anchor => anchor.DocumentId).Distinct().Count() > 1))
         {
             var ordered = group.OrderBy(anchor => anchor.DocumentId.Value, StringComparer.Ordinal).ToArray();
             for (var anchorIndex = 0; anchorIndex < ordered.Length - 1; anchorIndex++)
             {
-                AddEdge(edges, ordered[anchorIndex].Id, ordered[anchorIndex + 1].Id, SemanticEdgeKind.PartialClass, 0.88, "partial");
+                AddEdge(edges, edgeIds, ordered[anchorIndex].Id, ordered[anchorIndex + 1].Id, SemanticEdgeKind.PartialClass, 0.88, "partial");
             }
         }
     }
@@ -397,9 +402,9 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
         return lookup.TryGetValue(key, out var anchors) && anchors.Count == 1 ? anchors[0] : null;
     }
 
-    private static SemanticAnchor AddAnchor(ImmutableArray<SemanticAnchor>.Builder anchors, SemanticAnchor anchor)
+    private static SemanticAnchor AddAnchor(ImmutableArray<SemanticAnchor>.Builder anchors, HashSet<string> anchorIds, SemanticAnchor anchor)
     {
-        if (!anchors.Any(existing => existing.Id == anchor.Id))
+        if (anchorIds.Add(anchor.Id))
         {
             anchors.Add(anchor);
         }
@@ -407,7 +412,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
         return anchor;
     }
 
-    private static void AddEdge(ImmutableArray<SemanticEdge>.Builder edges, string sourceAnchorId, string targetAnchorId, SemanticEdgeKind kind, double confidence, string? label)
+    private static void AddEdge(ImmutableArray<SemanticEdge>.Builder edges, HashSet<string> edgeIds, string sourceAnchorId, string targetAnchorId, SemanticEdgeKind kind, double confidence, string? label)
     {
         if (sourceAnchorId == targetAnchorId)
         {
@@ -415,7 +420,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
         }
 
         var edgeId = $"{kind}:{sourceAnchorId}->{targetAnchorId}:{label}";
-        if (!edges.Any(edge => edge.Id == edgeId))
+        if (edgeIds.Add(edgeId))
         {
             edges.Add(new SemanticEdge(edgeId, sourceAnchorId, targetAnchorId, kind, confidence, label));
         }

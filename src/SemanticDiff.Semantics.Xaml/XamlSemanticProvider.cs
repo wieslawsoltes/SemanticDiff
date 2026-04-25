@@ -23,12 +23,14 @@ public sealed class XamlSemanticProvider : ISemanticProvider
     {
         var anchors = ImmutableArray.CreateBuilder<SemanticAnchor>();
         var edges = ImmutableArray.CreateBuilder<SemanticEdge>();
+        var anchorIds = new HashSet<string>(StringComparer.Ordinal);
+        var edgeIds = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var document in request.Documents.Where(IsXamlLike))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var sourceText = await LoadAnalysisTextAsync(request.RepositoryPath, document, cancellationToken).ConfigureAwait(false);
-            AddXamlAnchors(document, parser.Parse(sourceText), anchors, edges);
+            AddXamlAnchors(document, parser.Parse(sourceText), anchors, anchorIds, edges, edgeIds);
         }
 
         return new SemanticGraph(anchors.ToImmutable(), edges.ToImmutable());
@@ -61,11 +63,13 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         DiffDocumentSnapshot document,
         XamlSyntaxDocument parsedDocument,
         ImmutableArray<SemanticAnchor>.Builder anchors,
-        ImmutableArray<SemanticEdge>.Builder edges)
+        HashSet<string> anchorIds,
+        ImmutableArray<SemanticEdge>.Builder edges,
+        HashSet<string> edgeIds)
     {
         foreach (var diagnostic in parsedDocument.Diagnostics)
         {
-            AddAnchor(anchors, new SemanticAnchor(
+            AddAnchor(anchors, anchorIds, new SemanticAnchor(
                 $"{document.Id}:xaml-diagnostic:{diagnostic.Line}:{diagnostic.Column}",
                 document.Id,
                 new TextRange(0, 0, diagnostic.Line, diagnostic.Column),
@@ -77,15 +81,15 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         if (root is not null)
         {
             var namespaceMap = XamlNamespaceMap.Create(root);
-            var rootAnchor = AddAnchor(anchors, new SemanticAnchor(
+            var rootAnchor = AddAnchor(anchors, anchorIds, new SemanticAnchor(
                 $"{document.Id}:xaml-root:{ResolveTypeName(root, namespaceMap)}",
                 document.Id,
                 GetRange(root, root.Name.LocalName.Length),
                 SemanticAnchorKind.XamlRoot,
                 ResolveTypeName(root, namespaceMap)));
 
-            AddNamespaceAnchors(document, root, rootAnchor, namespaceMap, anchors, edges);
-            AddElementAnchors(document, root, rootAnchor, namespaceMap, anchors, edges);
+            AddNamespaceAnchors(document, root, rootAnchor, namespaceMap, anchors, anchorIds, edges, edgeIds);
+            AddElementAnchors(document, root, rootAnchor, namespaceMap, anchors, anchorIds, edges, edgeIds);
             return;
         }
 
@@ -95,9 +99,9 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         {
             var rootAnchorId = $"{document.Id}:xaml-root:fallback";
             var anchorId = $"{document.Id}:xaml-class:{classAttribute.Value}";
-            AddAnchor(anchors, new SemanticAnchor(rootAnchorId, document.Id, new TextRange(0, 0, 1, 1), SemanticAnchorKind.XamlRoot, document.Metadata.Path));
-            AddAnchor(anchors, new SemanticAnchor(anchorId, document.Id, new TextRange(classAttribute.StartIndex, classAttribute.Value.Length, classAttribute.Line, classAttribute.Column), SemanticAnchorKind.Type, classAttribute.Value));
-            AddEdge(edges, rootAnchorId, anchorId, SemanticEdgeKind.XamlClass, 0.72, "x:Class");
+            AddAnchor(anchors, anchorIds, new SemanticAnchor(rootAnchorId, document.Id, new TextRange(0, 0, 1, 1), SemanticAnchorKind.XamlRoot, document.Metadata.Path));
+            AddAnchor(anchors, anchorIds, new SemanticAnchor(anchorId, document.Id, new TextRange(classAttribute.StartIndex, classAttribute.Value.Length, classAttribute.Line, classAttribute.Column), SemanticAnchorKind.Type, classAttribute.Value));
+            AddEdge(edges, edgeIds, rootAnchorId, anchorId, SemanticEdgeKind.XamlClass, 0.72, "x:Class");
         }
     }
 
@@ -107,20 +111,22 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         SemanticAnchor rootAnchor,
         XamlNamespaceMap namespaceMap,
         ImmutableArray<SemanticAnchor>.Builder anchors,
-        ImmutableArray<SemanticEdge>.Builder edges)
+        HashSet<string> anchorIds,
+        ImmutableArray<SemanticEdge>.Builder edges,
+        HashSet<string> edgeIds)
     {
         foreach (var item in namespaceMap.Namespaces)
         {
             var displayName = string.IsNullOrWhiteSpace(item.Prefix)
                 ? item.NamespaceName
                 : $"{item.Prefix}={item.NamespaceName}";
-            var anchor = AddAnchor(anchors, new SemanticAnchor(
+            var anchor = AddAnchor(anchors, anchorIds, new SemanticAnchor(
                 $"{document.Id}:xaml-namespace:{displayName}",
                 document.Id,
                 GetRange(root, displayName.Length),
                 SemanticAnchorKind.Namespace,
                 displayName));
-            AddEdge(edges, rootAnchor.Id, anchor.Id, SemanticEdgeKind.Contains, 0.7, "xmlns");
+            AddEdge(edges, edgeIds, rootAnchor.Id, anchor.Id, SemanticEdgeKind.Contains, 0.7, "xmlns");
         }
     }
 
@@ -130,14 +136,16 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         SemanticAnchor rootAnchor,
         XamlNamespaceMap namespaceMap,
         ImmutableArray<SemanticAnchor>.Builder anchors,
-        ImmutableArray<SemanticEdge>.Builder edges)
+        HashSet<string> anchorIds,
+        ImmutableArray<SemanticEdge>.Builder edges,
+        HashSet<string> edgeIds)
     {
         foreach (var element in root.DescendantsAndSelf())
         {
             var elementTypeName = ResolveTypeName(element, namespaceMap);
             var elementAnchor = element == root
                 ? rootAnchor
-                : AddAnchor(anchors, new SemanticAnchor(
+                : AddAnchor(anchors, anchorIds, new SemanticAnchor(
                     $"{document.Id}:xaml-element:{elementTypeName}:{GetLine(element)}:{GetColumn(element)}",
                     document.Id,
                     GetRange(element, element.Name.LocalName.Length),
@@ -146,12 +154,12 @@ public sealed class XamlSemanticProvider : ISemanticProvider
 
             if (element != root)
             {
-                AddEdge(edges, rootAnchor.Id, elementAnchor.Id, SemanticEdgeKind.Contains, 0.68, element.Name.LocalName);
+                AddEdge(edges, edgeIds, rootAnchor.Id, elementAnchor.Id, SemanticEdgeKind.Contains, 0.68, element.Name.LocalName);
             }
 
             foreach (var attribute in element.Attributes())
             {
-                AddAttributeAnchor(document, attribute, elementAnchor, rootAnchor, anchors, edges);
+                AddAttributeAnchor(document, attribute, elementAnchor, rootAnchor, anchors, anchorIds, edges, edgeIds);
             }
         }
     }
@@ -162,7 +170,9 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         SemanticAnchor elementAnchor,
         SemanticAnchor rootAnchor,
         ImmutableArray<SemanticAnchor>.Builder anchors,
-        ImmutableArray<SemanticEdge>.Builder edges)
+        HashSet<string> anchorIds,
+        ImmutableArray<SemanticEdge>.Builder edges,
+        HashSet<string> edgeIds)
     {
         if (attribute.IsNamespaceDeclaration)
         {
@@ -172,13 +182,13 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         var localName = attribute.Name.LocalName;
         if (localName == "Class")
         {
-            var classAnchor = AddAnchor(anchors, new SemanticAnchor(
+            var classAnchor = AddAnchor(anchors, anchorIds, new SemanticAnchor(
                 $"{document.Id}:xaml-class:{attribute.Value}",
                 document.Id,
                 GetRange(attribute, attribute.Value.Length),
                 SemanticAnchorKind.Type,
                 attribute.Value));
-            AddEdge(edges, rootAnchor.Id, classAnchor.Id, SemanticEdgeKind.XamlClass, 0.94, "x:Class");
+            AddEdge(edges, edgeIds, rootAnchor.Id, classAnchor.Id, SemanticEdgeKind.XamlClass, 0.94, "x:Class");
             return;
         }
 
@@ -186,32 +196,32 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         {
             var kind = localName == "Key" ? SemanticAnchorKind.Resource : SemanticAnchorKind.XamlName;
             var edgeKind = localName == "Key" ? SemanticEdgeKind.Resource : SemanticEdgeKind.Contains;
-            var anchor = AddAnchor(anchors, new SemanticAnchor(
+            var anchor = AddAnchor(anchors, anchorIds, new SemanticAnchor(
                 $"{document.Id}:xaml-{localName}:{attribute.Value}",
                 document.Id,
                 GetRange(attribute, attribute.Value.Length),
                 kind,
                 attribute.Value));
-            AddEdge(edges, elementAnchor.Id, anchor.Id, edgeKind, 0.86, localName);
+            AddEdge(edges, edgeIds, elementAnchor.Id, anchor.Id, edgeKind, 0.86, localName);
             return;
         }
 
         foreach (var markupReference in MarkupReference.Parse(attribute.Value))
         {
             var kind = markupReference.Kind == SemanticEdgeKind.Binding ? SemanticAnchorKind.Binding : SemanticAnchorKind.Resource;
-            var anchor = AddAnchor(anchors, new SemanticAnchor(
+            var anchor = AddAnchor(anchors, anchorIds, new SemanticAnchor(
                 $"{document.Id}:xaml-{markupReference.Kind}:{attribute.Name.LocalName}:{markupReference.Value}",
                 document.Id,
                 GetRange(attribute, markupReference.Value.Length),
                 kind,
                 markupReference.Value));
-            AddEdge(edges, elementAnchor.Id, anchor.Id, markupReference.Kind, markupReference.Confidence, attribute.Name.LocalName);
+            AddEdge(edges, edgeIds, elementAnchor.Id, anchor.Id, markupReference.Kind, markupReference.Confidence, attribute.Name.LocalName);
         }
     }
 
-    private static SemanticAnchor AddAnchor(ImmutableArray<SemanticAnchor>.Builder anchors, SemanticAnchor anchor)
+    private static SemanticAnchor AddAnchor(ImmutableArray<SemanticAnchor>.Builder anchors, HashSet<string> anchorIds, SemanticAnchor anchor)
     {
-        if (!anchors.Any(existing => existing.Id == anchor.Id))
+        if (anchorIds.Add(anchor.Id))
         {
             anchors.Add(anchor);
         }
@@ -219,7 +229,7 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         return anchor;
     }
 
-    private static void AddEdge(ImmutableArray<SemanticEdge>.Builder edges, string sourceAnchorId, string targetAnchorId, SemanticEdgeKind kind, double confidence, string? label)
+    private static void AddEdge(ImmutableArray<SemanticEdge>.Builder edges, HashSet<string> edgeIds, string sourceAnchorId, string targetAnchorId, SemanticEdgeKind kind, double confidence, string? label)
     {
         if (sourceAnchorId == targetAnchorId)
         {
@@ -227,7 +237,7 @@ public sealed class XamlSemanticProvider : ISemanticProvider
         }
 
         var edgeId = $"{kind}:{sourceAnchorId}->{targetAnchorId}:{label}";
-        if (!edges.Any(edge => edge.Id == edgeId))
+        if (edgeIds.Add(edgeId))
         {
             edges.Add(new SemanticEdge(edgeId, sourceAnchorId, targetAnchorId, kind, confidence, label));
         }

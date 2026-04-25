@@ -1429,12 +1429,11 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 .ToImmutableArray();
 
         SemanticItems = filtered
-            .Take(80)
             .Select(SemanticNavigationItemViewModel.FromItem)
             .ToImmutableArray();
         SymbolCountText = string.IsNullOrWhiteSpace(query)
             ? FormatCount(allSemanticNavigationItems.Length, "symbol", "symbols")
-            : $"{SemanticItems.Length:N0}/{allSemanticNavigationItems.Length:N0} symbols";
+            : $"{filtered.Length:N0}/{allSemanticNavigationItems.Length:N0} symbols";
     }
 
     private static string FormatCount(int count, string singular, string plural) => $"{count:N0} {(count == 1 ? singular : plural)}";
