@@ -874,6 +874,17 @@ Current status: complete. Fresh loads and reset-style scene rebuilds now land fi
 
 Current status: complete. The left-rail splitter now gives platform cursor feedback that matches its resize behavior, making the hit target easier to discover and use.
 
+### Phase 33: Zoom-Safe Font Controls and Live Node Dragging
+
+- [x] Hide node font-size controls when the node title is too small on screen for stable interaction.
+- [x] Keep visible font-size controls inside the node title bar across usable zoom levels.
+- [x] Preserve screen-stable font-control hit targets without spilling outside zoomed-out nodes.
+- [x] Route canvas pointer hit testing through the owning canvas control so captured node drags repaint continuously.
+- [x] Add regression coverage for zoom-aware font controls and repeated node-drag position updates.
+- [x] Validate the change with compiler diagnostics and the full solution test suite.
+
+Current status: complete. Per-node font controls now behave predictably across zoom levels, and document node dragging updates through the canvas control during the drag instead of appearing only after the final position is reached.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.

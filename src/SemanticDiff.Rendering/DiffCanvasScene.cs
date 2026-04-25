@@ -13,6 +13,13 @@ public sealed class DiffNode
     public const double MinFontSize = 9;
     public const double MaxFontSize = 22;
     public const double FontSizeStep = 1;
+    public const double FontControlButtonScreenSize = 20;
+    public const double FontControlGapScreenSize = 5;
+    public const double FontControlRightInsetScreenSize = 98;
+    public const double FontControlLineCountInset = 100;
+    public const double FontControlLineCountGapScreenSize = 8;
+    public const double FontControlMinimumNodeScreenWidth = 220;
+    public const double FontControlMinimumTitleScreenHeight = 22;
 
     public DiffNode(DiffDocumentSnapshot document, Rect2 bounds, bool isPinned = false, double fontSize = DefaultFontSize)
     {
@@ -103,11 +110,29 @@ public sealed class DiffNode
 
     public Rect2 GetFontSizeButtonBounds(DiffNodeFontSizeAction action, double cameraScale)
     {
-        var buttonSize = DiffCanvasScene.ScreenStableWorldLength(cameraScale, 18);
-        var gap = DiffCanvasScene.ScreenStableWorldLength(cameraScale, 5);
-        var rightMargin = DiffCanvasScene.ScreenStableWorldLength(cameraScale, 116) + (action == DiffNodeFontSizeAction.Decrease ? buttonSize + gap : 0);
+        if (!CanShowFontSizeButtons(cameraScale))
+        {
+            return Rect2.Empty;
+        }
+
+        var buttonSize = DiffCanvasScene.ScreenStableWorldLength(cameraScale, FontControlButtonScreenSize);
+        var gap = DiffCanvasScene.ScreenStableWorldLength(cameraScale, FontControlGapScreenSize);
+        var rightInset = Math.Max(
+            DiffCanvasScene.ScreenStableWorldLength(cameraScale, FontControlRightInsetScreenSize),
+            FontControlLineCountInset + DiffCanvasScene.ScreenStableWorldLength(cameraScale, FontControlLineCountGapScreenSize));
+        var plusRight = Bounds.Right - rightInset;
+        var buttonLeft = action == DiffNodeFontSizeAction.Increase
+            ? plusRight - buttonSize
+            : plusRight - buttonSize * 2 - gap;
         var top = Bounds.Top + (TitleHeight - buttonSize) / 2;
-        return new Rect2(Bounds.Right - rightMargin, top, buttonSize, buttonSize);
+        return new Rect2(buttonLeft, top, buttonSize, buttonSize);
+    }
+
+    public bool CanShowFontSizeButtons(double cameraScale)
+    {
+        var scale = Math.Max(cameraScale, 0.01);
+        return Bounds.Width * scale >= FontControlMinimumNodeScreenWidth &&
+            TitleHeight * scale >= FontControlMinimumTitleScreenHeight;
     }
 
     private static double NormalizeFontSize(double fontSize) => double.IsFinite(fontSize)

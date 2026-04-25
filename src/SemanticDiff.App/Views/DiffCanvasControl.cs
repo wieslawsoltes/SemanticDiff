@@ -58,7 +58,10 @@ public sealed class DiffCanvasControl : Grid
     public DiffCanvasControl()
     {
         Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        canvas = new SKXamlCanvas();
+        canvas = new SKXamlCanvas
+        {
+            IsHitTestVisible = false
+        };
         canvas.PaintSurface += OnPaintSurface;
         Children.Add(canvas);
 

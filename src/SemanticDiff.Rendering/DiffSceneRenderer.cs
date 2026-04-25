@@ -237,6 +237,11 @@ public sealed class DiffSceneRenderer
 
     private static void DrawFontControls(SKCanvas canvas, DiffNode node, RendererPalette palette, double cameraScale)
     {
+        if (!node.CanShowFontSizeButtons(cameraScale))
+        {
+            return;
+        }
+
         using var fillPaint = new SKPaint { Color = palette.NodeBackground.WithAlpha(230), Style = SKPaintStyle.Fill, IsAntialias = true };
         using var strokePaint = new SKPaint { Color = palette.NodeBorder, Style = SKPaintStyle.Stroke, StrokeWidth = (float)DiffCanvasScene.ScreenStableWorldLength(cameraScale, 1), IsAntialias = true };
         using var textStyle = CreateUiTextStyle((float)DiffCanvasScene.ScreenStableWorldLength(cameraScale, 11), palette.TextColor, true);
@@ -247,6 +252,11 @@ public sealed class DiffSceneRenderer
 
     private static void DrawFontButton(SKCanvas canvas, Rect2 bounds, string text, SKPaint fillPaint, SKPaint strokePaint, TextStyle textStyle)
     {
+        if (bounds.IsEmpty)
+        {
+            return;
+        }
+
         var rect = ToRect(bounds);
         var radius = (float)Math.Max(1, bounds.Width * 0.22);
         canvas.DrawRoundRect(rect, radius, radius, fillPaint);

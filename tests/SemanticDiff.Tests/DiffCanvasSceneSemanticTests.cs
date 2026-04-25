@@ -94,6 +94,26 @@ public sealed class DiffCanvasSceneSemanticTests
     }
 
     [Fact]
+    public void MoveNodeTo_CanApplyContinuousPointerOffsetUpdates()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var scene = DiffCanvasScene.FromDocuments([document]);
+        var node = scene.Nodes[0];
+        var pointerOffset = new Point2(36, 14);
+
+        foreach (var pointerWorldPoint in new[] { new Point2(140, 80), new Point2(170, 112), new Point2(220, 160) })
+        {
+            scene.MoveNodeTo(node, pointerWorldPoint.X - pointerOffset.X, pointerWorldPoint.Y - pointerOffset.Y);
+
+            Assert.Equal(pointerWorldPoint.X - pointerOffset.X, node.Bounds.X);
+            Assert.Equal(pointerWorldPoint.Y - pointerOffset.Y, node.Bounds.Y);
+        }
+
+        Assert.True(node.IsPinned);
+    }
+
+    [Fact]
     public void TryHitTestTitleBar_DetectsChromeButNotBody()
     {
         var factory = new DiffDocumentFactory();
@@ -199,6 +219,49 @@ public sealed class DiffCanvasSceneSemanticTests
         Assert.True(node.FontSize > initialFontSize);
         Assert.True(node.LineHeight > initialLineHeight);
         Assert.True(node.IsPinned);
+    }
+
+    [Fact]
+    public void FontSizeButtons_AreHiddenWhenNodeIsTooSmallOnScreen()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var scene = DiffCanvasScene.FromDocuments([document]);
+        var node = scene.Nodes[0];
+
+        scene.ZoomAt(new Point2(120, 80), 0.2);
+
+        Assert.False(node.CanShowFontSizeButtons(scene.Camera.Scale));
+        Assert.True(node.GetFontSizeButtonBounds(DiffNodeFontSizeAction.Increase, scene.Camera.Scale).IsEmpty);
+        Assert.False(scene.TryHitTestFontSizeButton(scene.Camera.WorldToScreen(node.TitleBounds.Center), out _, out _));
+    }
+
+    [Fact]
+    public void FontSizeButtons_StayInsideNodeTitleAcrossUsableZoomLevels()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var scene = DiffCanvasScene.FromDocuments([document]);
+        var node = scene.Nodes[0];
+
+        AssertFontButtonsInsideTitle(node, scene.Camera.Scale);
+        scene.ZoomAt(new Point2(120, 80), 2.5);
+        AssertFontButtonsInsideTitle(node, scene.Camera.Scale);
+    }
+
+    private static void AssertFontButtonsInsideTitle(DiffNode node, double cameraScale)
+    {
+        Assert.True(node.CanShowFontSizeButtons(cameraScale));
+        foreach (var action in new[] { DiffNodeFontSizeAction.Decrease, DiffNodeFontSizeAction.Increase })
+        {
+            var bounds = node.GetFontSizeButtonBounds(action, cameraScale);
+            Assert.False(bounds.IsEmpty);
+            Assert.True(bounds.Left >= node.TitleBounds.Left);
+            Assert.True(bounds.Right <= node.TitleBounds.Right);
+            Assert.True(bounds.Right <= node.TitleBounds.Right - DiffNode.FontControlLineCountInset);
+            Assert.True(bounds.Top >= node.TitleBounds.Top);
+            Assert.True(bounds.Bottom <= node.TitleBounds.Bottom);
+        }
     }
 
     [Fact]
