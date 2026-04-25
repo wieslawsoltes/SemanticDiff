@@ -885,6 +885,19 @@ Current status: complete. The left-rail splitter now gives platform cursor feedb
 
 Current status: complete. Per-node font controls now behave predictably across zoom levels, and document node dragging updates through the canvas control during the drag instead of appearing only after the final position is reached.
 
+### Phase 34: Complete Diff Scope Coverage
+
+- [x] Review Git scope command generation for worktree, unstaged, staged, current-branch, explicit branch, commit range, and custom range modes.
+- [x] Include untracked files in unstaged and current-branch review scopes so newly added local files are not silently hidden.
+- [x] Compare current branch scope from the merge base to the working tree so committed branch changes and local tracked edits are both visible.
+- [x] Keep explicit commit/custom ranges as endpoint comparisons and keep explicit branch-head comparisons as merge-base branch comparisons.
+- [x] Enable copy detection and parse copied, renamed, conflicted, added, deleted, and modified status records without losing path data.
+- [x] Synthesize added/copied file diffs from the target revision when Git returns no patch body for a listed file.
+- [x] Prioritize added, untracked, copied, renamed, deleted, and conflicted files when the initial max-file cap would otherwise load only modified files.
+- [x] Add regression coverage for branch/untracked scope behavior, copy parsing, endpoint range commands, added-file fallback diffs, and capped initial loading.
+
+Current status: complete. Diff scope loading now preserves newly added files across unstaged and current-branch review, handles copy/rename/conflict records more accurately, and avoids letting the initial file cap hide structural changes behind a long modified-file list.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.

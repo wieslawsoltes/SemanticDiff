@@ -22,9 +22,13 @@ public sealed class GitDiffService : IGitDiffService
     public async Task<GitDiffSnapshot> GetDiffAsync(GitDiffRequest request, CancellationToken cancellationToken)
     {
         var defaultBranch = await defaultBranchDiscovery.DiscoverAsync(request.RepositoryPath, cancellationToken).ConfigureAwait(false);
-        var files = request.Scope == GitDiffScope.Worktree
-            ? await GetWorktreeFilesAsync(request, cancellationToken).ConfigureAwait(false)
-            : await GetNameStatusFilesAsync(request, defaultBranch, cancellationToken).ConfigureAwait(false);
+        var files = request.Scope switch
+        {
+            GitDiffScope.Worktree => await GetWorktreeFilesAsync(request, cancellationToken).ConfigureAwait(false),
+            GitDiffScope.Unstaged => await GetUnstagedFilesAsync(request, defaultBranch, cancellationToken).ConfigureAwait(false),
+            GitDiffScope.Branch when IsCurrentHeadReference(request.HeadRef) => await GetCurrentBranchFilesAsync(request, defaultBranch, cancellationToken).ConfigureAwait(false),
+            _ => await GetNameStatusFilesAsync(request, defaultBranch, cancellationToken).ConfigureAwait(false)
+        };
 
         return new GitDiffSnapshot(request.RepositoryPath, request, defaultBranch, files, DateTimeOffset.UtcNow);
     }
@@ -48,6 +52,16 @@ public sealed class GitDiffService : IGitDiffService
         var fileRequest = request with { PathFilter = pathFilter };
         var arguments = GitDiffCommandBuilder.BuildDiffArguments(fileRequest, defaultBranch);
         var result = await commandRunner.RunAsync(request.RepositoryPath, arguments, cancellationToken).ConfigureAwait(false);
+        if (result.Succeeded && !string.IsNullOrWhiteSpace(result.StandardOutput))
+        {
+            return new GitFileDiff(fileChange, result.StandardOutput);
+        }
+
+        if (fileChange.Status is DiffFileStatus.Added or DiffFileStatus.Copied)
+        {
+            var content = await GetFileContentAsync(request, fileChange, cancellationToken).ConfigureAwait(false);
+            return new GitFileDiff(fileChange, CreateAddedFileDiff(fileChange.Path, content));
+        }
 
         return new GitFileDiff(fileChange, result.Succeeded ? result.StandardOutput : string.Empty);
     }
@@ -59,7 +73,7 @@ public sealed class GitDiffService : IGitDiffService
             return string.Empty;
         }
 
-        if (ShouldReadWorktreeContent(request.Scope, fileChange.Status))
+        if (ShouldReadWorktreeContent(request, fileChange.Status))
         {
             var filePath = Path.Combine(request.RepositoryPath, fileChange.Path);
             return File.Exists(filePath)
@@ -91,10 +105,38 @@ public sealed class GitDiffService : IGitDiffService
         return result.Succeeded ? ParseNameStatus(result.StandardOutput) : ImmutableArray<GitFileChange>.Empty;
     }
 
+    private async Task<ImmutableArray<GitFileChange>> GetUnstagedFilesAsync(
+        GitDiffRequest request,
+        string? defaultBranch,
+        CancellationToken cancellationToken)
+    {
+        var trackedFiles = await GetNameStatusFilesAsync(request, defaultBranch, cancellationToken).ConfigureAwait(false);
+        var untrackedFiles = await GetUntrackedFilesAsync(request, cancellationToken).ConfigureAwait(false);
+        return MergeFileChanges(trackedFiles, untrackedFiles);
+    }
+
+    private async Task<ImmutableArray<GitFileChange>> GetCurrentBranchFilesAsync(
+        GitDiffRequest request,
+        string? defaultBranch,
+        CancellationToken cancellationToken)
+    {
+        var branchFiles = await GetNameStatusFilesAsync(request, defaultBranch, cancellationToken).ConfigureAwait(false);
+        var untrackedFiles = await GetUntrackedFilesAsync(request, cancellationToken).ConfigureAwait(false);
+        return MergeFileChanges(branchFiles, untrackedFiles);
+    }
+
     private async Task<ImmutableArray<GitFileChange>> GetWorktreeFilesAsync(GitDiffRequest request, CancellationToken cancellationToken)
     {
         var result = await commandRunner.RunAsync(request.RepositoryPath, GitDiffCommandBuilder.BuildWorktreeStatusArguments(), cancellationToken).ConfigureAwait(false);
         return result.Succeeded ? ParsePorcelainStatus(result.StandardOutput) : ImmutableArray<GitFileChange>.Empty;
+    }
+
+    private async Task<ImmutableArray<GitFileChange>> GetUntrackedFilesAsync(GitDiffRequest request, CancellationToken cancellationToken)
+    {
+        var result = await commandRunner.RunAsync(request.RepositoryPath, GitDiffCommandBuilder.BuildWorktreeStatusArguments(), cancellationToken).ConfigureAwait(false);
+        return result.Succeeded
+            ? ParsePorcelainStatus(result.StandardOutput).Where(file => file.Status == DiffFileStatus.Untracked).ToImmutableArray()
+            : ImmutableArray<GitFileChange>.Empty;
     }
 
     private static ImmutableArray<GitFileChange> ParseNameStatus(string output)
@@ -119,7 +161,7 @@ public sealed class GitDiffService : IGitDiffService
             string? oldPath = null;
             var path = tokens[++tokenIndex];
 
-            if (status == DiffFileStatus.Renamed && tokenIndex + 1 < tokens.Length)
+            if (status is DiffFileStatus.Renamed or DiffFileStatus.Copied && tokenIndex + 1 < tokens.Length)
             {
                 oldPath = path;
                 path = tokens[++tokenIndex];
@@ -169,6 +211,39 @@ public sealed class GitDiffService : IGitDiffService
             .ToImmutableArray();
     }
 
+    private static ImmutableArray<GitFileChange> MergeFileChanges(
+        ImmutableArray<GitFileChange> primaryFiles,
+        ImmutableArray<GitFileChange> additionalFiles)
+    {
+        if (primaryFiles.IsDefaultOrEmpty)
+        {
+            return additionalFiles.IsDefault ? ImmutableArray<GitFileChange>.Empty : additionalFiles;
+        }
+
+        if (additionalFiles.IsDefaultOrEmpty)
+        {
+            return primaryFiles;
+        }
+
+        var builder = ImmutableArray.CreateBuilder<GitFileChange>(primaryFiles.Length + additionalFiles.Length);
+        var seenPaths = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var file in primaryFiles)
+        {
+            builder.Add(file);
+            seenPaths.Add(file.Path);
+        }
+
+        foreach (var file in additionalFiles)
+        {
+            if (seenPaths.Add(file.Path))
+            {
+                builder.Add(file);
+            }
+        }
+
+        return builder.ToImmutable();
+    }
+
     private static DiffFileStatus ParseStatus(char status) => status switch
     {
         'A' => DiffFileStatus.Added,
@@ -187,9 +262,19 @@ public sealed class GitDiffService : IGitDiffService
             return DiffFileStatus.Untracked;
         }
 
+        if (IsUnmergedStatus(indexStatus, workTreeStatus))
+        {
+            return DiffFileStatus.Conflicted;
+        }
+
         if (indexStatus == 'R' || workTreeStatus == 'R')
         {
             return DiffFileStatus.Renamed;
+        }
+
+        if (indexStatus == 'C' || workTreeStatus == 'C')
+        {
+            return DiffFileStatus.Copied;
         }
 
         if (indexStatus == 'A' || workTreeStatus == 'A')
@@ -202,16 +287,13 @@ public sealed class GitDiffService : IGitDiffService
             return DiffFileStatus.Deleted;
         }
 
-        if (indexStatus == 'U' || workTreeStatus == 'U')
-        {
-            return DiffFileStatus.Conflicted;
-        }
-
         return DiffFileStatus.Modified;
     }
 
-    private static bool ShouldReadWorktreeContent(GitDiffScope scope, DiffFileStatus status) =>
-        status == DiffFileStatus.Untracked || scope is GitDiffScope.Worktree or GitDiffScope.Unstaged or GitDiffScope.Head;
+    private static bool ShouldReadWorktreeContent(GitDiffRequest request, DiffFileStatus status) =>
+        status == DiffFileStatus.Untracked ||
+        request.Scope is GitDiffScope.Worktree or GitDiffScope.Unstaged or GitDiffScope.Head ||
+        request.Scope == GitDiffScope.Branch && IsCurrentHeadReference(request.HeadRef);
 
     private static string? GetContentRevision(GitDiffRequest request) => request.Scope switch
     {
@@ -220,13 +302,22 @@ public sealed class GitDiffService : IGitDiffService
         _ => "HEAD"
     };
 
+    private static bool IsCurrentHeadReference(string? reference) =>
+        string.IsNullOrWhiteSpace(reference) || string.Equals(reference.Trim(), "HEAD", StringComparison.Ordinal);
+
+    private static bool IsUnmergedStatus(char indexStatus, char workTreeStatus) =>
+        indexStatus == 'U' ||
+        workTreeStatus == 'U' ||
+        indexStatus == 'A' && workTreeStatus == 'A' ||
+        indexStatus == 'D' && workTreeStatus == 'D';
+
     private static string CreateAddedFileDiff(string path, string text)
     {
-        var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n');
+        var lines = SplitPatchLines(text);
         var builder = new System.Text.StringBuilder();
         builder.AppendLine("--- /dev/null");
         builder.Append("+++ b/").AppendLine(path);
-        builder.Append("@@ -0,0 +1,").Append(lines.Length).AppendLine(" @@");
+        builder.Append("@@ -0,0 +").Append(lines.Count == 0 ? 0 : 1).Append(',').Append(lines.Count).AppendLine(" @@");
 
         foreach (var line in lines)
         {
@@ -234,6 +325,18 @@ public sealed class GitDiffService : IGitDiffService
         }
 
         return builder.ToString();
+    }
+
+    private static IReadOnlyList<string> SplitPatchLines(string text)
+    {
+        var normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        if (normalized.Length == 0)
+        {
+            return [];
+        }
+
+        var lines = normalized.Split('\n');
+        return lines.Length > 0 && lines[^1].Length == 0 ? lines[..^1] : lines;
     }
 
     private static string LanguageFromPath(string path)

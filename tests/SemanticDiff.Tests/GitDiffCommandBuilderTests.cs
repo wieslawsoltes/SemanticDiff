@@ -6,13 +6,25 @@ namespace SemanticDiff.Tests;
 public sealed class GitDiffCommandBuilderTests
 {
     [Fact]
-    public void BuildDiffArguments_UsesDefaultBranchForBranchDiff()
+    public void BuildDiffArguments_UsesMergeBaseForCurrentBranchDiff()
     {
         var request = new GitDiffRequest("/repo", GitDiffScope.Branch);
 
         var arguments = GitDiffCommandBuilder.BuildDiffArguments(request, "origin/main");
 
-        Assert.Contains("origin/main...HEAD", arguments);
+        Assert.Contains("--merge-base", arguments);
+        Assert.Contains("origin/main", arguments);
+        Assert.DoesNotContain("origin/main...HEAD", arguments);
+    }
+
+    [Fact]
+    public void BuildDiffArguments_UsesExplicitHeadForBranchDiff()
+    {
+        var request = new GitDiffRequest("/repo", GitDiffScope.Branch, "origin/main", "feature/review");
+
+        var arguments = GitDiffCommandBuilder.BuildDiffArguments(request, "origin/main");
+
+        Assert.Contains("origin/main...feature/review", arguments);
     }
 
     [Fact]
@@ -78,6 +90,16 @@ public sealed class GitDiffCommandBuilderTests
 
         var arguments = GitDiffCommandBuilder.BuildDiffArguments(request, "origin/main");
 
-        Assert.Contains("v1.0...feature/diff", arguments);
+        Assert.Contains("v1.0..feature/diff", arguments);
+    }
+
+    [Fact]
+    public void BuildDiffArguments_EnablesCopyDetection()
+    {
+        var request = new GitDiffRequest("/repo", GitDiffScope.Worktree);
+
+        var arguments = GitDiffCommandBuilder.BuildDiffArguments(request, null);
+
+        Assert.Contains("--find-copies", arguments);
     }
 }

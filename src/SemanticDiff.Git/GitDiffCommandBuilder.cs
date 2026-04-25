@@ -7,12 +7,14 @@ public static class GitDiffCommandBuilder
     public static IReadOnlyList<string> BuildDiffArguments(GitDiffRequest request, string? defaultBranch)
     {
         var contextLines = Math.Clamp(request.ContextLines, 0, 1_000_000);
-        var arguments = new List<string> { "diff", "--find-renames", "--no-ext-diff", $"--unified={contextLines}" };
+        var arguments = new List<string> { "diff", "--find-renames", "--find-copies", "--no-ext-diff", $"--unified={contextLines}" };
 
         switch (request.Scope)
         {
             case GitDiffScope.Worktree:
                 arguments.Add("HEAD");
+                break;
+            case GitDiffScope.Unstaged:
                 break;
             case GitDiffScope.Staged:
                 arguments.Add("--cached");
@@ -21,13 +23,13 @@ public static class GitDiffCommandBuilder
                 arguments.Add("HEAD");
                 break;
             case GitDiffScope.Branch:
-                arguments.Add(BuildBranchRange(request, defaultBranch));
+                AddBranchArguments(arguments, request, defaultBranch);
                 break;
             case GitDiffScope.CommitRange:
             case GitDiffScope.Custom:
-                if (!string.IsNullOrWhiteSpace(request.BaseRef) && !string.IsNullOrWhiteSpace(request.HeadRef))
+                if (BuildEndpointRange(request) is { } range)
                 {
-                    arguments.Add($"{request.BaseRef}...{request.HeadRef}");
+                    arguments.Add(range);
                 }
                 break;
         }
@@ -55,10 +57,30 @@ public static class GitDiffCommandBuilder
     public static IReadOnlyList<string> BuildWorktreeStatusArguments() =>
         ["status", "--porcelain=v1", "-z", "--untracked-files=all"];
 
-    private static string BuildBranchRange(GitDiffRequest request, string? defaultBranch)
+    private static void AddBranchArguments(List<string> arguments, GitDiffRequest request, string? defaultBranch)
     {
-        var baseRef = request.BaseRef ?? defaultBranch ?? "origin/main";
-        var headRef = request.HeadRef ?? "HEAD";
-        return $"{baseRef}...{headRef}";
+        var baseRef = NormalizeRef(request.BaseRef) ?? defaultBranch ?? "origin/main";
+        var headRef = NormalizeRef(request.HeadRef);
+
+        if (IsCurrentHeadReference(headRef))
+        {
+            arguments.Add("--merge-base");
+            arguments.Add(baseRef);
+            return;
+        }
+
+        arguments.Add($"{baseRef}...{headRef}");
     }
+
+    private static string? BuildEndpointRange(GitDiffRequest request)
+    {
+        var baseRef = NormalizeRef(request.BaseRef);
+        var headRef = NormalizeRef(request.HeadRef);
+        return baseRef is not null && headRef is not null ? $"{baseRef}..{headRef}" : null;
+    }
+
+    private static string? NormalizeRef(string? reference) => string.IsNullOrWhiteSpace(reference) ? null : reference.Trim();
+
+    private static bool IsCurrentHeadReference(string? reference) =>
+        string.IsNullOrWhiteSpace(reference) || string.Equals(reference.Trim(), "HEAD", StringComparison.Ordinal);
 }

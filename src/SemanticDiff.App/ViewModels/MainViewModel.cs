@@ -1243,9 +1243,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         var baseRef = NormalizeRef(request.BaseRef) ?? defaultBranch ?? (request.Scope == GitDiffScope.Branch ? "default" : "base");
         var headRef = NormalizeRef(request.HeadRef) ?? "HEAD";
-        return request.Scope is GitDiffScope.Branch or GitDiffScope.CommitRange or GitDiffScope.Custom
-            ? $"range {baseRef}...{headRef}"
-            : $"base {defaultBranch ?? "unknown"}";
+        return request.Scope switch
+        {
+            GitDiffScope.Branch when string.Equals(headRef, "HEAD", StringComparison.Ordinal) => $"range {baseRef}...HEAD + worktree",
+            GitDiffScope.Branch => $"range {baseRef}...{headRef}",
+            GitDiffScope.CommitRange or GitDiffScope.Custom => $"range {baseRef}..{headRef}",
+            _ => $"base {defaultBranch ?? "unknown"}"
+        };
     }
 
     private static string FormatReviewMode(DiffReviewMode reviewMode) => reviewMode switch
