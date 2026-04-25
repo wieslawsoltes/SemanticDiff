@@ -1,0 +1,135 @@
+using SemanticDiff.Diff;
+using SemanticDiff.Core;
+using SemanticDiff.Rendering;
+using SkiaSharp;
+
+namespace SemanticDiff.Tests;
+
+public sealed class DiffSceneRendererTests
+{
+    [Fact]
+    public void Render_UsesDifferentBackgroundsForLightAndDarkThemes()
+    {
+        var scene = DiffCanvasScene.FromDocuments(SampleDiffDocuments.Create());
+        var renderer = new DiffSceneRenderer();
+
+        using var darkSurface = SKSurface.Create(new SKImageInfo(320, 240));
+        using var lightSurface = SKSurface.Create(new SKImageInfo(320, 240));
+
+        renderer.Render(darkSurface.Canvas, new SKSize(320, 240), scene, DiffCanvasColorTheme.Dark);
+        renderer.Render(lightSurface.Canvas, new SKSize(320, 240), scene, DiffCanvasColorTheme.Light);
+
+        using var darkImage = darkSurface.Snapshot();
+        using var lightImage = lightSurface.Snapshot();
+        Assert.NotEqual(darkImage.PeekPixels().GetPixelColor(0, 0), lightImage.PeekPixels().GetPixelColor(0, 0));
+    }
+
+    [Fact]
+    public void Render_AcceptsDocumentsWithInlineDiffSpans()
+    {
+        var scene = DiffCanvasScene.FromDocuments(InlineDiffAnnotator.Annotate(SampleDiffDocuments.Create()));
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(800, 600));
+
+        renderer.Render(surface.Canvas, new SKSize(800, 600), scene, DiffCanvasColorTheme.Dark);
+
+        using var image = surface.Snapshot();
+        Assert.NotEqual(SKColors.Transparent, image.PeekPixels().GetPixelColor(40, 40));
+    }
+
+    [Fact]
+    public void Render_AcceptsDocumentsWithConflictLines()
+    {
+        var factory = new DiffDocumentFactory();
+        var metadata = new DiffDocumentMetadata(new DiffDocumentId("Conflict.cs"), "Conflict.cs", null, DiffFileStatus.Conflicted, "C#", 0, 0);
+        var document = factory.CreateFromText(metadata, "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch");
+        var scene = DiffCanvasScene.FromDocuments([new DiffConflictAnalyzer().Highlight(document)]);
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(800, 600));
+
+        renderer.Render(surface.Canvas, new SKSize(800, 600), scene, DiffCanvasColorTheme.Dark);
+
+        using var image = surface.Snapshot();
+        Assert.NotEqual(SKColors.Transparent, image.PeekPixels().GetPixelColor(40, 40));
+    }
+
+    [Fact]
+    public void Render_DrawsVisibleLineAnnotations()
+    {
+        var documents = SampleDiffDocuments.Create();
+        var document = documents[0];
+        var annotation = DiffAnnotation.Line(
+            document.Id,
+            DiffAnnotationKind.Conflict,
+            0,
+            1,
+            "conflict",
+            "Unresolved conflict",
+            DiffAnnotationSeverity.Error);
+        var visibleScene = DiffCanvasScene.FromDocuments(documents, annotations: [annotation]);
+        var hiddenScene = DiffCanvasScene.FromDocuments(
+            documents,
+            annotations: [annotation],
+            annotationVisibility: new DiffAnnotationVisibilityState(ShowReview: false));
+        var renderer = new DiffSceneRenderer();
+
+        using var visibleSurface = SKSurface.Create(new SKImageInfo(800, 600));
+        using var hiddenSurface = SKSurface.Create(new SKImageInfo(800, 600));
+
+        renderer.Render(visibleSurface.Canvas, new SKSize(800, 600), visibleScene, DiffCanvasColorTheme.Dark);
+        renderer.Render(hiddenSurface.Canvas, new SKSize(800, 600), hiddenScene, DiffCanvasColorTheme.Dark);
+
+        using var visibleImage = visibleSurface.Snapshot();
+        using var hiddenImage = hiddenSurface.Snapshot();
+        var visiblePixels = visibleImage.PeekPixels();
+        var hiddenPixels = hiddenImage.PeekPixels();
+        var differingPixels = 0;
+        for (var y = 64; y < 94; y++)
+        {
+            for (var x = 552; x < 652; x++)
+            {
+                if (hiddenPixels.GetPixelColor(x, y) != visiblePixels.GetPixelColor(x, y))
+                {
+                    differingPixels++;
+                }
+            }
+        }
+
+        Assert.True(differingPixels > 0);
+    }
+
+    [Fact]
+    public void Render_UsesDistinctIndustryStatusColorsForNodeBadges()
+    {
+        var added = RenderStatusBadgePixel(DiffFileStatus.Added);
+        var modified = RenderStatusBadgePixel(DiffFileStatus.Modified);
+        var deleted = RenderStatusBadgePixel(DiffFileStatus.Deleted);
+        var renamed = RenderStatusBadgePixel(DiffFileStatus.Renamed);
+
+        Assert.True(added.Green > added.Red);
+        Assert.True(modified.Red > modified.Blue && modified.Green > modified.Blue);
+        Assert.True(deleted.Red > deleted.Green);
+        Assert.True(renamed.Blue > renamed.Green);
+        Assert.NotEqual(added, modified);
+        Assert.NotEqual(modified, deleted);
+        Assert.NotEqual(deleted, renamed);
+    }
+
+    private static SKColor RenderStatusBadgePixel(DiffFileStatus status)
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId($"{status}.cs"), $"{status}.cs", null, status, "C#", 0, 0),
+            "class Sample { }");
+        var scene = DiffCanvasScene.FromDocuments([document]);
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(240, 160));
+        renderer.Render(surface.Canvas, new SKSize(240, 160), scene, DiffCanvasColorTheme.Dark);
+
+        using var image = surface.Snapshot();
+        return image.PeekPixels().GetPixelColor(48, 48);
+    }
+}

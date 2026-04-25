@@ -1,0 +1,32 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SemanticDiff.Core\SemanticDiff.Core.csproj" />
+    <ProjectReference Include="..\..\src\SemanticDiff.Diff\SemanticDiff.Diff.csproj" />
+    <ProjectReference Include="..\..\src\SemanticDiff.Git\SemanticDiff.Git.csproj" />
+    <ProjectReference Include="..\..\src\SemanticDiff.Layout\SemanticDiff.Layout.csproj" />
+    <ProjectReference Include="..\..\src\SemanticDiff.Rendering\SemanticDiff.Rendering.csproj" />
+    <ProjectReference Include="..\..\src\SemanticDiff.Semantics\SemanticDiff.Semantics.csproj" />
+    <ProjectReference Include="..\..\src\SemanticDiff.Semantics.Roslyn\SemanticDiff.Semantics.Roslyn.csproj" />
+    <ProjectReference Include="..\..\src\SemanticDiff.Semantics.Xaml\SemanticDiff.Semantics.Xaml.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>
