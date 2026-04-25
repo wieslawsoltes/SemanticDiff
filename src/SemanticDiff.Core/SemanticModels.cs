@@ -82,6 +82,15 @@ public enum GraphLayoutMode
     StatusLanes
 }
 
+public enum GraphGroupingMode
+{
+    None,
+    Folder,
+    Semantic,
+    Language,
+    Status
+}
+
 public sealed record GraphLayoutRequest(
     ImmutableArray<DiffDocumentSnapshot> Documents,
     SemanticGraph SemanticGraph,

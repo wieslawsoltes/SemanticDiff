@@ -405,6 +405,15 @@
                             DisplayMemberPath="DisplayName"
                             Style="{StaticResource CompactComboBoxStyle}"
                             SelectionChanged="OnLayoutModeSelectionChanged" />
+                  <Grid ColumnDefinitions="*,Auto" Margin="0,4,0,0">
+                    <TextBlock Text="Grouping" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.GroupingModeText, Mode=OneWay}" Foreground="{ThemeResource AccentBrush}" FontSize="10" />
+                  </Grid>
+                  <ComboBox ItemsSource="{x:Bind ViewModel.GroupingModeOptions, Mode=OneWay}"
+                            SelectedItem="{x:Bind ViewModel.SelectedGroupingModeOption, Mode=TwoWay}"
+                            DisplayMemberPath="DisplayName"
+                            Style="{StaticResource CompactComboBoxStyle}"
+                            SelectionChanged="OnGroupingModeSelectionChanged" />
                 </StackPanel>
 
                 <StackPanel Spacing="8">

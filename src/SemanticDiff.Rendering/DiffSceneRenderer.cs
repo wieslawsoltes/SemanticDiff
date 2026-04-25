@@ -107,6 +107,9 @@ public sealed class DiffSceneRenderer
         var visibleNodes = scene.Nodes
             .Where(node => node.Bounds.Intersects(worldViewport))
             .ToArray();
+        var visibleGroups = scene.Groups
+            .Where(group => group.Bounds.Intersects(worldViewport))
+            .ToArray();
         var visibleDocumentIds = visibleNodes
             .Select(node => node.Document.Id)
             .ToHashSet();
@@ -118,6 +121,11 @@ public sealed class DiffSceneRenderer
         canvas.Save();
         canvas.Translate((float)scene.Camera.OffsetX, (float)scene.Camera.OffsetY);
         canvas.Scale((float)scene.Camera.Scale);
+
+        foreach (var group in visibleGroups)
+        {
+            DrawGroupRegion(canvas, group, palette, scene.Camera.Scale);
+        }
 
         foreach (var edge in scene.Edges)
         {
@@ -144,6 +152,55 @@ public sealed class DiffSceneRenderer
 
         LastRenderStats = new(scene.Nodes.Count, visibleNodes.Length, visibleNodes.Length, scene.Edges.Count, drawnEdges);
         canvas.Restore();
+        DrawGroupLabels(canvas, scene.Camera, visibleGroups, palette, canvasSize);
+    }
+
+    private static void DrawGroupRegion(SKCanvas canvas, GraphGroup group, RendererPalette palette, double cameraScale)
+    {
+        var color = GroupColor(group, palette);
+        var rect = ToRect(group.Bounds);
+        var radius = (float)DiffCanvasScene.ScreenStableWorldLength(cameraScale, 10);
+        using var fillPaint = new SKPaint { Color = color.WithAlpha(24), Style = SKPaintStyle.Fill, IsAntialias = true };
+        using var strokePaint = new SKPaint
+        {
+            Color = color.WithAlpha(145),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = (float)DiffCanvasScene.ScreenStableWorldLength(cameraScale, 1.4),
+            IsAntialias = true
+        };
+
+        canvas.DrawRoundRect(rect, radius, radius, fillPaint);
+        canvas.DrawRoundRect(rect, radius, radius, strokePaint);
+    }
+
+    private static void DrawGroupLabels(SKCanvas canvas, CameraState camera, IReadOnlyList<GraphGroup> groups, RendererPalette palette, SKSize canvasSize)
+    {
+        if (groups.Count == 0)
+        {
+            return;
+        }
+
+        using var textStyle = CreateUiTextStyle(11, palette.TextColor, true);
+        foreach (var group in groups)
+        {
+            var color = GroupColor(group, palette);
+            var labelPoint = camera.WorldToScreen(new Point2(group.Bounds.Left + 14, group.Bounds.Top + 9));
+            var label = group.SummaryText;
+            var width = Math.Clamp(textStyle.Font.MeasureText(label, textStyle.Paint) + 18, 72, 260);
+            var rect = SKRect.Create((float)labelPoint.X, (float)labelPoint.Y, width, 22);
+            if (rect.Right < 0 || rect.Left > canvasSize.Width || rect.Bottom < 0 || rect.Top > canvasSize.Height)
+            {
+                continue;
+            }
+
+            using var chipFill = new SKPaint { Color = palette.Background.WithAlpha(232), Style = SKPaintStyle.Fill, IsAntialias = true };
+            using var chipStroke = new SKPaint { Color = color.WithAlpha(210), Style = SKPaintStyle.Stroke, StrokeWidth = 1.2f, IsAntialias = true };
+            using var accent = new SKPaint { Color = color.WithAlpha(220), Style = SKPaintStyle.Fill, IsAntialias = true };
+            canvas.DrawRoundRect(rect, 4, 4, chipFill);
+            canvas.DrawRoundRect(rect, 4, 4, chipStroke);
+            canvas.DrawRoundRect(SKRect.Create(rect.Left + 6, rect.Top + 6, 4, 10), 2, 2, accent);
+            canvas.DrawText(label, rect.Left + 15, rect.Top + 15, textStyle.Font, textStyle.Paint);
+        }
     }
 
     private static Rect2 GetWorldViewport(CameraState camera, SKSize canvasSize)
@@ -617,6 +674,35 @@ public sealed class DiffSceneRenderer
         SemanticEdgeKind.PartialClass => palette.PartialClass,
         _ => palette.EdgeColor
     };
+
+    private static SKColor GroupColor(GraphGroup group, RendererPalette palette)
+    {
+        if (group.Mode == GraphGroupingMode.Status)
+        {
+            return group.Label switch
+            {
+                "Added" or "Untracked" => palette.NodeAdded,
+                "Deleted" => palette.NodeDeleted,
+                "Renamed" or "Copied" => palette.NodeRenamed,
+                "Conflicted" => palette.NodeConflict,
+                "Modified" => palette.NodeModified,
+                _ => palette.EdgeColor
+            };
+        }
+
+        var colors = new[]
+        {
+            palette.EdgeColor,
+            palette.Type,
+            palette.Property,
+            palette.String,
+            palette.NodeModified,
+            palette.NodeRenamed,
+            palette.NodeAdded,
+            palette.Warning
+        };
+        return colors[Math.Clamp(group.ColorIndex, 0, colors.Length - 1)];
+    }
 
     private static SKColor AnnotationColor(DiffAnnotationKind kind, RendererPalette palette) => kind switch
     {

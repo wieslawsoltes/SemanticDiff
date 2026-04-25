@@ -946,6 +946,18 @@ Current status: complete. New sessions now start with the semantic layered graph
 
 Current status: complete. Branch-mode graphs now fit correctly at very large world sizes, layered layouts use stronger document-level semantic signals, disconnected clusters are packed more tightly, and semantic inference avoids generic XAML false positives while adding more useful resource and binding relationships.
 
+### Phase 39: Graph Grouping Visualization
+
+- [x] Add a persisted graph grouping mode for None, Folders, Semantic, Language, and Status grouping.
+- [x] Build folder-area groups from laid-out document nodes so large branch graphs show changed repository areas such as `src/App` and `tests/App.Tests`.
+- [x] Build semantic groups from document language and semantic anchors so XAML/UI, C# symbols, tests, projects, resources, docs, and config changes can be spotted quickly.
+- [x] Render cullable group regions behind nodes with stable screen-readable labels and compact document counts.
+- [x] Expose grouping selection in the Settings layout section without forcing a graph relayout or losing camera/node state.
+- [x] Add regression coverage for grouping state persistence, folder grouping, semantic grouping, disabled grouping, and group-region rendering.
+- [x] Validate the change with focused tests and the full solution test suite.
+
+Current status: complete. The canvas can now overlay folder, semantic, language, or status group regions on top of any layout mode, making large change sets easier to scan by repository area or semantic purpose without hiding individual document nodes.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.

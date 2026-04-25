@@ -185,6 +185,14 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string layoutModeText = "Layered";
 
+    public ImmutableArray<GroupingModeOptionViewModel> GroupingModeOptions { get; } = GroupingModeOptionViewModel.All;
+
+    [ObservableProperty]
+    private GroupingModeOptionViewModel selectedGroupingModeOption = GroupingModeOptionViewModel.All[1];
+
+    [ObservableProperty]
+    private string groupingModeText = "Folders";
+
     [ObservableProperty]
     private bool isSemanticWorkspaceModeSelected = true;
 
@@ -500,6 +508,25 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         await SaveOptionsAsync(CancellationToken.None);
         AddDiagnostic("Info", $"Layout mode changed to {FormatLayoutMode(layoutMode)}");
         await RelayoutAsync(currentScene);
+    }
+
+    public async Task SetGroupingModeAsync(GraphGroupingMode groupingMode)
+    {
+        if (appState.GroupingMode == groupingMode)
+        {
+            ApplyAppStateToPresentation();
+            return;
+        }
+
+        var viewState = Scene.CaptureViewState();
+        CaptureLayoutState(Scene);
+        appState = appState with { GroupingMode = groupingMode };
+        ApplyAppStateToPresentation();
+        var nextScene = CreateScene(currentDocuments, currentSemanticGraph, previousLayout);
+        nextScene.ApplyViewState(viewState);
+        Scene = nextScene;
+        await SaveOptionsAsync(CancellationToken.None);
+        AddDiagnostic("Info", $"Grouping changed to {FormatGroupingMode(groupingMode)}");
     }
 
     public async Task SetVisualizationLayerAsync(string layer, bool isEnabled)
@@ -993,6 +1020,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             AnnotationVisibility = appState.EffectiveAnnotationVisibility,
             SemanticAnalysisMode = appState.SemanticAnalysisMode,
             LayoutMode = appState.LayoutMode,
+            GroupingMode = appState.GroupingMode,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth),
             LayoutNodes = currentDocumentsAreRepositoryDocuments ? layoutNodes : appState.LayoutNodes
         };
@@ -1016,6 +1044,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             AnnotationVisibility = appState.EffectiveAnnotationVisibility,
             SemanticAnalysisMode = appState.SemanticAnalysisMode,
             LayoutMode = appState.LayoutMode,
+            GroupingMode = appState.GroupingMode,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth)
         };
         await appStateStore.SaveAsync(appState, cancellationToken);
@@ -1051,6 +1080,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         SemanticAnalysisModeText = FormatSemanticAnalysisMode(appState.SemanticAnalysisMode);
         LayoutModeText = FormatLayoutMode(appState.LayoutMode);
         SelectedLayoutModeOption = LayoutModeOptions.FirstOrDefault(option => option.Mode == appState.LayoutMode) ?? LayoutModeOptions[1];
+        GroupingModeText = FormatGroupingMode(appState.GroupingMode);
+        SelectedGroupingModeOption = GroupingModeOptions.FirstOrDefault(option => option.Mode == appState.GroupingMode) ?? GroupingModeOptions[1];
         IsSemanticWorkspaceModeSelected = appState.SemanticAnalysisMode == SemanticAnalysisMode.WorkspaceThenSyntax;
         IsSemanticFastModeSelected = appState.SemanticAnalysisMode == SemanticAnalysisMode.FastSyntaxOnly;
         ApplyAnnotationVisibilityToPresentation();
@@ -1269,6 +1300,15 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         GraphLayoutMode.CompactGrid => "Compact grid",
         GraphLayoutMode.StatusLanes => "Status lanes",
         _ => "Auto"
+    };
+
+    private static string FormatGroupingMode(GraphGroupingMode groupingMode) => groupingMode switch
+    {
+        GraphGroupingMode.None => "None",
+        GraphGroupingMode.Semantic => "Semantic",
+        GraphGroupingMode.Language => "Language",
+        GraphGroupingMode.Status => "Status",
+        _ => "Folders"
     };
 
     private void SelectExplorerItem(ExplorerItemViewModel? item)
@@ -1537,7 +1577,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             layout,
             CreateEdgeOptions(),
             CreateAnnotations(documents, semanticGraph),
-            appState.EffectiveAnnotationVisibility);
+            appState.EffectiveAnnotationVisibility,
+            appState.GroupingMode);
 
     private void RefreshSceneAnnotations()
     {
@@ -1672,6 +1713,20 @@ public sealed record LayoutModeOptionViewModel(GraphLayoutMode Mode, string Disp
         new(GraphLayoutMode.Grid, "Grid"),
         new(GraphLayoutMode.CompactGrid, "Compact grid"),
         new(GraphLayoutMode.StatusLanes, "Status lanes")
+    ];
+
+    public override string ToString() => DisplayName;
+}
+
+public sealed record GroupingModeOptionViewModel(GraphGroupingMode Mode, string DisplayName)
+{
+    public static ImmutableArray<GroupingModeOptionViewModel> All { get; } =
+    [
+        new(GraphGroupingMode.None, "None"),
+        new(GraphGroupingMode.Folder, "Folders"),
+        new(GraphGroupingMode.Semantic, "Semantic"),
+        new(GraphGroupingMode.Language, "Language"),
+        new(GraphGroupingMode.Status, "Status")
     ];
 
     public override string ToString() => DisplayName;

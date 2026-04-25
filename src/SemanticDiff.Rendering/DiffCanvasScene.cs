@@ -191,6 +191,19 @@ public sealed record DiffCanvasSceneViewState(CameraState Camera, ImmutableArray
 
 public sealed record GraphEdge(string SourceNodeId, string TargetNodeId, SemanticEdgeKind Kind, double Confidence, string? Label, int BundleCount = 1);
 
+public sealed record GraphGroup(
+    string Id,
+    GraphGroupingMode Mode,
+    string Label,
+    Rect2 Bounds,
+    int DocumentCount,
+    int AddedLines,
+    int DeletedLines,
+    int ColorIndex)
+{
+    public string SummaryText => DocumentCount == 1 ? Label : $"{Label} ({DocumentCount:N0})";
+}
+
 public sealed record EdgeProjectionOptions(
     double MinimumConfidence = 0.65,
     int MaxEdgesPerDocumentPair = 1,
@@ -203,16 +216,19 @@ public sealed class DiffCanvasScene
 
     private readonly List<DiffNode> nodes;
     private readonly List<GraphEdge> edges;
+    private readonly ImmutableArray<GraphGroup> groups;
     private readonly ImmutableArray<DiffAnnotation> annotations;
 
     public DiffCanvasScene(
         IEnumerable<DiffNode> nodes,
         IEnumerable<GraphEdge> edges,
+        ImmutableArray<GraphGroup> groups = default,
         ImmutableArray<DiffAnnotation> annotations = default,
         DiffAnnotationVisibilityState? annotationVisibility = null)
     {
         this.nodes = nodes.ToList();
         this.edges = edges.ToList();
+        this.groups = groups.IsDefault ? ImmutableArray<GraphGroup>.Empty : groups;
         this.annotations = annotations.IsDefault ? ImmutableArray<DiffAnnotation>.Empty : annotations;
         AnnotationVisibility = annotationVisibility ?? DiffAnnotationVisibilityState.Default;
     }
@@ -221,13 +237,15 @@ public sealed class DiffCanvasScene
 
     public IReadOnlyList<GraphEdge> Edges => edges;
 
+    public ImmutableArray<GraphGroup> Groups => groups;
+
     public ImmutableArray<DiffAnnotation> Annotations => annotations;
 
     public DiffAnnotationVisibilityState AnnotationVisibility { get; }
 
     public CameraState Camera { get; private set; } = CameraState.Default;
 
-    public Rect2 GraphBounds => Rect2.Union(nodes.Select(node => node.Bounds));
+    public Rect2 GraphBounds => Rect2.Union(nodes.Select(node => node.Bounds).Concat(groups.Select(group => group.Bounds)));
 
     public static double ScreenStableWorldLength(double cameraScale, double screenPixels) => screenPixels / Math.Max(cameraScale, 0.01);
 
@@ -556,7 +574,7 @@ public sealed class DiffCanvasScene
 
     public DiffCanvasScene WithAnnotations(ImmutableArray<DiffAnnotation> nextAnnotations, DiffAnnotationVisibilityState annotationVisibility)
     {
-        var nextScene = new DiffCanvasScene(nodes, edges, nextAnnotations, annotationVisibility)
+        var nextScene = new DiffCanvasScene(nodes, edges, groups, nextAnnotations, annotationVisibility)
         {
             Camera = Camera
         };
@@ -569,7 +587,8 @@ public sealed class DiffCanvasScene
         GraphLayoutResult? layoutResult = null,
         EdgeProjectionOptions? edgeOptions = null,
         ImmutableArray<DiffAnnotation> annotations = default,
-        DiffAnnotationVisibilityState? annotationVisibility = null)
+        DiffAnnotationVisibilityState? annotationVisibility = null,
+        GraphGroupingMode groupingMode = GraphGroupingMode.Folder)
     {
         var nodeWidth = 620.0;
         var nodeHeight = 420.0;
@@ -585,7 +604,7 @@ public sealed class DiffCanvasScene
             var column = index % Math.Max(1, (int)Math.Ceiling(Math.Sqrt(documents.Length)));
             var row = index / Math.Max(1, (int)Math.Ceiling(Math.Sqrt(documents.Length)));
             return new DiffNode(document, new Rect2(column * 700, row * 500, nodeWidth, nodeHeight));
-        });
+        }).ToArray();
 
         var documentIds = documents.Select(document => document.Id.Value).ToHashSet(StringComparer.Ordinal);
         var anchorsById = semanticGraph?.Anchors.ToDictionary(anchor => anchor.Id, StringComparer.Ordinal) ?? [];
@@ -596,9 +615,158 @@ public sealed class DiffCanvasScene
             .Where(edge => edge is not null)
             .Cast<GraphEdge>() ?? [];
         var edges = BundleEdges(projectedEdges, options).ToArray();
+        var groups = BuildGroups(groupingMode, nodes, semanticGraph);
 
-        return new DiffCanvasScene(nodes, edges, annotations, annotationVisibility);
+        return new DiffCanvasScene(nodes, edges, groups, annotations, annotationVisibility);
     }
+
+    private static ImmutableArray<GraphGroup> BuildGroups(GraphGroupingMode groupingMode, IReadOnlyList<DiffNode> nodes, SemanticGraph? semanticGraph)
+    {
+        if (groupingMode == GraphGroupingMode.None || nodes.Count == 0)
+        {
+            return [];
+        }
+
+        var anchorsByDocumentId = semanticGraph?.Anchors
+            .GroupBy(anchor => anchor.DocumentId)
+            .ToDictionary(group => group.Key, group => group.ToArray()) ?? [];
+        var groups = nodes
+            .Select(node => (Node: node, Key: CreateGroupKey(groupingMode, node.Document, anchorsByDocumentId.GetValueOrDefault(node.Document.Id) ?? [])))
+            .Where(item => !string.IsNullOrWhiteSpace(item.Key.Id))
+            .GroupBy(item => item.Key)
+            .Where(group => group.Count() >= 2)
+            .Select(group => CreateGraphGroup(groupingMode, group.Key, group.Select(item => item.Node).ToArray()))
+            .OrderByDescending(group => group.DocumentCount)
+            .ThenBy(group => group.Label, StringComparer.OrdinalIgnoreCase)
+            .ToImmutableArray();
+        return groups;
+    }
+
+    private static GraphGroup CreateGraphGroup(GraphGroupingMode mode, GraphGroupKey key, IReadOnlyList<DiffNode> nodes)
+    {
+        var bounds = ExpandGroupBounds(Rect2.Union(nodes.Select(node => node.Bounds)));
+        return new GraphGroup(
+            $"{mode}:{key.Id}",
+            mode,
+            key.Label,
+            bounds,
+            nodes.Count,
+            nodes.Sum(node => node.Document.Metadata.AddedLines),
+            nodes.Sum(node => node.Document.Metadata.DeletedLines),
+            key.ColorIndex);
+    }
+
+    private static Rect2 ExpandGroupBounds(Rect2 bounds) => bounds.IsEmpty
+        ? Rect2.Empty
+        : new Rect2(bounds.Left - 34, bounds.Top - 48, bounds.Width + 68, bounds.Height + 82);
+
+    private static GraphGroupKey CreateGroupKey(GraphGroupingMode groupingMode, DiffDocumentSnapshot document, IReadOnlyList<SemanticAnchor> anchors) => groupingMode switch
+    {
+        GraphGroupingMode.Folder => CreateFolderGroupKey(document.Metadata.Path),
+        GraphGroupingMode.Semantic => CreateSemanticGroupKey(document, anchors),
+        GraphGroupingMode.Language => CreateStableGroupKey($"language:{NormalizeGroupLabel(document.Metadata.Language, "Other")}", NormalizeGroupLabel(document.Metadata.Language, "Other")),
+        GraphGroupingMode.Status => CreateStableGroupKey($"status:{document.Metadata.Status}", FormatStatusGroup(document.Metadata.Status)),
+        _ => GraphGroupKey.Empty
+    };
+
+    private static GraphGroupKey CreateFolderGroupKey(string path)
+    {
+        var normalizedPath = path.Replace('\\', '/');
+        var segments = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var label = segments.Length switch
+        {
+            0 => "Repository root",
+            1 => "Repository root",
+            >= 2 when IsSourceRoot(segments[0]) => $"{segments[0]}/{segments[1]}",
+            _ => segments[0]
+        };
+
+        return CreateStableGroupKey($"folder:{label}", label);
+    }
+
+    private static GraphGroupKey CreateSemanticGroupKey(DiffDocumentSnapshot document, IReadOnlyList<SemanticAnchor> anchors)
+    {
+        var path = document.Metadata.Path.Replace('\\', '/');
+        var fileName = Path.GetFileName(path);
+        var extension = Path.GetExtension(path);
+
+        if (IsProjectLikeFile(extension, fileName))
+        {
+            return CreateStableGroupKey("semantic:projects", "Projects");
+        }
+
+        if (path.Contains("test", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateStableGroupKey("semantic:tests", "Tests");
+        }
+
+        if (anchors.Any(anchor => anchor.Kind is SemanticAnchorKind.XamlRoot or SemanticAnchorKind.XamlName) || document.Metadata.Language.Contains("XAML", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateStableGroupKey("semantic:xaml", "UI/XAML");
+        }
+
+        if (anchors.Any(anchor => anchor.Kind == SemanticAnchorKind.Resource))
+        {
+            return CreateStableGroupKey("semantic:resources", "Resources");
+        }
+
+        if (anchors.Any(anchor => anchor.Kind is SemanticAnchorKind.Type or SemanticAnchorKind.Member or SemanticAnchorKind.Namespace) || string.Equals(document.Metadata.Language, "C#", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateStableGroupKey("semantic:csharp", "C# symbols");
+        }
+
+        if (extension is ".md" or ".txt" or ".rst")
+        {
+            return CreateStableGroupKey("semantic:docs", "Docs");
+        }
+
+        if (extension is ".json" or ".xml" or ".config" or ".props" or ".targets" or ".yml" or ".yaml")
+        {
+            return CreateStableGroupKey("semantic:config", "Config");
+        }
+
+        var label = NormalizeGroupLabel(document.Metadata.Language, "Other");
+        return CreateStableGroupKey($"semantic:{label}", label);
+    }
+
+    private static bool IsProjectLikeFile(string extension, string fileName) =>
+        extension is ".csproj" or ".sln" or ".slnx" or ".fsproj" or ".vbproj" ||
+        string.Equals(fileName, "Directory.Build.props", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(fileName, "Directory.Build.targets", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSourceRoot(string segment) =>
+        segment.Equals("src", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("tests", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("test", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("samples", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("examples", StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeGroupLabel(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
+    private static GraphGroupKey CreateStableGroupKey(string id, string label) => new(id, label, StableColorIndex(id));
+
+    private static int StableColorIndex(string value)
+    {
+        var hash = 17;
+        foreach (var character in value)
+        {
+            hash = unchecked(hash * 31 + character);
+        }
+
+        return (hash & int.MaxValue) % 8;
+    }
+
+    private static string FormatStatusGroup(DiffFileStatus status) => status switch
+    {
+        DiffFileStatus.Added => "Added",
+        DiffFileStatus.Deleted => "Deleted",
+        DiffFileStatus.Renamed => "Renamed",
+        DiffFileStatus.Copied => "Copied",
+        DiffFileStatus.Untracked => "Untracked",
+        DiffFileStatus.Conflicted => "Conflicted",
+        DiffFileStatus.Modified => "Modified",
+        _ => "Unchanged"
+    };
 
     private static bool IsIncluded(SemanticEdge edge, EdgeProjectionOptions options)
     {
@@ -652,5 +820,10 @@ public sealed class DiffCanvasScene
         }
 
         return new GraphEdge(sourceAnchor.DocumentId.Value, targetAnchor.DocumentId.Value, semanticEdge.Kind, semanticEdge.Confidence, semanticEdge.Label);
+    }
+
+    private sealed record GraphGroupKey(string Id, string Label, int ColorIndex)
+    {
+        public static GraphGroupKey Empty { get; } = new(string.Empty, string.Empty, 0);
     }
 }

@@ -298,6 +298,17 @@ public sealed partial class MainPage : Page
         DiffCanvas.FitToScene();
     }
 
+    private async void OnGroupingModeSelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (sender is not ComboBox { SelectedItem: ViewModels.GroupingModeOptionViewModel option })
+        {
+            return;
+        }
+
+        await ViewModel.SetGroupingModeAsync(option.Mode);
+        DiffCanvas.Scene = ViewModel.Scene;
+    }
+
     private async void OnVisualizationToggleClicked(object sender, RoutedEventArgs args)
     {
         if (sender is ToggleButton { Tag: string layer } toggleButton)

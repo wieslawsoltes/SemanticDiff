@@ -156,6 +156,44 @@ public sealed class DiffSceneRendererTests
         Assert.Equal(renderer.LastRenderStats.DrawnNodeCount, renderer.LastRenderStats.DetailedNodeCount);
     }
 
+    [Fact]
+    public void Render_DrawsGraphGroupRegionsBehindNodes()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/A.cs"), "src/App/A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/B.cs"), "src/App/B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var layout = new GraphLayoutResult([
+            new DiffNodeLayout(first.Id, new Rect2(120, 120, 620, 420)),
+            new DiffNodeLayout(second.Id, new Rect2(860, 120, 620, 420))
+        ]);
+        var groupedScene = DiffCanvasScene.FromDocuments([first, second], layoutResult: layout, groupingMode: GraphGroupingMode.Folder);
+        var plainScene = DiffCanvasScene.FromDocuments([first, second], layoutResult: layout, groupingMode: GraphGroupingMode.None);
+        var renderer = new DiffSceneRenderer();
+
+        using var groupedSurface = SKSurface.Create(new SKImageInfo(1_600, 720));
+        using var plainSurface = SKSurface.Create(new SKImageInfo(1_600, 720));
+        renderer.Render(groupedSurface.Canvas, new SKSize(1_600, 720), groupedScene, DiffCanvasColorTheme.Dark);
+        renderer.Render(plainSurface.Canvas, new SKSize(1_600, 720), plainScene, DiffCanvasColorTheme.Dark);
+
+        using var groupedImage = groupedSurface.Snapshot();
+        using var plainImage = plainSurface.Snapshot();
+        var groupedPixels = groupedImage.PeekPixels();
+        var plainPixels = plainImage.PeekPixels();
+        var differingPixels = 0;
+        for (var y = 106; y < 124; y++)
+        {
+            for (var x = 120; x < 1_500; x += 8)
+            {
+                if (plainPixels.GetPixelColor(x, y) != groupedPixels.GetPixelColor(x, y))
+                {
+                    differingPixels++;
+                }
+            }
+        }
+
+        Assert.True(differingPixels > 0);
+    }
+
     private static SKColor RenderStatusBadgePixel(DiffFileStatus status)
     {
         var factory = new DiffDocumentFactory();

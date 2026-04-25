@@ -310,4 +310,63 @@ public sealed class DiffCanvasSceneSemanticTests
 
         Assert.Empty(scene.Edges);
     }
+
+    [Fact]
+    public void FromDocuments_BuildsFolderGroupsFromLaidOutNodes()
+    {
+        var factory = new DiffDocumentFactory();
+        var app = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/Main.cs"), "src/App/Main.cs", null, DiffFileStatus.Modified, "C#", 4, 2), "class Main { }");
+        var view = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/MainPage.xaml"), "src/App/MainPage.xaml", null, DiffFileStatus.Modified, "XAML", 3, 1), "<Page />");
+        var test = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("tests/App.Tests/MainTests.cs"), "tests/App.Tests/MainTests.cs", null, DiffFileStatus.Modified, "C#", 1, 0), "class MainTests { }");
+        var layout = new GraphLayoutResult([
+            new DiffNodeLayout(app.Id, new Rect2(100, 120, 620, 420)),
+            new DiffNodeLayout(view.Id, new Rect2(820, 120, 620, 420)),
+            new DiffNodeLayout(test.Id, new Rect2(100, 700, 620, 420))
+        ]);
+
+        var scene = DiffCanvasScene.FromDocuments([app, view, test], layoutResult: layout, groupingMode: GraphGroupingMode.Folder);
+
+        var group = Assert.Single(scene.Groups);
+        Assert.Equal("src/App", group.Label);
+        Assert.Equal(2, group.DocumentCount);
+        Assert.Equal(7, group.AddedLines);
+        Assert.Equal(3, group.DeletedLines);
+        Assert.True(group.Bounds.Left < 100);
+        Assert.True(group.Bounds.Right > 1_440);
+    }
+
+    [Fact]
+    public void FromDocuments_BuildsSemanticGroupsFromAnchors()
+    {
+        var factory = new DiffDocumentFactory();
+        var firstView = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("Views/MainPage.xaml"), "Views/MainPage.xaml", null, DiffFileStatus.Modified, "XAML", 2, 0), "<Page />");
+        var secondView = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("Views/SettingsPage.xaml"), "Views/SettingsPage.xaml", null, DiffFileStatus.Modified, "XAML", 2, 0), "<Page />");
+        var model = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("Models/Widget.cs"), "Models/Widget.cs", null, DiffFileStatus.Modified, "C#", 2, 0), "class Widget { }");
+        var graph = new SemanticGraph(
+            [
+                new SemanticAnchor("main:xaml-root", firstView.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.XamlRoot, "Page"),
+                new SemanticAnchor("settings:xaml-root", secondView.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.XamlRoot, "Page"),
+                new SemanticAnchor("widget:type", model.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "Widget")
+            ],
+            []);
+
+        var scene = DiffCanvasScene.FromDocuments([firstView, secondView, model], graph, groupingMode: GraphGroupingMode.Semantic);
+
+        var group = Assert.Single(scene.Groups);
+        Assert.Equal("UI/XAML", group.Label);
+        Assert.Equal(GraphGroupingMode.Semantic, group.Mode);
+        Assert.Equal(2, group.DocumentCount);
+    }
+
+    [Fact]
+    public void FromDocuments_AllowsGroupingToBeDisabled()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/A.cs"), "src/App/A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/B.cs"), "src/App/B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+
+        var scene = DiffCanvasScene.FromDocuments([first, second], groupingMode: GraphGroupingMode.None);
+
+        Assert.Empty(scene.Groups);
+    }
 }

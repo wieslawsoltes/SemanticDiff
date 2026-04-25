@@ -10,6 +10,7 @@ public sealed class AppStateStoreTests
         var state = new SemanticDiffAppState();
 
         Assert.Equal(GraphLayoutMode.Layered, state.LayoutMode);
+        Assert.Equal(GraphGroupingMode.Folder, state.GroupingMode);
     }
 
     [Fact]
@@ -41,6 +42,7 @@ public sealed class AppStateStoreTests
                 ShowContext: true),
             SemanticAnalysisMode: SemanticAnalysisMode.FastSyntaxOnly,
             LayoutMode: GraphLayoutMode.StatusLanes,
+            GroupingMode: GraphGroupingMode.Semantic,
             LeftPaneWidth: 344);
 
         try
@@ -64,6 +66,7 @@ public sealed class AppStateStoreTests
             Assert.False(loaded.EffectiveAnnotationVisibility.ShowNavigation);
             Assert.Equal(SemanticAnalysisMode.FastSyntaxOnly, loaded.SemanticAnalysisMode);
             Assert.Equal(GraphLayoutMode.StatusLanes, loaded.LayoutMode);
+            Assert.Equal(GraphGroupingMode.Semantic, loaded.GroupingMode);
             Assert.Equal(344, loaded.LeftPaneWidth);
             var node = Assert.Single(loaded.EffectiveLayoutNodes);
             Assert.Equal("A.cs", node.DocumentId);
