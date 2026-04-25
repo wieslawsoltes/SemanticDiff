@@ -7,6 +7,8 @@ public sealed class GitDiffService : IGitDiffService
 {
     private readonly IGitCommandRunner commandRunner;
     private readonly GitDefaultBranchDiscovery defaultBranchDiscovery;
+    private readonly object defaultBranchGate = new();
+    private readonly Dictionary<string, string?> defaultBranches = new(StringComparer.Ordinal);
 
     public GitDiffService()
         : this(new GitCommandRunner())
@@ -21,7 +23,7 @@ public sealed class GitDiffService : IGitDiffService
 
     public async Task<GitDiffSnapshot> GetDiffAsync(GitDiffRequest request, CancellationToken cancellationToken)
     {
-        var defaultBranch = await defaultBranchDiscovery.DiscoverAsync(request.RepositoryPath, cancellationToken).ConfigureAwait(false);
+        var defaultBranch = await GetDefaultBranchIfNeededAsync(request, cancellationToken).ConfigureAwait(false);
         var files = request.Scope switch
         {
             GitDiffScope.Worktree => await GetWorktreeFilesAsync(request, cancellationToken).ConfigureAwait(false),
@@ -45,7 +47,7 @@ public sealed class GitDiffService : IGitDiffService
             return new GitFileDiff(fileChange, CreateAddedFileDiff(fileChange.Path, text));
         }
 
-        var defaultBranch = await defaultBranchDiscovery.DiscoverAsync(request.RepositoryPath, cancellationToken).ConfigureAwait(false);
+        var defaultBranch = await GetDefaultBranchIfNeededAsync(request, cancellationToken).ConfigureAwait(false);
         var pathFilter = fileChange.Status == DiffFileStatus.Deleted && fileChange.OldPath is not null
             ? fileChange.OldPath
             : fileChange.Path;
@@ -104,6 +106,33 @@ public sealed class GitDiffService : IGitDiffService
         var result = await commandRunner.RunAsync(request.RepositoryPath, arguments, cancellationToken).ConfigureAwait(false);
         return result.Succeeded ? ParseNameStatus(result.StandardOutput) : ImmutableArray<GitFileChange>.Empty;
     }
+
+    private async Task<string?> GetDefaultBranchIfNeededAsync(GitDiffRequest request, CancellationToken cancellationToken)
+    {
+        if (!NeedsDefaultBranch(request))
+        {
+            return null;
+        }
+
+        lock (defaultBranchGate)
+        {
+            if (defaultBranches.TryGetValue(request.RepositoryPath, out var cachedDefaultBranch))
+            {
+                return cachedDefaultBranch;
+            }
+        }
+
+        var defaultBranch = await defaultBranchDiscovery.DiscoverAsync(request.RepositoryPath, cancellationToken).ConfigureAwait(false);
+        lock (defaultBranchGate)
+        {
+            defaultBranches[request.RepositoryPath] = defaultBranch;
+        }
+
+        return defaultBranch;
+    }
+
+    private static bool NeedsDefaultBranch(GitDiffRequest request) =>
+        request.Scope == GitDiffScope.Branch && string.IsNullOrWhiteSpace(request.BaseRef);
 
     private async Task<ImmutableArray<GitFileChange>> GetUnstagedFilesAsync(
         GitDiffRequest request,

@@ -96,6 +96,27 @@ public sealed class GitDiffDocumentServiceTests
             snapshot.Documents.Select(document => document.Metadata.Path).ToArray());
     }
 
+    [Fact]
+    public async Task LoadDocumentsAsync_LoadsFileDiffsConcurrentlyWithoutChangingDocumentOrder()
+    {
+        var fileChanges = Enumerable.Range(0, 6)
+            .Select(index => CreateFileChange($"src/File{index}.cs", DiffFileStatus.Modified))
+            .ToImmutableArray();
+        var gitService = new FakeGitDiffService(
+            fileChanges,
+            fileChange => $"@@ -0,0 +1,1 @@\n+{fileChange.Path}\n",
+            fileDiffDelay: TimeSpan.FromMilliseconds(40));
+        var documentService = new GitDiffDocumentService(gitService, new DiffDocumentFactory());
+
+        var snapshot = await documentService.LoadDocumentsAsync(
+            new GitDiffRequest("/repo", GitDiffScope.Worktree),
+            DiffContextMode.ChangedHunks,
+            CancellationToken.None);
+
+        Assert.True(gitService.MaxConcurrentFileDiffRequests > 1);
+        Assert.Equal(fileChanges.Select(file => file.Path), snapshot.Documents.Select(document => document.Metadata.Path));
+    }
+
     private static GitFileChange CreateFileChange(string path, DiffFileStatus status, string? oldPath = null) =>
         new(path, oldPath, status, 0, 0, Path.GetExtension(path).Equals(".xaml", StringComparison.OrdinalIgnoreCase) ? "XAML" : "C#");
 
@@ -105,30 +126,43 @@ public sealed class GitDiffDocumentServiceTests
         private readonly ImmutableArray<GitFileChange> fileChanges;
         private readonly Func<GitFileChange, string> unifiedDiffFactory;
         private readonly Func<GitFileChange, string> fileContentFactory;
+        private readonly TimeSpan fileDiffDelay;
+        private readonly object requestGate = new();
+        private int activeFileDiffRequests;
+        private int maxConcurrentFileDiffRequests;
 
         public FakeGitDiffService(string unifiedDiff, string fileContent = "")
-            : this(ImmutableArray.Create(DefaultFileChange), _ => unifiedDiff, _ => fileContent)
+            : this(ImmutableArray.Create(DefaultFileChange), _ => unifiedDiff, _ => fileContent, TimeSpan.Zero)
         {
         }
 
         public FakeGitDiffService(ImmutableArray<GitFileChange> fileChanges, Func<GitFileChange, string> unifiedDiffFactory)
-            : this(fileChanges, unifiedDiffFactory, _ => string.Empty)
+            : this(fileChanges, unifiedDiffFactory, _ => string.Empty, TimeSpan.Zero)
+        {
+        }
+
+        public FakeGitDiffService(ImmutableArray<GitFileChange> fileChanges, Func<GitFileChange, string> unifiedDiffFactory, TimeSpan fileDiffDelay)
+            : this(fileChanges, unifiedDiffFactory, _ => string.Empty, fileDiffDelay)
         {
         }
 
         private FakeGitDiffService(
             ImmutableArray<GitFileChange> fileChanges,
             Func<GitFileChange, string> unifiedDiffFactory,
-            Func<GitFileChange, string> fileContentFactory)
+            Func<GitFileChange, string> fileContentFactory,
+            TimeSpan fileDiffDelay)
         {
             this.fileChanges = fileChanges;
             this.unifiedDiffFactory = unifiedDiffFactory;
             this.fileContentFactory = fileContentFactory;
+            this.fileDiffDelay = fileDiffDelay;
         }
 
         public List<GitDiffRequest> FileDiffRequests { get; } = [];
 
         public List<GitDiffRequest> ContentRequests { get; } = [];
+
+        public int MaxConcurrentFileDiffRequests => maxConcurrentFileDiffRequests;
 
         public Task<GitDiffSnapshot> GetDiffAsync(GitDiffRequest request, CancellationToken cancellationToken)
         {
@@ -141,16 +175,53 @@ public sealed class GitDiffDocumentServiceTests
             return Task.FromResult(snapshot);
         }
 
-        public Task<GitFileDiff> GetFileDiffAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken)
+        public async Task<GitFileDiff> GetFileDiffAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken)
         {
-            FileDiffRequests.Add(request);
-            return Task.FromResult(new GitFileDiff(fileChange, unifiedDiffFactory(fileChange)));
+            lock (requestGate)
+            {
+                FileDiffRequests.Add(request);
+            }
+
+            var activeRequests = Interlocked.Increment(ref activeFileDiffRequests);
+            UpdateMaxConcurrentFileDiffRequests(activeRequests);
+            try
+            {
+                if (fileDiffDelay > TimeSpan.Zero)
+                {
+                    await Task.Delay(fileDiffDelay, cancellationToken);
+                }
+
+                return new GitFileDiff(fileChange, unifiedDiffFactory(fileChange));
+            }
+            finally
+            {
+                Interlocked.Decrement(ref activeFileDiffRequests);
+            }
         }
 
         public Task<string> GetFileContentAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken)
         {
-            ContentRequests.Add(request);
+            lock (requestGate)
+            {
+                ContentRequests.Add(request);
+            }
+
             return Task.FromResult(fileContentFactory(fileChange));
+        }
+
+        private void UpdateMaxConcurrentFileDiffRequests(int activeRequests)
+        {
+            var currentMax = Volatile.Read(ref maxConcurrentFileDiffRequests);
+            while (activeRequests > currentMax)
+            {
+                var original = Interlocked.CompareExchange(ref maxConcurrentFileDiffRequests, activeRequests, currentMax);
+                if (original == currentMax)
+                {
+                    return;
+                }
+
+                currentMax = original;
+            }
         }
     }
 }

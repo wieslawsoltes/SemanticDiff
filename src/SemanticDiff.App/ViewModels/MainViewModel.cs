@@ -32,6 +32,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private string? currentRepositoryPath;
     private SemanticDiffAppState appState = new();
     private CancellationTokenSource? currentOperation;
+    private CancellationTokenSource? currentSemanticRefinementOperation;
     private CancellationTokenSource? currentBlameOperation;
     private CancellationTokenSource? pendingAutoReload;
     private IRepositoryFileWatcher? repositoryFileWatcher;
@@ -606,18 +607,22 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         currentOperation?.Cancel();
+        currentSemanticRefinementOperation?.Cancel();
         currentBlameOperation?.Cancel();
         pendingAutoReload?.Cancel();
         await StopRepositoryWatcherAsync();
         currentOperation?.Dispose();
+        currentSemanticRefinementOperation?.Dispose();
         currentBlameOperation?.Dispose();
         currentOperation = null;
+        currentSemanticRefinementOperation = null;
         currentBlameOperation = null;
     }
 
     public void CancelCurrentOperation()
     {
         currentOperation?.Cancel();
+        currentSemanticRefinementOperation?.Cancel();
         AddDiagnostic("Info", "Cancel requested");
     }
 
@@ -824,9 +829,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            ReportProgress(0.45, "Tokenizing documents", cancellationToken);
-            var tokenizationProgress = new Progress<(double Value, string Message)>(update =>
-                ReportProgress(0.45 + update.Value * 0.2, update.Message, cancellationToken));
+            ReportProgress(0.45, "Preparing document graph", cancellationToken);
             var reviewedDocuments = DiffReviewDocumentTransformer.Apply(snapshot.Documents, appState.ReviewMode);
             reviewedDocuments = new DiffConflictAnalyzer().Highlight(reviewedDocuments);
             if (appState.CollapseUnchangedContext)
@@ -835,10 +838,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             }
 
             reviewedDocuments = InlineDiffAnnotator.Annotate(reviewedDocuments);
-            var tokenizedDocuments = await TokenizeAsync(reviewedDocuments, cancellationToken, tokenizationProgress);
             EnsureCurrentRepositoryRequest(requestId, cancellationToken);
             await SetDocumentsAsync(
-                tokenizedDocuments,
+                reviewedDocuments,
                 $"{Path.GetFileName(repositoryRoot)} | {snapshot.GitSnapshot.Files.Length} {FormatDiffScope(appState.DiffScope)} changes | {FormatDiffContextMode(appState.DiffContextMode)} | {FormatReviewMode(appState.ReviewMode)} | {FormatReferenceText(request, snapshot.GitSnapshot.DefaultBranch)}",
                 repositoryRoot,
                 snapshot.GitSnapshot,
@@ -923,15 +925,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         SelectExplorerItem(null);
         RestoreLayoutState(documents, preservedSceneState);
 
-        ReportProgress(0.68, $"Analyzing semantics ({FormatSemanticAnalysisMode(appState.SemanticAnalysisMode)})", cancellationToken);
-        var semanticGraph = await AnalyzeSemanticsAsync(repositoryPath, gitSnapshot, documents, appState.SemanticAnalysisMode, cancellationToken);
+        ReportProgress(0.52, "Running initial layout", cancellationToken);
+        var initialLayout = await LayoutDocumentsAsync(documents, SemanticGraph.Empty, cancellationToken);
         EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
-        currentSemanticGraph = semanticGraph;
-        ReportProgress(0.82, "Running graph layout", cancellationToken);
-        var layout = await LayoutDocumentsAsync(documents, semanticGraph, cancellationToken);
-        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
-        previousLayout = layout;
-        Scene = CreateScene(documents, semanticGraph, layout);
+
+        currentSemanticGraph = SemanticGraph.Empty;
+        previousLayout = initialLayout;
+        Scene = CreateScene(documents, SemanticGraph.Empty, initialLayout);
         if (preservedSceneState is not null)
         {
             Scene.ApplyViewState(preservedSceneState);
@@ -940,23 +940,135 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
         SetExplorerItems(documents.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
         RestoreSelectedExplorerItem(preservedSelectedDocumentId);
-        UpdateSemanticNavigation(semanticGraph, documents);
-        var impactSummary = UpdateImpactSummary(documents, semanticGraph);
+        UpdateSemanticNavigation(SemanticGraph.Empty, documents);
+        UpdateImpactSummary(documents, SemanticGraph.Empty);
         UpdateWorkspaceSummary(
             string.IsNullOrWhiteSpace(repositoryPath) ? "SemanticDiff" : Path.GetFileName(repositoryPath),
             statusPrefix,
             documents.Length,
+            0);
+        StatusText = $"{statusPrefix} | {documents.Length} nodes | document graph ready | tokenizing";
+
+        ReportProgress(0.6, "Tokenizing documents", cancellationToken);
+        var tokenizationProgress = new Progress<(double Value, string Message)>(update =>
+            ReportProgress(0.6 + update.Value * 0.14, update.Message, cancellationToken));
+        var tokenizedDocuments = await TokenizeAsync(documents, cancellationToken, tokenizationProgress);
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+
+        var tokenizedViewState = Scene.CaptureViewState();
+        currentDocuments = tokenizedDocuments;
+        UpdateChangeNavigation(tokenizedDocuments);
+        var tokenizedScene = CreateScene(tokenizedDocuments, SemanticGraph.Empty, previousLayout);
+        tokenizedScene.ApplyViewState(tokenizedViewState);
+        Scene = tokenizedScene;
+        CaptureLayoutState(Scene);
+        SetExplorerItems(tokenizedDocuments.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
+        RestoreSelectedExplorerItem(preservedSelectedDocumentId);
+        var initialSemanticAnalysisMode = GetInitialSemanticAnalysisMode(appState.SemanticAnalysisMode);
+        StatusText = $"{statusPrefix} | {tokenizedDocuments.Length} nodes | syntax coloring ready | analyzing semantics";
+
+        ReportProgress(0.76, $"Analyzing semantics ({FormatSemanticAnalysisMode(initialSemanticAnalysisMode)})", cancellationToken);
+        var semanticGraph = await AnalyzeSemanticsAsync(repositoryPath, gitSnapshot, tokenizedDocuments, initialSemanticAnalysisMode, cancellationToken);
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+        currentSemanticGraph = semanticGraph;
+        ReportProgress(0.88, "Running semantic layout", cancellationToken);
+        var layout = await LayoutDocumentsAsync(tokenizedDocuments, semanticGraph, cancellationToken);
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+        var finalViewState = preservedSceneState is not null ? Scene.CaptureViewState() : null;
+        previousLayout = layout;
+        Scene = CreateScene(tokenizedDocuments, semanticGraph, layout);
+        if (finalViewState is not null)
+        {
+            Scene.ApplyViewState(finalViewState);
+            CaptureLayoutState(Scene);
+        }
+
+        SetExplorerItems(tokenizedDocuments.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
+        RestoreSelectedExplorerItem(preservedSelectedDocumentId);
+        UpdateSemanticNavigation(semanticGraph, tokenizedDocuments);
+        var impactSummary = UpdateImpactSummary(tokenizedDocuments, semanticGraph);
+        UpdateWorkspaceSummary(
+            string.IsNullOrWhiteSpace(repositoryPath) ? "SemanticDiff" : Path.GetFileName(repositoryPath),
+            statusPrefix,
+            tokenizedDocuments.Length,
             semanticGraph.Edges.Length);
-        StatusText = $"{statusPrefix} | {documents.Length} nodes | {semanticGraph.Edges.Length} semantic edges | {FormatImpactStatus(impactSummary)} | layout ready";
+        StatusText = $"{statusPrefix} | {tokenizedDocuments.Length} nodes | {semanticGraph.Edges.Length} semantic edges | {FormatImpactStatus(impactSummary)} | layout ready";
         ReportProgress(0.95, "Saving app state", cancellationToken);
         await SaveStateAsync(cancellationToken);
         EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         await RestartRepositoryWatcherAsync(repositoryPath, cancellationToken);
         EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         AddDiagnostic("Info", preservedSceneState is null
-            ? $"Loaded {documents.Length} document nodes, {semanticGraph.Edges.Length} semantic edges, {impactSummary.ChangedSymbolCount} changed symbols"
-            : $"Smart refresh synced {documents.Length} document nodes without resetting the canvas view");
+            ? $"Loaded {tokenizedDocuments.Length} document nodes, {semanticGraph.Edges.Length} semantic edges, {impactSummary.ChangedSymbolCount} changed symbols"
+            : $"Smart refresh synced {tokenizedDocuments.Length} document nodes without resetting the canvas view");
+
+        if (appState.SemanticAnalysisMode == SemanticAnalysisMode.WorkspaceThenSyntax)
+        {
+            _ = RefineWorkspaceSemanticsAsync(tokenizedDocuments, statusPrefix, repositoryPath, gitSnapshot, repositoryRequestId);
+        }
     }
+
+    private async Task RefineWorkspaceSemanticsAsync(
+        ImmutableArray<DiffDocumentSnapshot> documents,
+        string statusPrefix,
+        string repositoryPath,
+        GitDiffSnapshot? gitSnapshot,
+        long repositoryRequestId)
+    {
+        var refinementOperation = BeginSemanticRefinementOperation();
+        try
+        {
+            var cancellationToken = refinementOperation.Token;
+            EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+            AddDiagnostic("Info", "Refining semantic graph with MSBuild");
+            StatusText = $"{statusPrefix} | {documents.Length} nodes | refining MSBuild semantics";
+
+            var semanticGraph = await AnalyzeSemanticsAsync(repositoryPath, gitSnapshot, documents, SemanticAnalysisMode.WorkspaceThenSyntax, cancellationToken);
+            EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+            var viewState = Scene.CaptureViewState();
+            currentSemanticGraph = semanticGraph;
+            var layout = await LayoutDocumentsAsync(documents, semanticGraph, cancellationToken);
+            EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+
+            previousLayout = layout;
+            var nextScene = CreateScene(documents, semanticGraph, layout);
+            nextScene.ApplyViewState(viewState);
+            Scene = nextScene;
+            CaptureLayoutState(Scene);
+            UpdateSemanticNavigation(semanticGraph, documents);
+            var impactSummary = UpdateImpactSummary(documents, semanticGraph);
+            UpdateWorkspaceSummary(
+                string.IsNullOrWhiteSpace(repositoryPath) ? "SemanticDiff" : Path.GetFileName(repositoryPath),
+                statusPrefix,
+                documents.Length,
+                semanticGraph.Edges.Length);
+            StatusText = $"{statusPrefix} | {documents.Length} nodes | {semanticGraph.Edges.Length} semantic edges | {FormatImpactStatus(impactSummary)} | MSBuild semantics ready";
+            await SaveStateAsync(cancellationToken);
+            AddDiagnostic("Info", $"MSBuild semantic refinement produced {semanticGraph.Edges.Length} semantic edges");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            if (IsCurrentRepositoryRequest(repositoryRequestId))
+            {
+                AddDiagnostic("Warning", $"MSBuild semantic refinement failed: {exception.Message}");
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(currentSemanticRefinementOperation, refinementOperation))
+            {
+                currentSemanticRefinementOperation = null;
+            }
+
+            refinementOperation.Dispose();
+        }
+    }
+
+    private static SemanticAnalysisMode GetInitialSemanticAnalysisMode(SemanticAnalysisMode analysisMode) =>
+        analysisMode == SemanticAnalysisMode.WorkspaceThenSyntax ? SemanticAnalysisMode.FastSyntaxOnly : analysisMode;
 
     private static async Task<SemanticGraph> AnalyzeSemanticsAsync(
         string repositoryPath,
@@ -1726,12 +1838,21 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private CancellationTokenSource BeginOperation(string message)
     {
         currentOperation?.Cancel();
+        currentSemanticRefinementOperation?.Cancel();
         var operation = new CancellationTokenSource();
         currentOperation = operation;
         IsBusy = true;
         ProgressValue = 0;
         ProgressText = message;
         AddDiagnostic("Info", message);
+        return operation;
+    }
+
+    private CancellationTokenSource BeginSemanticRefinementOperation()
+    {
+        var operation = new CancellationTokenSource();
+        var previousOperation = Interlocked.Exchange(ref currentSemanticRefinementOperation, operation);
+        previousOperation?.Cancel();
         return operation;
     }
 

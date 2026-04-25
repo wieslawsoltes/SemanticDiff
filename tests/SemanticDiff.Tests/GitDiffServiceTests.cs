@@ -143,6 +143,54 @@ public sealed class GitDiffServiceTests
     }
 
     [Fact]
+    public async Task GetFileDiffAsync_SkipsDefaultBranchDiscoveryWhenScopeDoesNotNeedIt()
+    {
+        var runner = new FakeGitCommandRunner(arguments =>
+        {
+            if (arguments.Contains("src/Changed.cs"))
+            {
+                return new GitCommandResult(0, "@@ -1 +1 @@\n-old\n+new\n", string.Empty);
+            }
+
+            return new GitCommandResult(1, string.Empty, "not found");
+        });
+        var service = new GitDiffService(runner);
+        var fileChange = new GitFileChange("src/Changed.cs", null, DiffFileStatus.Modified, 0, 0, "C#");
+
+        var fileDiff = await service.GetFileDiffAsync(new GitDiffRequest("/repo", GitDiffScope.Worktree), fileChange, CancellationToken.None);
+
+        Assert.Contains("+new", fileDiff.UnifiedDiff);
+        Assert.DoesNotContain(runner.Calls, call => call.SequenceEqual(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]));
+    }
+
+    [Fact]
+    public async Task GetFileDiffAsync_CachesDefaultBranchDiscoveryForBranchDiffs()
+    {
+        var runner = new FakeGitCommandRunner(arguments =>
+        {
+            if (arguments.SequenceEqual(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]))
+            {
+                return new GitCommandResult(0, "origin/main\n", string.Empty);
+            }
+
+            if (arguments.Contains("--merge-base") && arguments.Contains("origin/main"))
+            {
+                return new GitCommandResult(0, "@@ -1 +1 @@\n-old\n+new\n", string.Empty);
+            }
+
+            return new GitCommandResult(1, string.Empty, "not found");
+        });
+        var service = new GitDiffService(runner);
+        var firstFile = new GitFileChange("src/First.cs", null, DiffFileStatus.Modified, 0, 0, "C#");
+        var secondFile = new GitFileChange("src/Second.cs", null, DiffFileStatus.Modified, 0, 0, "C#");
+
+        await service.GetFileDiffAsync(new GitDiffRequest("/repo", GitDiffScope.Branch), firstFile, CancellationToken.None);
+        await service.GetFileDiffAsync(new GitDiffRequest("/repo", GitDiffScope.Branch), secondFile, CancellationToken.None);
+
+        Assert.Equal(1, runner.Calls.Count(call => call.SequenceEqual(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])));
+    }
+
+    [Fact]
     public async Task GetFileContentAsync_ReadsWorktreeContentForWorktreeDiff()
     {
         var repositoryPath = Path.Combine(Path.GetTempPath(), $"SemanticDiffTests-{Guid.NewGuid():N}");

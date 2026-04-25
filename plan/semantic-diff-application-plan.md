@@ -980,6 +980,20 @@ Current status: complete. Group labels and per-node font controls now keep stabl
 
 Current status: complete. Opening repositories back-to-back now keeps only the newest request eligible to update the workbench, and empty or no-change repository states actively refresh the canvas instead of leaving stale graph content behind.
 
+### Phase 42: Progressive Repository Loading Performance
+
+- [x] Analyze the repository load pipeline by stage: repository discovery, changed-file discovery, per-file diff loading, review transforms, initial layout, tokenization, semantic analysis, semantic layout, state persistence, and watcher restart.
+- [x] Avoid default-branch discovery for scopes that do not need it, and cache discovered branch refs inside each Git diff service instance so branch-mode per-file diffs do not repeatedly run the same Git commands.
+- [x] Load per-file Git diffs with bounded parallelism while preserving the Git-reported document order used by the explorer, canvas, and navigation models.
+- [x] Publish an initial document graph immediately after review transforms and a fast layout so small repositories show useful canvas content before syntax coloring, MSBuild workspace loading, or semantic layout finishes.
+- [x] Move TextMate tokenization after first paint and republish the scene with preserved camera/node state once syntax coloring is ready.
+- [x] In MSBuild semantic mode, run fast syntax semantics on the critical path and continue full MSBuild semantic refinement in the background, preserving all semantic functionality without blocking initial repository usability.
+- [x] Cancel pending background semantic refinement when a new load, relayout, repository action, or explicit cancellation starts so stale semantic results cannot overwrite newer work.
+- [x] Add regression coverage for bounded concurrent file diff loading, document-order preservation, default-branch discovery skipping, and branch default caching.
+- [x] Validate the change with focused Git loading tests and the full solution test suite.
+
+Current status: complete. Repository loading now produces a usable graph in progressive stages, reduces redundant Git process work, parallelizes independent file diff reads, and keeps full MSBuild-backed semantic quality as a cancellable refinement rather than a first-paint blocker.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.
