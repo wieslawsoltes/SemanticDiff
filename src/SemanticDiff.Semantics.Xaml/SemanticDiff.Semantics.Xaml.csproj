@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SemanticDiff.Core\SemanticDiff.Core.csproj" />
+    <ProjectReference Include="..\SemanticDiff.Diff\SemanticDiff.Diff.csproj" />
+    <ProjectReference Include="..\SemanticDiff.Semantics\SemanticDiff.Semantics.csproj" />
+  </ItemGroup>
+
+</Project>
