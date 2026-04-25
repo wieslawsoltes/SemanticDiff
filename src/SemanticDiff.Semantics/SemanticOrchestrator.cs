@@ -49,7 +49,7 @@ public sealed class SemanticOrchestrator
 
     private static IEnumerable<SemanticEdge> InferCrossProviderEdges(ImmutableArray<SemanticAnchor> anchors)
     {
-        foreach (var group in anchors.Where(anchor => anchor.Kind == SemanticAnchorKind.Type).GroupBy(anchor => anchor.DisplayName, StringComparer.Ordinal))
+        foreach (var group in anchors.Where(IsCSharpTypeAnchor).GroupBy(anchor => anchor.DisplayName, StringComparer.Ordinal))
         {
             var distinctDocuments = group.Select(anchor => anchor.DocumentId).Distinct().ToArray();
             if (distinctDocuments.Length < 2)
@@ -62,13 +62,80 @@ public sealed class SemanticOrchestrator
             {
                 var source = ordered[anchorIndex];
                 var target = ordered[anchorIndex + 1];
-                var edgeKind = IsXamlDocument(source.DocumentId) || IsXamlDocument(target.DocumentId)
-                    ? SemanticEdgeKind.XamlClass
-                    : SemanticEdgeKind.PartialClass;
-                var label = edgeKind == SemanticEdgeKind.XamlClass ? "x:Class" : "partial";
-                yield return new SemanticEdge($"{edgeKind}:{source.Id}->{target.Id}:{label}", source.Id, target.Id, edgeKind, 0.9, label);
+                yield return new SemanticEdge($"{SemanticEdgeKind.PartialClass}:{source.Id}->{target.Id}:partial", source.Id, target.Id, SemanticEdgeKind.PartialClass, 0.88, "partial");
             }
         }
+
+        foreach (var group in anchors.Where(anchor => IsCSharpTypeAnchor(anchor) || IsXamlClassAnchor(anchor)).GroupBy(anchor => anchor.DisplayName, StringComparer.Ordinal))
+        {
+            var csharpAnchors = group.Where(IsCSharpTypeAnchor).OrderBy(anchor => anchor.DocumentId.Value, StringComparer.Ordinal).ToArray();
+            var xamlAnchors = group.Where(IsXamlClassAnchor).OrderBy(anchor => anchor.DocumentId.Value, StringComparer.Ordinal).ToArray();
+            foreach (var xamlAnchor in xamlAnchors)
+            {
+                foreach (var csharpAnchor in csharpAnchors.Where(anchor => anchor.DocumentId != xamlAnchor.DocumentId).Take(4))
+                {
+                    yield return new SemanticEdge($"{SemanticEdgeKind.XamlClass}:{xamlAnchor.Id}->{csharpAnchor.Id}:x:Class", xamlAnchor.Id, csharpAnchor.Id, SemanticEdgeKind.XamlClass, 0.94, "x:Class");
+                }
+            }
+        }
+
+        foreach (var group in anchors.Where(anchor => anchor.Kind == SemanticAnchorKind.Resource).GroupBy(anchor => anchor.DisplayName, StringComparer.Ordinal))
+        {
+            var definitions = group.Where(IsXamlResourceDefinitionAnchor).OrderBy(anchor => anchor.DocumentId.Value, StringComparer.Ordinal).ToArray();
+            if (definitions.Length > 4)
+            {
+                continue;
+            }
+
+            var references = group.Where(IsXamlResourceReferenceAnchor).OrderBy(anchor => anchor.DocumentId.Value, StringComparer.Ordinal).ToArray();
+            foreach (var reference in references)
+            {
+                foreach (var definition in definitions.Where(anchor => anchor.DocumentId != reference.DocumentId))
+                {
+                    yield return new SemanticEdge($"{SemanticEdgeKind.Resource}:{reference.Id}->{definition.Id}:resource", reference.Id, definition.Id, SemanticEdgeKind.Resource, 0.84, "resource");
+                }
+            }
+        }
+
+        foreach (var binding in anchors.Where(anchor => anchor.Kind == SemanticAnchorKind.Binding).OrderBy(anchor => anchor.DocumentId.Value, StringComparer.Ordinal))
+        {
+            var bindingName = NormalizeBindingName(binding.DisplayName);
+            if (string.IsNullOrWhiteSpace(bindingName))
+            {
+                continue;
+            }
+
+            var matchingMembers = anchors
+                .Where(anchor => anchor.Kind == SemanticAnchorKind.Member && anchor.DocumentId != binding.DocumentId && string.Equals(anchor.DisplayName, bindingName, StringComparison.Ordinal))
+                .OrderBy(anchor => anchor.DocumentId.Value, StringComparer.Ordinal)
+                .Take(5)
+                .ToArray();
+            if (matchingMembers.Length > 4)
+            {
+                continue;
+            }
+
+            foreach (var member in matchingMembers)
+            {
+                yield return new SemanticEdge($"{SemanticEdgeKind.Binding}:{binding.Id}->{member.Id}:binding", binding.Id, member.Id, SemanticEdgeKind.Binding, 0.76, "binding");
+            }
+        }
+    }
+
+    private static bool IsCSharpTypeAnchor(SemanticAnchor anchor) =>
+        anchor.Kind == SemanticAnchorKind.Type && anchor.Id.Contains(":type:", StringComparison.Ordinal);
+
+    private static bool IsXamlClassAnchor(SemanticAnchor anchor) =>
+        anchor.Kind == SemanticAnchorKind.Type && anchor.Id.Contains(":xaml-class:", StringComparison.Ordinal);
+
+    private static bool IsXamlResourceDefinitionAnchor(SemanticAnchor anchor) => anchor.Id.Contains(":xaml-Key:", StringComparison.Ordinal);
+
+    private static bool IsXamlResourceReferenceAnchor(SemanticAnchor anchor) => anchor.Id.Contains(":xaml-Resource:", StringComparison.Ordinal);
+
+    private static string NormalizeBindingName(string displayName)
+    {
+        var dotIndex = displayName.IndexOf('.', StringComparison.Ordinal);
+        return dotIndex >= 0 ? displayName[..dotIndex] : displayName;
     }
 
     private static bool IsIncluded(SemanticEdge edge, ImmutableArray<SemanticAnchor> anchors, SemanticGraphFilter filter)

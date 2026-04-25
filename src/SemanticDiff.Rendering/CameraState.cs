@@ -4,7 +4,7 @@ namespace SemanticDiff.Rendering;
 
 public sealed record CameraState(double OffsetX, double OffsetY, double Scale)
 {
-    public const double MinScale = 0.08;
+    public const double MinScale = 0.002;
     public const double MaxScale = 4.0;
 
     public static CameraState Default { get; } = new(32, 32, 1);

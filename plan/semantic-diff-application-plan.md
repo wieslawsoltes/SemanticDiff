@@ -934,6 +934,18 @@ Current status: complete. Large branch-mode layouts now avoid drawing offscreen 
 
 Current status: complete. New sessions now start with the semantic layered graph layout by default, while Auto, Grid, Compact grid, and Status lanes remain available from the layout dropdown.
 
+### Phase 38: Large Branch Graph Fit and Semantic Quality
+
+- [x] Lower the camera fit scale floor so very large branch layouts can actually fit inside the canvas instead of clamping to an over-zoomed view.
+- [x] Build layered layouts from capped high-signal document-pair edges instead of feeding every raw semantic edge into MSAGL.
+- [x] Compact disconnected layered components so independent clusters and isolated files do not explode the world bounds.
+- [x] Avoid false cross-provider class edges between generic XAML element names such as `Page`, `Grid`, and `ResourceDictionary`.
+- [x] Infer higher-quality XAML resource and binding edges from resource keys and C# member anchors when changed documents provide both sides.
+- [x] Add regression coverage for huge-graph fit, no-edge layered fallback, generic XAML false-edge suppression, and resource/binding edge inference.
+- [x] Validate the change with focused tests and the full solution test suite.
+
+Current status: complete. Branch-mode graphs now fit correctly at very large world sizes, layered layouts use stronger document-level semantic signals, disconnected clusters are packed more tightly, and semantic inference avoids generic XAML false positives while adding more useful resource and binding relationships.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.

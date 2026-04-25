@@ -81,6 +81,20 @@ public sealed class GraphLayoutEngineTests
     }
 
     [Fact]
+    public async Task LayeredLayout_UsesDeterministicGridWhenNoSemanticLayoutEdgesExist()
+    {
+        var documents = CreateDocuments("A.cs", "B.cs", "C.cs", "D.cs");
+        var request = new GraphLayoutRequest(documents, SemanticGraph.Empty, new Size2(620, 420), LayoutMode: GraphLayoutMode.Layered);
+        var engine = new MsaglGraphLayoutEngine();
+
+        var result = await engine.LayoutAsync(request, CancellationToken.None);
+
+        var secondNode = Assert.Single(result.Nodes, node => node.DocumentId == documents[1].Id);
+        Assert.Equal(716, secondNode.Bounds.X, precision: 3);
+        Assert.Equal(0, secondNode.Bounds.Y, precision: 3);
+    }
+
+    [Fact]
     public async Task StatusLaneLayout_GroupsDocumentsByStatus()
     {
         var documents = CreateDocuments(
