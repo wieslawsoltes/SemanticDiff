@@ -115,8 +115,6 @@ public sealed class DiffSceneRenderer
             .GroupBy(annotation => annotation.DocumentId)
             .ToDictionary(group => group.Key, group => group.OrderBy(AnnotationPriority).ToArray());
         var drawnEdges = 0;
-        var detailedNodes = 0;
-
         canvas.Save();
         canvas.Translate((float)scene.Camera.OffsetX, (float)scene.Camera.OffsetY);
         canvas.Scale((float)scene.Camera.Scale);
@@ -136,22 +134,15 @@ public sealed class DiffSceneRenderer
 
         foreach (var node in visibleNodes)
         {
-            var drawDetails = ShouldDrawNodeDetails(node, scene.Camera.Scale);
-            if (drawDetails)
-            {
-                detailedNodes++;
-            }
-
             DrawNode(
                 canvas,
                 node,
                 palette,
                 annotationsByDocument.GetValueOrDefault(node.Document.Id) ?? [],
-                scene.Camera.Scale,
-                drawDetails);
+                scene.Camera.Scale);
         }
 
-        LastRenderStats = new(scene.Nodes.Count, visibleNodes.Length, detailedNodes, scene.Edges.Count, drawnEdges);
+        LastRenderStats = new(scene.Nodes.Count, visibleNodes.Length, visibleNodes.Length, scene.Edges.Count, drawnEdges);
         canvas.Restore();
     }
 
@@ -222,12 +213,7 @@ public sealed class DiffSceneRenderer
         return new Rect2(left, top, right - left, bottom - top);
     }
 
-    private static bool ShouldDrawNodeDetails(DiffNode node, double cameraScale) =>
-        node.FontSize * cameraScale >= 6.5 &&
-        node.Bounds.Width * cameraScale >= 220 &&
-        node.BodyBounds.Height * cameraScale >= 120;
-
-    private static void DrawNode(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, double cameraScale, bool drawDetails)
+    private static void DrawNode(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, double cameraScale)
     {
         var bounds = ToRect(node.Bounds);
         var statusColor = NodeStatusColor(node.Document.Metadata.Status, palette);
@@ -237,13 +223,6 @@ public sealed class DiffSceneRenderer
         canvas.DrawRoundRect(bounds, 6, 6, backgroundPaint);
         DrawNodeStatusAccent(canvas, bounds, statusColor);
         canvas.DrawRoundRect(bounds, 6, 6, borderPaint);
-
-        if (!drawDetails)
-        {
-            DrawResizeHandles(canvas, node, palette, cameraScale);
-            return;
-        }
-
         DrawTitle(canvas, node, palette, cameraScale);
         DrawDocumentBody(canvas, node, palette, annotations, cameraScale);
         DrawFooter(canvas, node, palette, annotations);

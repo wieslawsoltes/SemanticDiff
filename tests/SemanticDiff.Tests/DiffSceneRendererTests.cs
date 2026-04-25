@@ -141,7 +141,7 @@ public sealed class DiffSceneRendererTests
     }
 
     [Fact]
-    public void Render_UsesCompactNodeShellsWhenZoomedOut()
+    public void Render_DrawsNodeDetailsWhenZoomedOut()
     {
         var documents = CreateDocuments(80);
         var scene = DiffCanvasScene.FromDocuments(documents);
@@ -153,7 +153,7 @@ public sealed class DiffSceneRendererTests
         renderer.Render(surface.Canvas, new SKSize(320, 240), scene, DiffCanvasColorTheme.Dark);
 
         Assert.True(renderer.LastRenderStats.DrawnNodeCount > 0);
-        Assert.Equal(0, renderer.LastRenderStats.DetailedNodeCount);
+        Assert.Equal(renderer.LastRenderStats.DrawnNodeCount, renderer.LastRenderStats.DetailedNodeCount);
     }
 
     private static SKColor RenderStatusBadgePixel(DiffFileStatus status)

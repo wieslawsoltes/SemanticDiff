@@ -915,14 +915,14 @@ Current status: complete. Branch mode and the other diff scopes now surface the 
 - [x] Add viewport-aware renderer culling so offscreen document nodes are skipped instead of fully drawn on every frame.
 - [x] Cache semantic edge endpoint lookup during rendering and cull edges whose projected world bounds do not intersect the viewport.
 - [x] Group visible annotations by document once per frame instead of repeatedly scanning all annotations for each node.
-- [x] Add low-zoom node level-of-detail rendering so large branch graphs draw compact node shells instead of unreadable full document text.
+- [x] Keep zoomed-out visible nodes rendering their normal document detail while using viewport culling for scale.
 - [x] Add render statistics for regression coverage and diagnostics of total, drawn, and detailed node/edge counts.
 - [x] Add graph layout modes for Auto, Layered, Grid, Compact grid, and Status lanes, with Auto selecting compact grid for very large change sets.
 - [x] Persist the selected layout mode in app state and expose it through a compact Settings dropdown.
 - [x] Add regression coverage for renderer culling, low-zoom compact rendering, compact auto layout, status lanes, and layout-mode state persistence.
 - [x] Validate the change with focused tests and the Uno app build.
 
-Current status: complete. Large branch-mode layouts now avoid drawing offscreen nodes and tiny unreadable document bodies, the graph engine can choose compact visualizations for hundreds of changed files, and the Settings rail exposes persisted layout modes so reviewers can switch between semantic layering, deterministic grids, compact grids, and status-grouped lanes.
+Current status: complete. Large branch-mode layouts now avoid drawing offscreen nodes while keeping visible zoomed-out nodes rendered with their normal document detail, the graph engine can choose compact visualizations for hundreds of changed files, and the Settings rail exposes persisted layout modes so reviewers can switch between semantic layering, deterministic grids, compact grids, and status-grouped lanes.
 
 ## 14. Initial Technical Decisions
 
