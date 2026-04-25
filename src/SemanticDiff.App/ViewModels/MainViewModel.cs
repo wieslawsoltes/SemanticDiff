@@ -17,6 +17,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly IGitReviewService gitReviewService;
     private readonly IGitBlameService gitBlameService;
     private readonly IReadOnlyList<IDiffAnnotationProvider> annotationProviders = [new BuiltInDiffAnnotationProvider()];
+    private readonly LatestRequestGate repositoryLoadRequests = new();
     private readonly SynchronizationContext? synchronizationContext;
     private GraphLayoutResult? previousLayout;
     private ImmutableHashSet<DiffDocumentId> pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
@@ -292,14 +293,29 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        var repositoryRequestId = repositoryLoadRequests.BeginRequest();
         var operation = BeginOperation("Opening repository");
         try
         {
             var cancellationToken = operation.Token;
             var repositoryDiscovery = new GitRepositoryDiscovery();
             var repositoryRoot = await repositoryDiscovery.DiscoverRootAsync(selectedPath, cancellationToken);
+            EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
             if (string.IsNullOrWhiteSpace(repositoryRoot))
             {
+                currentRepositoryPath = null;
+                appState = appState with
+                {
+                    RepositoryPath = null,
+                    LayoutNodes = null
+                };
+                ApplyAppStateToPresentation();
+                ResetRepositoryPresentation(
+                    "SemanticDiff",
+                    "No Git repository found",
+                    $"No Git repository found at {selectedPath}",
+                    isRepository: false);
+                await StopRepositoryWatcherAsync();
                 AddDiagnostic("Warning", $"No Git repository found at {selectedPath}");
                 CompleteOperation(operation, "Repository not found");
                 return;
@@ -314,19 +330,34 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             previousLayout = null;
             pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
             ApplyAppStateToPresentation();
+            ResetRepositoryPresentation(
+                Path.GetFileName(repositoryRoot),
+                $"{Path.GetFileName(repositoryRoot)} | loading selected repository",
+                $"{Path.GetFileName(repositoryRoot)} | loading selected repository",
+                isRepository: true);
             await SaveOptionsAsync(cancellationToken);
+            EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
             AddDiagnostic("Info", $"Selected repository {repositoryRoot}");
             CompleteOperation(operation, "Repository selected");
-            await LoadRepositoryAsync(loadAppState: false, operationMessage: "Loading selected repository");
+            await LoadRepositoryAsync(loadAppState: false, operationMessage: "Loading selected repository", repositoryRequestId: repositoryRequestId);
         }
         catch (OperationCanceledException)
         {
+            var shouldReport = IsCurrentRepositoryRequest(repositoryRequestId) && IsCurrentOperation(operation);
             CompleteOperation(operation, "Open canceled");
+            if (shouldReport)
+            {
+                StatusText = "Open canceled | showing current diff graph";
+            }
         }
         catch (Exception exception)
         {
+            var shouldReport = IsCurrentRepositoryRequest(repositoryRequestId) && IsCurrentOperation(operation);
             CompleteOperation(operation, "Open failed");
-            AddDiagnostic("Error", exception.Message);
+            if (shouldReport)
+            {
+                AddDiagnostic("Error", exception.Message);
+            }
         }
     }
 
@@ -720,18 +751,32 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private async Task LoadRepositoryAsync(bool loadAppState, string operationMessage, DiffCanvasSceneViewState? preservedSceneState = null)
+    private async Task LoadRepositoryAsync(
+        bool loadAppState,
+        string operationMessage,
+        DiffCanvasSceneViewState? preservedSceneState = null,
+        long repositoryRequestId = 0)
     {
+        var requestId = repositoryRequestId == 0 ? repositoryLoadRequests.BeginRequest() : repositoryRequestId;
+        if (!IsCurrentRepositoryRequest(requestId))
+        {
+            return;
+        }
+
         var operation = BeginOperation(operationMessage);
         try
         {
             var cancellationToken = operation.Token;
+            EnsureCurrentRepositoryRequest(requestId, cancellationToken);
             if (loadAppState)
             {
                 ReportProgress(0.05, "Loading app state", cancellationToken);
-                appState = await appStateStore.LoadAsync(cancellationToken);
+                var loadedState = await appStateStore.LoadAsync(cancellationToken);
+                EnsureCurrentRepositoryRequest(requestId, cancellationToken);
+                appState = loadedState;
             }
 
+            EnsureCurrentRepositoryRequest(requestId, cancellationToken);
             ApplyAppStateToPresentation();
             ReportProgress(0.1, "Discovering repository", cancellationToken);
             var repositoryDiscovery = new GitRepositoryDiscovery();
@@ -739,11 +784,14 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 ? appState.RepositoryPath
                 : Environment.CurrentDirectory;
             var repositoryRoot = await repositoryDiscovery.DiscoverRootAsync(startPath, cancellationToken);
+            EnsureCurrentRepositoryRequest(requestId, cancellationToken);
 
             if (string.IsNullOrWhiteSpace(repositoryRoot))
             {
                 currentRepositoryPath = null;
                 await StopRepositoryWatcherAsync();
+                EnsureCurrentRepositoryRequest(requestId, cancellationToken);
+                InitializeSampleDocuments(SampleDiffDocuments.Create());
                 StatusText = "No Git repository found | showing sample diff graph";
                 AddDiagnostic("Info", "No Git repository found; using sample graph");
                 CompleteOperation(operation, "Sample graph ready");
@@ -751,25 +799,28 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             }
 
             currentRepositoryPath = repositoryRoot;
+            appState = appState with { RepositoryPath = repositoryRoot };
+            ApplyAppStateToPresentation();
             var documentService = new GitDiffDocumentService();
             var request = new GitDiffRequest(repositoryRoot, appState.DiffScope, NormalizeRef(appState.BaseRef), NormalizeRef(appState.HeadRef));
             ReportProgress(0.25, "Loading Git diff", cancellationToken);
             var snapshot = await documentService.LoadDocumentsAsync(request, appState.DiffContextMode, cancellationToken);
+            EnsureCurrentRepositoryRequest(requestId, cancellationToken);
 
             if (snapshot.Documents.Length == 0)
             {
-                currentDocumentsAreRepositoryDocuments = false;
                 var emptyScopeText = FormatDiffScope(appState.DiffScope);
-                UpdateWorkspaceSummary(
+                ResetRepositoryPresentation(
                     Path.GetFileName(repositoryRoot),
                     $"{Path.GetFileName(repositoryRoot)} | no {emptyScopeText} changes | {FormatDiffContextMode(appState.DiffContextMode)} | base {snapshot.GitSnapshot.DefaultBranch ?? "unknown"}",
-                    0,
-                    0);
+                    $"{Path.GetFileName(repositoryRoot)} | no {emptyScopeText} changes",
+                    isRepository: true);
                 await SaveOptionsAsync(cancellationToken);
+                EnsureCurrentRepositoryRequest(requestId, cancellationToken);
                 await RestartRepositoryWatcherAsync(repositoryRoot, cancellationToken);
-                StatusText = $"{Path.GetFileName(repositoryRoot)} | no {emptyScopeText} changes | showing sample diff graph";
+                EnsureCurrentRepositoryRequest(requestId, cancellationToken);
                 AddDiagnostic("Info", $"Repository has no {emptyScopeText} changes");
-                CompleteOperation(operation, "Sample graph ready");
+                CompleteOperation(operation, "Repository has no changes");
                 return;
             }
 
@@ -785,25 +836,36 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
             reviewedDocuments = InlineDiffAnnotator.Annotate(reviewedDocuments);
             var tokenizedDocuments = await TokenizeAsync(reviewedDocuments, cancellationToken, tokenizationProgress);
+            EnsureCurrentRepositoryRequest(requestId, cancellationToken);
             await SetDocumentsAsync(
                 tokenizedDocuments,
                 $"{Path.GetFileName(repositoryRoot)} | {snapshot.GitSnapshot.Files.Length} {FormatDiffScope(appState.DiffScope)} changes | {FormatDiffContextMode(appState.DiffContextMode)} | {FormatReviewMode(appState.ReviewMode)} | {FormatReferenceText(request, snapshot.GitSnapshot.DefaultBranch)}",
                 repositoryRoot,
                 snapshot.GitSnapshot,
                 preservedSceneState,
+                requestId,
                 cancellationToken);
+            EnsureCurrentRepositoryRequest(requestId, cancellationToken);
             CompleteOperation(operation, "Repository diff ready");
         }
         catch (OperationCanceledException)
         {
+            var shouldReport = IsCurrentRepositoryRequest(requestId) && IsCurrentOperation(operation);
             CompleteOperation(operation, "Load canceled");
-            StatusText = "Load canceled | showing current diff graph";
+            if (shouldReport)
+            {
+                StatusText = "Load canceled | showing current diff graph";
+            }
         }
         catch (Exception exception)
         {
+            var shouldReport = IsCurrentRepositoryRequest(requestId) && IsCurrentOperation(operation);
             CompleteOperation(operation, "Load failed");
-            StatusText = $"Git load failed: {exception.Message} | showing sample diff graph";
-            AddDiagnostic("Error", exception.Message);
+            if (shouldReport)
+            {
+                StatusText = $"Git load failed: {exception.Message} | showing sample diff graph";
+                AddDiagnostic("Error", exception.Message);
+            }
         }
     }
 
@@ -824,14 +886,34 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         StatusText = $"sample fallback | {documents.Length} nodes | loading repository diff";
     }
 
+    private void ResetRepositoryPresentation(string repositoryName, string contextText, string statusText, bool isRepository)
+    {
+        currentDocuments = [];
+        currentSemanticGraph = SemanticGraph.Empty;
+        currentStatusPrefix = contextText;
+        currentDocumentsAreRepositoryDocuments = isRepository;
+        previousLayout = null;
+        pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
+        SelectExplorerItem(null);
+        UpdateChangeNavigation(currentDocuments);
+        SetExplorerItems([]);
+        UpdateSemanticNavigation(SemanticGraph.Empty, currentDocuments);
+        UpdateImpactSummary(currentDocuments, SemanticGraph.Empty);
+        UpdateWorkspaceSummary(repositoryName, contextText, 0, 0);
+        Scene = CreateScene(currentDocuments, SemanticGraph.Empty, null);
+        StatusText = statusText;
+    }
+
     private async Task SetDocumentsAsync(
         ImmutableArray<DiffDocumentSnapshot> documents,
         string statusPrefix,
         string repositoryPath,
         GitDiffSnapshot? gitSnapshot,
         DiffCanvasSceneViewState? preservedSceneState,
+        long repositoryRequestId,
         CancellationToken cancellationToken)
     {
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         var preservedSelectedDocumentId = preservedSceneState?.SelectedDocumentId ?? selectedExplorerItem?.DocumentId;
         currentDocuments = documents;
         currentStatusPrefix = statusPrefix;
@@ -843,9 +925,11 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
         ReportProgress(0.68, $"Analyzing semantics ({FormatSemanticAnalysisMode(appState.SemanticAnalysisMode)})", cancellationToken);
         var semanticGraph = await AnalyzeSemanticsAsync(repositoryPath, gitSnapshot, documents, appState.SemanticAnalysisMode, cancellationToken);
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         currentSemanticGraph = semanticGraph;
         ReportProgress(0.82, "Running graph layout", cancellationToken);
         var layout = await LayoutDocumentsAsync(documents, semanticGraph, cancellationToken);
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         previousLayout = layout;
         Scene = CreateScene(documents, semanticGraph, layout);
         if (preservedSceneState is not null)
@@ -866,7 +950,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         StatusText = $"{statusPrefix} | {documents.Length} nodes | {semanticGraph.Edges.Length} semantic edges | {FormatImpactStatus(impactSummary)} | layout ready";
         ReportProgress(0.95, "Saving app state", cancellationToken);
         await SaveStateAsync(cancellationToken);
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         await RestartRepositoryWatcherAsync(repositoryPath, cancellationToken);
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         AddDiagnostic("Info", preservedSceneState is null
             ? $"Loaded {documents.Length} document nodes, {semanticGraph.Edges.Length} semantic edges, {impactSummary.ChangedSymbolCount} changed symbols"
             : $"Smart refresh synced {documents.Length} document nodes without resetting the canvas view");
@@ -1476,14 +1562,18 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private async ValueTask StopRepositoryWatcherAsync()
     {
         pendingAutoReload?.Cancel();
-        if (repositoryFileWatcher is null)
+        var watcher = repositoryFileWatcher;
+        if (watcher is null)
         {
             return;
         }
 
-        repositoryFileWatcher.Changed -= OnRepositoryFileChanged;
-        await repositoryFileWatcher.DisposeAsync();
-        repositoryFileWatcher = null;
+        watcher.Changed -= OnRepositoryFileChanged;
+        await watcher.DisposeAsync();
+        if (ReferenceEquals(repositoryFileWatcher, watcher))
+        {
+            repositoryFileWatcher = null;
+        }
     }
 
     private void OnRepositoryFileChanged(object? sender, RepositoryFileChangedEventArgs args)
@@ -1644,6 +1734,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         AddDiagnostic("Info", message);
         return operation;
     }
+
+    private bool IsCurrentOperation(CancellationTokenSource operation) => ReferenceEquals(currentOperation, operation);
+
+    private bool IsCurrentRepositoryRequest(long repositoryRequestId) => repositoryLoadRequests.IsCurrent(repositoryRequestId);
+
+    private void EnsureCurrentRepositoryRequest(long repositoryRequestId, CancellationToken cancellationToken) =>
+        repositoryLoadRequests.ThrowIfStale(repositoryRequestId, cancellationToken);
 
     private void CompleteOperation(CancellationTokenSource operation, string message)
     {

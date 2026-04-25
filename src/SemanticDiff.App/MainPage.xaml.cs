@@ -48,6 +48,10 @@ public sealed partial class MainPage : Page
         {
             ApplyLeftPaneWidth(ViewModel.LeftPaneWidth);
         }
+        else if (args.PropertyName == nameof(ViewModel.Scene))
+        {
+            DiffCanvas.Scene = ViewModel.Scene;
+        }
     }
 
     private void ApplyRequestedTheme()

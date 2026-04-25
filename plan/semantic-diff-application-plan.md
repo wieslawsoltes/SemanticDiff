@@ -968,6 +968,18 @@ Current status: complete. The canvas can now overlay folder, semantic, language,
 
 Current status: complete. Group labels and per-node font controls now keep stable device-pixel sizing during zoom, improving readability on large grouped layouts without changing node geometry or interaction behavior.
 
+### Phase 41: Repository Open Refresh Reliability
+
+- [x] Add a latest-request gate for repository loads so an older open, reload, semantic analysis, or layout continuation cannot publish state after a newer folder selection.
+- [x] Reset the workbench to a fresh empty scene as soon as a new repository root is accepted, clearing stale nodes, explorer items, semantic navigation, pinned layout state, and selected file state while the real diff loads.
+- [x] Refresh the canvas explicitly when the view model publishes a new scene so the Skia host receives scene changes even if Uno binding timing is delayed.
+- [x] Replace stale no-changes behavior with an explicit empty repository scene and status summary instead of leaving the previous repository graph visible.
+- [x] Harden watcher shutdown so late cleanup from an older repository load cannot clear a watcher created by a newer load.
+- [x] Add regression coverage for latest-request invalidation.
+- [x] Validate the change with focused request-gate tests and the full solution test suite.
+
+Current status: complete. Opening repositories back-to-back now keeps only the newest request eligible to update the workbench, and empty or no-change repository states actively refresh the canvas instead of leaving stale graph content behind.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.
