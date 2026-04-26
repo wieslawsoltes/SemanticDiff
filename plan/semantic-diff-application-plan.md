@@ -1020,6 +1020,16 @@ Current status: complete. Large mixed branches now load and display complete sem
 
 Current status: complete. Large branch graphs now fit correctly, organize hundreds of nodes into compact repository-area clusters, gain better semantic/structural connection signals, and redraw dense edge sets with cached Skia geometry instead of per-frame edge reconstruction.
 
+### Phase 45: Node Scrollbar Drag Hit Testing
+
+- [x] Trace node scrollbar pointer handling through `DiffCanvasControl`, `DiffCanvasScene`, and `DiffNode.GetScrollbarThumbBounds`.
+- [x] Identify that right-edge resize hit testing can capture pointer presses on the scrollbar thumb before the scrollbar drag path runs.
+- [x] Exclude non-empty scrollbar thumb bounds from resize-handle hit testing so node scrollbars receive drag gestures reliably.
+- [x] Add regression coverage proving scrollbar-thumb clicks are not reported as resize-handle hits and still start scrollbar interaction.
+- [x] Validate the change with focused canvas interaction tests and the full solution test suite.
+
+Current status: complete. Scrollbar thumbs inside document nodes now win hit testing over right-edge resize handles, restoring direct draggable node scrolling without weakening resize behavior elsewhere.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.

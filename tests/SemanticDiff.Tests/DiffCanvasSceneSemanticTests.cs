@@ -200,6 +200,25 @@ public sealed class DiffCanvasSceneSemanticTests
     }
 
     [Fact]
+    public void TryHitTestResizeHandle_DoesNotCaptureScrollbarThumb()
+    {
+        var factory = new DiffDocumentFactory();
+        var text = string.Join('\n', Enumerable.Range(1, 120).Select(line => $"line {line}"));
+        var document = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), text);
+        var scene = DiffCanvasScene.FromDocuments([document]);
+        var node = scene.Nodes[0];
+        var thumb = node.GetScrollbarThumbBounds(scene.Camera.Scale);
+        var screenPoint = scene.Camera.WorldToScreen(thumb.Center);
+
+        var resizeHit = scene.TryHitTestResizeHandle(screenPoint, out _, out _);
+        var scrollbarHit = scene.TryHitTestScrollbarThumb(screenPoint, out var hitNode, out _);
+
+        Assert.False(resizeHit);
+        Assert.True(scrollbarHit);
+        Assert.Same(node, hitNode);
+    }
+
+    [Fact]
     public void FontSizeButton_AdjustsFontSizeAndLineHeight()
     {
         var factory = new DiffDocumentFactory();

@@ -304,6 +304,12 @@ public sealed class DiffCanvasScene
                 continue;
             }
 
+            var scrollbarThumb = candidate.GetScrollbarThumbBounds(Camera.Scale);
+            if (!scrollbarThumb.IsEmpty && scrollbarThumb.Inflate(handleSize * 0.35).Contains(worldPoint))
+            {
+                continue;
+            }
+
             handle = GetResizeHandle(candidate.Bounds, worldPoint, handleSize);
             if (handle != DiffNodeResizeHandle.None)
             {
