@@ -1006,6 +1006,20 @@ Current status: complete. Repository loading now produces a usable graph in prog
 
 Current status: complete. Large mixed branches now load and display complete semantic navigation results, including C# type/member symbols that were previously loaded or loadable but hidden by the rail cap and path-first ordering.
 
+### Phase 44: Large Branch Layout Quality and Skia Rendering Cache
+
+- [x] Analyze `/Users/wieslawsoltes/GitHub/Dock` on `dock-uno-platform-port`, confirming the branch-mode shape is 405 changed files with dominant `src/Dock.Uno`, `src/Dock.Uno.Themes.Fluent`, and sample areas.
+- [x] Lower the camera scale floor so Fit can frame multi-million-world-unit graphs instead of clamping to an over-zoomed viewport.
+- [x] Replace large Layered-mode MSAGL layouts with a compact semantic-cluster layout for large branches, grouping files by repository area and ordering central/high-signal documents first.
+- [x] Keep default Layered layout semantics for normal repositories while avoiding sparse giant worlds for hundreds-file branch diffs.
+- [x] Improve semantic graph quality with path-based XAML/code-behind companion edges and repository-area cohesion edges so large branch layouts have useful structural connections even when symbol references alone are sparse.
+- [x] Optimize semantic graph filtering and binding inference with indexed anchor/member lookups instead of repeated full-anchor scans.
+- [x] Add Skia renderer scene caching for node lookup, annotation grouping, edge bounds, and reusable edge `SKPath` geometry so dense canvases redraw without rebuilding dictionaries and cubic paths every frame.
+- [x] Add regression coverage for ultra-large Fit, Dock-shaped large branch clustering, path companion inference, repository-area cohesion links, and renderer edge-cache reuse.
+- [x] Validate the change with focused layout/viewport/semantic/renderer tests and the full solution test suite.
+
+Current status: complete. Large branch graphs now fit correctly, organize hundreds of nodes into compact repository-area clusters, gain better semantic/structural connection signals, and redraw dense edge sets with cached Skia geometry instead of per-frame edge reconstruction.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.

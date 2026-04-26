@@ -218,6 +218,7 @@ public sealed class DiffCanvasScene
     private readonly List<GraphEdge> edges;
     private readonly ImmutableArray<GraphGroup> groups;
     private readonly ImmutableArray<DiffAnnotation> annotations;
+    private int geometryVersion;
 
     public DiffCanvasScene(
         IEnumerable<DiffNode> nodes,
@@ -242,6 +243,8 @@ public sealed class DiffCanvasScene
     public ImmutableArray<DiffAnnotation> Annotations => annotations;
 
     public DiffAnnotationVisibilityState AnnotationVisibility { get; }
+
+    public int GeometryVersion => geometryVersion;
 
     public CameraState Camera { get; private set; } = CameraState.Default;
 
@@ -390,12 +393,14 @@ public sealed class DiffCanvasScene
     {
         node.Bounds = node.Bounds.Translate(deltaX, deltaY);
         node.IsPinned = true;
+        geometryVersion++;
     }
 
     public void MoveNodeTo(DiffNode node, double x, double y)
     {
         node.Bounds = new Rect2(x, y, node.Bounds.Width, node.Bounds.Height);
         node.IsPinned = true;
+        geometryVersion++;
     }
 
     public void ResizeNode(DiffNode node, DiffNodeResizeHandle handle, double deltaX, double deltaY)
@@ -457,6 +462,7 @@ public sealed class DiffCanvasScene
         node.Bounds = new Rect2(left, top, right - left, bottom - top);
         node.IsPinned = true;
         node.ClampScrollOffset();
+        geometryVersion++;
     }
 
     public bool TryScrollNodeAt(Point2 screenPoint, double deltaY)
@@ -534,6 +540,8 @@ public sealed class DiffCanvasScene
             node.SetFontSize(nodeState.FontSize);
             node.RestoreScrollOffset(nodeState.ScrollOffsetY);
         }
+
+        geometryVersion++;
     }
 
     private static DiffNodeResizeHandle GetResizeHandle(Rect2 bounds, Point2 worldPoint, double handleSize)

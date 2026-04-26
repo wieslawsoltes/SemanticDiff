@@ -36,12 +36,13 @@ public sealed class SemanticOrchestrator
             .GroupBy(anchor => anchor.Id, StringComparer.Ordinal)
             .Select(group => group.First())
             .ToImmutableArray();
+        var anchorsById = deduplicatedAnchors.ToDictionary(anchor => anchor.Id, StringComparer.Ordinal);
         var inferredEdges = InferCrossProviderEdges(deduplicatedAnchors);
         var deduplicatedEdges = edges
             .Concat(inferredEdges)
             .GroupBy(edge => edge.Id, StringComparer.Ordinal)
             .Select(group => group.OrderByDescending(edge => edge.Confidence).First())
-            .Where(edge => IsIncluded(edge, deduplicatedAnchors, filter))
+            .Where(edge => IsIncluded(edge, anchorsById, filter))
             .ToImmutableArray();
 
         return new SemanticGraph(deduplicatedAnchors, deduplicatedEdges);
@@ -49,6 +50,16 @@ public sealed class SemanticOrchestrator
 
     private static IEnumerable<SemanticEdge> InferCrossProviderEdges(ImmutableArray<SemanticAnchor> anchors)
     {
+        foreach (var edge in InferPathCompanionEdges(anchors))
+        {
+            yield return edge;
+        }
+
+        foreach (var edge in InferRepositoryAreaEdges(anchors))
+        {
+            yield return edge;
+        }
+
         foreach (var group in anchors.Where(IsCSharpTypeAnchor).GroupBy(anchor => anchor.DisplayName, StringComparer.Ordinal))
         {
             var distinctDocuments = group.Select(anchor => anchor.DocumentId).Distinct().ToArray();
@@ -97,16 +108,20 @@ public sealed class SemanticOrchestrator
             }
         }
 
+        var membersByName = anchors
+            .Where(anchor => anchor.Kind == SemanticAnchorKind.Member)
+            .GroupBy(anchor => anchor.DisplayName, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.OrderBy(anchor => anchor.DocumentId.Value, StringComparer.Ordinal).ToArray(), StringComparer.Ordinal);
         foreach (var binding in anchors.Where(anchor => anchor.Kind == SemanticAnchorKind.Binding).OrderBy(anchor => anchor.DocumentId.Value, StringComparer.Ordinal))
         {
             var bindingName = NormalizeBindingName(binding.DisplayName);
-            if (string.IsNullOrWhiteSpace(bindingName))
+            if (string.IsNullOrWhiteSpace(bindingName) || !membersByName.TryGetValue(bindingName, out var members))
             {
                 continue;
             }
 
-            var matchingMembers = anchors
-                .Where(anchor => anchor.Kind == SemanticAnchorKind.Member && anchor.DocumentId != binding.DocumentId && string.Equals(anchor.DisplayName, bindingName, StringComparison.Ordinal))
+            var matchingMembers = members
+                .Where(anchor => anchor.DocumentId != binding.DocumentId)
                 .OrderBy(anchor => anchor.DocumentId.Value, StringComparer.Ordinal)
                 .Take(5)
                 .ToArray();
@@ -121,6 +136,124 @@ public sealed class SemanticOrchestrator
             }
         }
     }
+
+    private static IEnumerable<SemanticEdge> InferPathCompanionEdges(ImmutableArray<SemanticAnchor> anchors)
+    {
+        var primaryAnchorsByPath = anchors
+            .GroupBy(anchor => NormalizePath(anchor.DocumentId.Value), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => SelectPrimaryAnchor(group), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in primaryAnchorsByPath.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!TryGetCompanionPath(item.Key, out var companionPath) ||
+                !primaryAnchorsByPath.TryGetValue(companionPath, out var companionAnchor) ||
+                string.Compare(item.Value.DocumentId.Value, companionAnchor.DocumentId.Value, StringComparison.Ordinal) >= 0)
+            {
+                continue;
+            }
+
+            yield return new SemanticEdge(
+                $"{SemanticEdgeKind.GeneratedFile}:{item.Value.Id}->{companionAnchor.Id}:companion",
+                item.Value.Id,
+                companionAnchor.Id,
+                SemanticEdgeKind.GeneratedFile,
+                0.86,
+                "companion");
+        }
+    }
+
+    private static IEnumerable<SemanticEdge> InferRepositoryAreaEdges(ImmutableArray<SemanticAnchor> anchors)
+    {
+        var primaryAnchorsByDocument = anchors
+            .GroupBy(anchor => anchor.DocumentId)
+            .Select(group => SelectPrimaryAnchor(group))
+            .Where(anchor => IsRepositoryAreaAnchor(anchor))
+            .ToArray();
+
+        foreach (var group in primaryAnchorsByDocument
+            .GroupBy(anchor => GetRepositoryArea(anchor.DocumentId.Value), StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() >= 2)
+            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var ordered = group.OrderBy(anchor => anchor.DocumentId.Value, StringComparer.OrdinalIgnoreCase).ToArray();
+            for (var anchorIndex = 0; anchorIndex < ordered.Length - 1; anchorIndex++)
+            {
+                var source = ordered[anchorIndex];
+                var target = ordered[anchorIndex + 1];
+                yield return new SemanticEdge(
+                    $"{SemanticEdgeKind.ProjectReference}:{source.Id}->{target.Id}:area",
+                    source.Id,
+                    target.Id,
+                    SemanticEdgeKind.ProjectReference,
+                    0.78,
+                    "area");
+            }
+        }
+    }
+
+    private static SemanticAnchor SelectPrimaryAnchor(IEnumerable<SemanticAnchor> anchors) => anchors
+        .OrderBy(PrimaryAnchorPriority)
+        .ThenBy(anchor => anchor.Range.Line)
+        .ThenBy(anchor => anchor.DisplayName, StringComparer.Ordinal)
+        .First();
+
+    private static int PrimaryAnchorPriority(SemanticAnchor anchor) => anchor.Kind switch
+    {
+        SemanticAnchorKind.Type => 0,
+        SemanticAnchorKind.XamlRoot => 1,
+        SemanticAnchorKind.Project => 2,
+        SemanticAnchorKind.Namespace => 3,
+        SemanticAnchorKind.Member => 4,
+        SemanticAnchorKind.Resource => 5,
+        SemanticAnchorKind.Binding => 6,
+        _ => 7
+    };
+
+    private static bool IsRepositoryAreaAnchor(SemanticAnchor anchor) => anchor.Kind is
+        SemanticAnchorKind.Type or
+        SemanticAnchorKind.XamlRoot or
+        SemanticAnchorKind.Project or
+        SemanticAnchorKind.Namespace or
+        SemanticAnchorKind.Member;
+
+    private static bool TryGetCompanionPath(string path, out string companionPath)
+    {
+        if (path.EndsWith(".xaml.cs", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".axaml.cs", StringComparison.OrdinalIgnoreCase))
+        {
+            companionPath = path[..^3];
+            return true;
+        }
+
+        if (path.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".axaml", StringComparison.OrdinalIgnoreCase))
+        {
+            companionPath = path + ".cs";
+            return true;
+        }
+
+        companionPath = string.Empty;
+        return false;
+    }
+
+    private static string GetRepositoryArea(string path)
+    {
+        var normalizedPath = NormalizePath(path);
+        var segments = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length >= 2 && IsSourceLikeRoot(segments[0]))
+        {
+            return $"{segments[0]}/{segments[1]}";
+        }
+
+        return segments.Length == 0 || segments.Length == 1 ? "Repository root" : segments[0];
+    }
+
+    private static bool IsSourceLikeRoot(string segment) =>
+        segment.Equals("src", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("samples", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("examples", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("tests", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("test", StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizePath(string path) => path.Replace('\\', '/');
 
     private static bool IsCSharpTypeAnchor(SemanticAnchor anchor) =>
         anchor.Kind == SemanticAnchorKind.Type && anchor.Id.Contains(":type:", StringComparison.Ordinal);
@@ -138,7 +271,7 @@ public sealed class SemanticOrchestrator
         return dotIndex >= 0 ? displayName[..dotIndex] : displayName;
     }
 
-    private static bool IsIncluded(SemanticEdge edge, ImmutableArray<SemanticAnchor> anchors, SemanticGraphFilter filter)
+    private static bool IsIncluded(SemanticEdge edge, IReadOnlyDictionary<string, SemanticAnchor> anchorsById, SemanticGraphFilter filter)
     {
         if (edge.Confidence < filter.MinimumConfidence)
         {
@@ -155,9 +288,8 @@ public sealed class SemanticOrchestrator
             return true;
         }
 
-        var source = anchors.FirstOrDefault(anchor => anchor.Id == edge.SourceAnchorId);
-        var target = anchors.FirstOrDefault(anchor => anchor.Id == edge.TargetAnchorId);
-        if (source is null || target is null)
+        if (!anchorsById.TryGetValue(edge.SourceAnchorId, out var source) ||
+            !anchorsById.TryGetValue(edge.TargetAnchorId, out var target))
         {
             return false;
         }

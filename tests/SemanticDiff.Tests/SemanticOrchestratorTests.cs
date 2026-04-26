@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using SemanticDiff.Core;
 using SemanticDiff.Diff;
 using SemanticDiff.Semantics;
@@ -99,5 +100,46 @@ public sealed class SemanticOrchestratorTests
 
         Assert.Contains(graph.Edges, edge => edge.Kind == SemanticEdgeKind.Resource && edge.Label == "resource");
         Assert.Contains(graph.Edges, edge => edge.Kind == SemanticEdgeKind.Binding && edge.Label == "binding");
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_InfersCompanionEdgesFromXamlCodeBehindPaths()
+    {
+        var factory = new DiffDocumentFactory();
+        var view = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId("Views/MainView.xaml"), "Views/MainView.xaml", null, DiffFileStatus.Modified, "XAML", 0, 0),
+            """
+            <Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />
+            """);
+        var codeBehind = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId("Views/MainView.xaml.cs"), "Views/MainView.xaml.cs", null, DiffFileStatus.Modified, "C#", 0, 0),
+            """
+            namespace Sample.Views;
+
+            public sealed partial class RenamedMainView
+            {
+            }
+            """);
+        var orchestrator = new SemanticOrchestrator([new CSharpSemanticProvider(), new XamlSemanticProvider()]);
+
+        var graph = await orchestrator.AnalyzeAsync(new SemanticAnalysisRequest(string.Empty, null, [view, codeBehind]), CancellationToken.None);
+
+        Assert.Contains(graph.Edges, edge => edge.Kind == SemanticEdgeKind.GeneratedFile && edge.Label == "companion");
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_InfersRepositoryAreaCohesionEdges()
+    {
+        var factory = new DiffDocumentFactory();
+        var documents = Enumerable.Range(0, 4)
+            .Select(index => factory.CreateFromText(
+                new DiffDocumentMetadata(new DiffDocumentId($"src/Dock.Uno/Changed{index}.cs"), $"src/Dock.Uno/Changed{index}.cs", null, DiffFileStatus.Modified, "C#", 0, 0),
+                $"namespace Dock.Uno; public sealed class Changed{index} {{ }}"))
+            .ToArray();
+        var orchestrator = new SemanticOrchestrator([new CSharpSemanticProvider()]);
+
+        var graph = await orchestrator.AnalyzeAsync(new SemanticAnalysisRequest(string.Empty, null, documents.ToImmutableArray()), CancellationToken.None);
+
+        Assert.True(graph.Edges.Count(edge => edge.Kind == SemanticEdgeKind.ProjectReference && edge.Label == "area") >= 3);
     }
 }

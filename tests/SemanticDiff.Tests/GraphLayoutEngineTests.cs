@@ -95,6 +95,30 @@ public sealed class GraphLayoutEngineTests
     }
 
     [Fact]
+    public async Task LayeredLayout_UsesCompactSemanticClustersForLargeBranchShape()
+    {
+        var paths = Enumerable.Range(0, 236).Select(index => $"src/Dock.Uno/File{index:000}.cs")
+            .Concat(Enumerable.Range(0, 95).Select(index => $"src/Dock.Uno.Themes.Fluent/Theme{index:000}.xaml"))
+            .Concat(Enumerable.Range(0, 60).Select(index => $"samples/DockUnoMvvmSample/Sample{index:000}.cs"))
+            .Concat(Enumerable.Range(0, 8).Select(index => $"samples/DockUnoSample/Sample{index:000}.cs"))
+            .Concat(["Dock.slnx", "Directory.Packages.props", "README.md", "build/Uno.props", "report/dock-uno-avalonia-to-uno-migration-log.md"])
+            .ToArray();
+        var documents = CreateDocuments(paths);
+        var request = new GraphLayoutRequest(documents, SemanticGraph.Empty, new Size2(620, 420), LayoutMode: GraphLayoutMode.Layered);
+        var engine = new MsaglGraphLayoutEngine();
+
+        var result = await engine.LayoutAsync(request, CancellationToken.None);
+
+        var bounds = Rect2.Union(result.Nodes.Select(node => node.Bounds));
+        Assert.Equal(documents.Length, result.Nodes.Length);
+        Assert.True(bounds.Width < 22_000);
+        Assert.True(bounds.Height < 12_000);
+        var sourceNode = Assert.Single(result.Nodes, node => node.DocumentId.Value == "src/Dock.Uno/File000.cs");
+        var sampleNode = Assert.Single(result.Nodes, node => node.DocumentId.Value == "samples/DockUnoMvvmSample/Sample000.cs");
+        Assert.True(sampleNode.Bounds.Top > sourceNode.Bounds.Top);
+    }
+
+    [Fact]
     public async Task StatusLaneLayout_GroupsDocumentsByStatus()
     {
         var documents = CreateDocuments(

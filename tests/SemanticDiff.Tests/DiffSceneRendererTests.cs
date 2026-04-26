@@ -195,6 +195,38 @@ public sealed class DiffSceneRendererTests
     }
 
     [Fact]
+    public void Render_CachesSceneEdgeGeometryAcrossFrames()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("B.cs"), "B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var third = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("C.cs"), "C.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class C { }");
+        var graph = new SemanticGraph(
+            [
+                new SemanticAnchor("A:type", first.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "A"),
+                new SemanticAnchor("B:type", second.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "B"),
+                new SemanticAnchor("C:type", third.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "C")
+            ],
+            [
+                new SemanticEdge("A->B", "A:type", "B:type", SemanticEdgeKind.SymbolReference, 0.82, "B"),
+                new SemanticEdge("B->C", "B:type", "C:type", SemanticEdgeKind.SymbolReference, 0.82, "C")
+            ]);
+        var scene = DiffCanvasScene.FromDocuments([first, second, third], graph, groupingMode: GraphGroupingMode.None);
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(1_400, 900));
+        renderer.Render(surface.Canvas, new SKSize(1_400, 900), scene, DiffCanvasColorTheme.Dark);
+        renderer.Render(surface.Canvas, new SKSize(1_400, 900), scene, DiffCanvasColorTheme.Dark);
+
+        Assert.Equal(scene.Edges.Count, renderer.LastRenderStats.CachedEdgePathCount);
+
+        scene.MoveNode(scene.Nodes[1], 42, 0);
+        renderer.Render(surface.Canvas, new SKSize(1_400, 900), scene, DiffCanvasColorTheme.Dark);
+
+        Assert.Equal(scene.Edges.Count, renderer.LastRenderStats.CachedEdgePathCount);
+    }
+
+    [Fact]
     public void Render_KeepsGraphGroupLabelsScreenStableAcrossZoom()
     {
         var group = new GraphGroup("folder:src/App", GraphGroupingMode.Folder, "src/App", new Rect2(100, 120, 2, 2), 4, 10, 3, 0);

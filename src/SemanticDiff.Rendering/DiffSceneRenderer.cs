@@ -14,13 +14,16 @@ public sealed record DiffSceneRenderStats(
     int DrawnNodeCount,
     int DetailedNodeCount,
     int TotalEdgeCount,
-    int DrawnEdgeCount)
+    int DrawnEdgeCount,
+    int CachedEdgePathCount)
 {
-    public static DiffSceneRenderStats Empty { get; } = new(0, 0, 0, 0, 0);
+    public static DiffSceneRenderStats Empty { get; } = new(0, 0, 0, 0, 0, 0);
 }
 
 public sealed class DiffSceneRenderer
 {
+    private RenderSceneCache? renderCache;
+
     private static readonly RendererPalette DarkPalette = new(
         Background: new SKColor(11, 15, 20),
         GridLine: new SKColor(25, 32, 42, 150),
@@ -100,23 +103,16 @@ public sealed class DiffSceneRenderer
         var palette = colorTheme == DiffCanvasColorTheme.Light ? LightPalette : DarkPalette;
         canvas.Clear(palette.Background);
         DrawGrid(canvas, canvasSize, scene.Camera, palette);
+        var cache = GetRenderCache(scene);
 
         var worldViewport = GetWorldViewport(scene.Camera, canvasSize)
             .Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 96));
-        var nodesById = scene.Nodes.ToDictionary(node => node.Document.Id.Value, StringComparer.Ordinal);
-        var visibleNodes = scene.Nodes
+        var visibleNodes = cache.Nodes
             .Where(node => node.Bounds.Intersects(worldViewport))
             .ToArray();
         var visibleGroups = scene.Groups
             .Where(group => group.Bounds.Intersects(worldViewport))
             .ToArray();
-        var visibleDocumentIds = visibleNodes
-            .Select(node => node.Document.Id)
-            .ToHashSet();
-        var annotationsByDocument = scene.Annotations
-            .Where(annotation => visibleDocumentIds.Contains(annotation.DocumentId) && scene.AnnotationVisibility.IsVisible(annotation.Kind))
-            .GroupBy(annotation => annotation.DocumentId)
-            .ToDictionary(group => group.Key, group => group.OrderBy(AnnotationPriority).ToArray());
         var drawnEdges = 0;
         canvas.Save();
         canvas.Translate((float)scene.Camera.OffsetX, (float)scene.Camera.OffsetY);
@@ -127,16 +123,19 @@ public sealed class DiffSceneRenderer
             DrawGroupRegion(canvas, group, palette, scene.Camera.Scale);
         }
 
-        foreach (var edge in scene.Edges)
+        using var edgePaint = new SKPaint
         {
-            if (!nodesById.TryGetValue(edge.SourceNodeId, out var source) ||
-                !nodesById.TryGetValue(edge.TargetNodeId, out var target) ||
-                !GetEdgeBounds(source, target).Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 80)).Intersects(worldViewport))
+            Style = SKPaintStyle.Stroke,
+            IsAntialias = true
+        };
+        foreach (var edge in cache.Edges)
+        {
+            if (!edge.Bounds.Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 80)).Intersects(worldViewport))
             {
                 continue;
             }
 
-            DrawEdge(canvas, edge, source, target, palette);
+            DrawEdge(canvas, edge, edgePaint, palette);
             drawnEdges++;
         }
 
@@ -146,14 +145,26 @@ public sealed class DiffSceneRenderer
                 canvas,
                 node,
                 palette,
-                annotationsByDocument.GetValueOrDefault(node.Document.Id) ?? [],
+                cache.AnnotationsByDocument.GetValueOrDefault(node.Document.Id) ?? [],
                 scene.Camera.Scale);
         }
 
-        LastRenderStats = new(scene.Nodes.Count, visibleNodes.Length, visibleNodes.Length, scene.Edges.Count, drawnEdges);
+        LastRenderStats = new(scene.Nodes.Count, visibleNodes.Length, visibleNodes.Length, scene.Edges.Count, drawnEdges, cache.Edges.Length);
         canvas.Restore();
         DrawGroupLabels(canvas, scene.Camera, visibleGroups, palette, canvasSize);
         DrawFontControls(canvas, scene.Camera, visibleNodes, palette, canvasSize);
+    }
+
+    private RenderSceneCache GetRenderCache(DiffCanvasScene scene)
+    {
+        if (renderCache is not null && renderCache.Matches(scene))
+        {
+            return renderCache;
+        }
+
+        renderCache?.Dispose();
+        renderCache = RenderSceneCache.Create(scene);
+        return renderCache;
     }
 
     private static void DrawGroupRegion(SKCanvas canvas, GraphGroup group, RendererPalette palette, double cameraScale)
@@ -236,25 +247,22 @@ public sealed class DiffSceneRenderer
         }
     }
 
-    private static void DrawEdge(SKCanvas canvas, GraphEdge edge, DiffNode source, DiffNode target, RendererPalette palette)
+    private static void DrawEdge(SKCanvas canvas, RenderGraphEdge edge, SKPaint paint, RendererPalette palette)
+    {
+        paint.Color = EdgeColorForKind(edge.Edge.Kind, palette).WithAlpha((byte)Math.Clamp(edge.Edge.Confidence * 220, 64, 220));
+        paint.StrokeWidth = (float)Math.Clamp(1.5 + Math.Log2(Math.Max(1, edge.Edge.BundleCount)), 2, 5);
+        canvas.DrawPath(edge.Path, paint);
+    }
+
+    private static SKPath CreateEdgePath(DiffNode source, DiffNode target)
     {
         var sourcePoint = new SKPoint((float)source.Bounds.Right, (float)source.Bounds.Center.Y);
         var targetPoint = new SKPoint((float)target.Bounds.Left, (float)target.Bounds.Center.Y);
         var controlOffset = Math.Max(120, Math.Abs(targetPoint.X - sourcePoint.X) * 0.35f);
-
-        using var path = new SKPath();
+        var path = new SKPath();
         path.MoveTo(sourcePoint);
         path.CubicTo(sourcePoint.X + controlOffset, sourcePoint.Y, targetPoint.X - controlOffset, targetPoint.Y, targetPoint.X, targetPoint.Y);
-
-        using var paint = new SKPaint
-        {
-            Color = EdgeColorForKind(edge.Kind, palette).WithAlpha((byte)Math.Clamp(edge.Confidence * 220, 64, 220)),
-            StrokeWidth = (float)Math.Clamp(1.5 + Math.Log2(Math.Max(1, edge.BundleCount)), 2, 5),
-            Style = SKPaintStyle.Stroke,
-            IsAntialias = true
-        };
-
-        canvas.DrawPath(path, paint);
+        return path;
     }
 
     private static Rect2 GetEdgeBounds(DiffNode source, DiffNode target)
@@ -765,6 +773,73 @@ public sealed class DiffSceneRenderer
         bold ? SKFontStyle.Bold : SKFontStyle.Normal);
 
     private static TextStyle CreateCodeTextStyle(float size, SKColor color) => new("Menlo", size, color, SKFontStyle.Normal);
+
+    private sealed record RenderGraphEdge(GraphEdge Edge, DiffNode Source, DiffNode Target, Rect2 Bounds, SKPath Path);
+
+    private sealed class RenderSceneCache : IDisposable
+    {
+        private RenderSceneCache(
+            DiffCanvasScene scene,
+            int geometryVersion,
+            DiffNode[] nodes,
+            RenderGraphEdge[] edges,
+            Dictionary<DiffDocumentId, DiffAnnotation[]> annotationsByDocument)
+        {
+            Scene = scene;
+            GeometryVersion = geometryVersion;
+            Nodes = nodes;
+            Edges = edges;
+            AnnotationsByDocument = annotationsByDocument;
+        }
+
+        private DiffCanvasScene Scene { get; }
+
+        private int GeometryVersion { get; }
+
+        public DiffNode[] Nodes { get; }
+
+        public RenderGraphEdge[] Edges { get; }
+
+        public Dictionary<DiffDocumentId, DiffAnnotation[]> AnnotationsByDocument { get; }
+
+        public static RenderSceneCache Create(DiffCanvasScene scene)
+        {
+            var nodes = scene.Nodes.ToArray();
+            var nodesById = nodes.ToDictionary(node => node.Document.Id.Value, StringComparer.Ordinal);
+            var edges = scene.Edges
+                .Select(edge => CreateRenderGraphEdge(edge, nodesById))
+                .Where(edge => edge is not null)
+                .Cast<RenderGraphEdge>()
+                .ToArray();
+            var annotationsByDocument = scene.Annotations
+                .Where(annotation => scene.AnnotationVisibility.IsVisible(annotation.Kind))
+                .GroupBy(annotation => annotation.DocumentId)
+                .ToDictionary(group => group.Key, group => group.OrderBy(AnnotationPriority).ToArray());
+
+            return new RenderSceneCache(scene, scene.GeometryVersion, nodes, edges, annotationsByDocument);
+        }
+
+        public bool Matches(DiffCanvasScene scene) => ReferenceEquals(scene, Scene) && scene.GeometryVersion == GeometryVersion;
+
+        public void Dispose()
+        {
+            foreach (var edge in Edges)
+            {
+                edge.Path.Dispose();
+            }
+        }
+
+        private static RenderGraphEdge? CreateRenderGraphEdge(GraphEdge edge, IReadOnlyDictionary<string, DiffNode> nodesById)
+        {
+            if (!nodesById.TryGetValue(edge.SourceNodeId, out var source) ||
+                !nodesById.TryGetValue(edge.TargetNodeId, out var target))
+            {
+                return null;
+            }
+
+            return new RenderGraphEdge(edge, source, target, GetEdgeBounds(source, target), CreateEdgePath(source, target));
+        }
+    }
 
     private sealed record RendererPalette(
         SKColor Background,

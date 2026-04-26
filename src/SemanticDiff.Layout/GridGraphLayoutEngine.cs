@@ -106,11 +106,17 @@ public sealed class MsaglGraphLayoutEngine : IGraphLayoutEngine
             return fallback.LayoutAsync(request with { LayoutMode = layoutMode }, cancellationToken);
         }
 
+        var layoutEdges = BuildLayoutEdges(request);
+        if (ShouldUseClusteredLayeredLayout(request))
+        {
+            var clusteredNodes = LayoutSemanticClusters(request, layoutEdges, cancellationToken);
+            return new ValueTask<GraphLayoutResult>(new GraphLayoutResult(LayoutStabilizer.Apply(request, clusteredNodes)));
+        }
+
         try
         {
             var geometryGraph = new GeometryGraph();
             var msaglNodes = new Dictionary<string, Node>(StringComparer.Ordinal);
-            var layoutEdges = BuildLayoutEdges(request);
 
             if (layoutEdges.IsDefaultOrEmpty && request.Documents.Length > 1)
             {
@@ -183,6 +189,154 @@ public sealed class MsaglGraphLayoutEngine : IGraphLayoutEngine
 
         return request.SemanticGraph.Edges.IsDefaultOrEmpty ? GraphLayoutMode.Grid : GraphLayoutMode.Layered;
     }
+
+    private static bool ShouldUseClusteredLayeredLayout(GraphLayoutRequest request) => request.Documents.Length >= 180;
+
+    private static ImmutableArray<DiffNodeLayout> LayoutSemanticClusters(
+        GraphLayoutRequest request,
+        ImmutableArray<DocumentLayoutEdge> layoutEdges,
+        CancellationToken cancellationToken)
+    {
+        const double nodeGapX = 36;
+        const double nodeGapY = 34;
+        const double clusterGap = 104;
+
+        var centrality = BuildDocumentCentrality(layoutEdges);
+        var clusterPlans = request.Documents
+            .GroupBy(CreateClusterKey)
+            .Select(group => CreateClusterPlan(group.Key, group.ToArray(), request.DefaultNodeSize, centrality, nodeGapX, nodeGapY))
+            .OrderBy(plan => plan.Key.Order)
+            .ThenByDescending(plan => plan.Documents.Length)
+            .ThenBy(plan => plan.Key.Label, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var targetRowWidth = Math.Max(
+            request.DefaultNodeSize.Width * 8,
+            Math.Sqrt(Math.Max(1, request.Documents.Length)) * (request.DefaultNodeSize.Width + nodeGapX) * 1.55);
+        var builder = ImmutableArray.CreateBuilder<DiffNodeLayout>(request.Documents.Length);
+        var cursorX = 0.0;
+        var cursorY = 0.0;
+        var rowHeight = 0.0;
+
+        foreach (var plan in clusterPlans)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (cursorX > 0 && cursorX + plan.Width > targetRowWidth)
+            {
+                cursorX = 0;
+                cursorY += rowHeight + clusterGap;
+                rowHeight = 0;
+            }
+
+            for (var documentIndex = 0; documentIndex < plan.Documents.Length; documentIndex++)
+            {
+                var document = plan.Documents[documentIndex];
+                var column = documentIndex % plan.Columns;
+                var row = documentIndex / plan.Columns;
+                var bounds = new Rect2(
+                    cursorX + column * (request.DefaultNodeSize.Width + nodeGapX),
+                    cursorY + row * (request.DefaultNodeSize.Height + nodeGapY),
+                    request.DefaultNodeSize.Width,
+                    request.DefaultNodeSize.Height);
+                builder.Add(new DiffNodeLayout(document.Id, bounds));
+            }
+
+            cursorX += plan.Width + clusterGap;
+            rowHeight = Math.Max(rowHeight, plan.Height);
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static LargeLayoutClusterPlan CreateClusterPlan(
+        LargeLayoutClusterKey key,
+        DiffDocumentSnapshot[] documents,
+        Size2 defaultNodeSize,
+        IReadOnlyDictionary<DiffDocumentId, double> centrality,
+        double nodeGapX,
+        double nodeGapY)
+    {
+        var orderedDocuments = documents
+            .OrderByDescending(document => centrality.GetValueOrDefault(document.Id))
+            .ThenBy(document => LargeLayoutStatusOrder(document.Metadata.Status))
+            .ThenBy(document => document.Metadata.Path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var columns = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(orderedDocuments.Length * 1.35)));
+        var rows = (int)Math.Ceiling((double)orderedDocuments.Length / columns);
+        var width = columns * defaultNodeSize.Width + Math.Max(0, columns - 1) * nodeGapX;
+        var height = rows * defaultNodeSize.Height + Math.Max(0, rows - 1) * nodeGapY;
+        return new LargeLayoutClusterPlan(key, orderedDocuments, columns, width, height);
+    }
+
+    private static Dictionary<DiffDocumentId, double> BuildDocumentCentrality(ImmutableArray<DocumentLayoutEdge> layoutEdges)
+    {
+        var centrality = new Dictionary<DiffDocumentId, double>();
+        foreach (var edge in layoutEdges)
+        {
+            centrality[edge.SourceDocumentId] = centrality.GetValueOrDefault(edge.SourceDocumentId) + edge.Score;
+            centrality[edge.TargetDocumentId] = centrality.GetValueOrDefault(edge.TargetDocumentId) + edge.Score;
+        }
+
+        return centrality;
+    }
+
+    private static LargeLayoutClusterKey CreateClusterKey(DiffDocumentSnapshot document)
+    {
+        var normalizedPath = document.Metadata.Path.Replace('\\', '/');
+        var segments = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length == 0)
+        {
+            return new LargeLayoutClusterKey("root", "Repository root", 4);
+        }
+
+        if (segments.Length >= 2 && IsSourceLikeRoot(segments[0]))
+        {
+            var label = $"{segments[0]}/{segments[1]}";
+            return new LargeLayoutClusterKey(label, label, SourceLikeRootOrder(segments[0]));
+        }
+
+        return segments.Length == 1
+            ? new LargeLayoutClusterKey("root", "Repository root", 4)
+            : new LargeLayoutClusterKey(segments[0], segments[0], SourceLikeRootOrder(segments[0]));
+    }
+
+    private static bool IsSourceLikeRoot(string segment) =>
+        segment.Equals("src", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("samples", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("examples", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("tests", StringComparison.OrdinalIgnoreCase) ||
+        segment.Equals("test", StringComparison.OrdinalIgnoreCase);
+
+    private static int SourceLikeRootOrder(string segment)
+    {
+        if (segment.Equals("src", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (segment.Equals("samples", StringComparison.OrdinalIgnoreCase) || segment.Equals("examples", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        if (segment.Equals("tests", StringComparison.OrdinalIgnoreCase) || segment.Equals("test", StringComparison.OrdinalIgnoreCase))
+        {
+            return 2;
+        }
+
+        return 3;
+    }
+
+    private static int LargeLayoutStatusOrder(DiffFileStatus status) => status switch
+    {
+        DiffFileStatus.Conflicted => 0,
+        DiffFileStatus.Added => 1,
+        DiffFileStatus.Untracked => 2,
+        DiffFileStatus.Renamed => 3,
+        DiffFileStatus.Copied => 4,
+        DiffFileStatus.Modified => 5,
+        DiffFileStatus.Deleted => 6,
+        _ => 7
+    };
 
     private static ImmutableArray<DocumentLayoutEdge> BuildLayoutEdges(GraphLayoutRequest request)
     {
@@ -364,6 +518,10 @@ public sealed class MsaglGraphLayoutEngine : IGraphLayoutEngine
     }
 
     private sealed record DocumentLayoutEdge(DiffDocumentId SourceDocumentId, DiffDocumentId TargetDocumentId, SemanticEdgeKind Kind, double Score);
+
+    private sealed record LargeLayoutClusterKey(string Id, string Label, int Order);
+
+    private sealed record LargeLayoutClusterPlan(LargeLayoutClusterKey Key, DiffDocumentSnapshot[] Documents, int Columns, double Width, double Height);
 
     private sealed record LayoutComponent(ImmutableArray<DiffDocumentId> DocumentIds, Rect2 Bounds);
 }
