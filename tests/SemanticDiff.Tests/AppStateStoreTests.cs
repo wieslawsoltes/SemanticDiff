@@ -43,6 +43,8 @@ public sealed class AppStateStoreTests
             SemanticAnalysisMode: SemanticAnalysisMode.FastSyntaxOnly,
             LayoutMode: GraphLayoutMode.StatusLanes,
             GroupingMode: GraphGroupingMode.Semantic,
+            SelectedBranchRef: "origin/feature/work",
+            SelectedPullRequestNumber: 42,
             LeftPaneWidth: 344);
 
         try
@@ -67,6 +69,8 @@ public sealed class AppStateStoreTests
             Assert.Equal(SemanticAnalysisMode.FastSyntaxOnly, loaded.SemanticAnalysisMode);
             Assert.Equal(GraphLayoutMode.StatusLanes, loaded.LayoutMode);
             Assert.Equal(GraphGroupingMode.Semantic, loaded.GroupingMode);
+            Assert.Equal("origin/feature/work", loaded.SelectedBranchRef);
+            Assert.Equal(42, loaded.SelectedPullRequestNumber);
             Assert.Equal(344, loaded.LeftPaneWidth);
             var node = Assert.Single(loaded.EffectiveLayoutNodes);
             Assert.Equal("A.cs", node.DocumentId);

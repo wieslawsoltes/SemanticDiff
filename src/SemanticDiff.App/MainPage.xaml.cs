@@ -241,6 +241,26 @@ public sealed partial class MainPage : Page
         await ViewModel.ApplyReferenceOptionsAsync();
     }
 
+    private async void OnBranchSelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (sender is not ComboBox { SelectedItem: ViewModels.GitBranchOptionViewModel option })
+        {
+            return;
+        }
+
+        await ViewModel.SelectBranchAsync(option);
+    }
+
+    private async void OnPullRequestSelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (sender is not ComboBox { SelectedItem: ViewModels.GitPullRequestOptionViewModel option })
+        {
+            return;
+        }
+
+        await ViewModel.SelectPullRequestAsync(option);
+    }
+
     private async void OnAutoRefreshClicked(object sender, RoutedEventArgs args)
     {
         var isEnabled = sender is ToggleButton { IsChecked: true };

@@ -382,6 +382,25 @@
                              Style="{StaticResource CompactTextBoxStyle}"
                              PlaceholderText="Head ref" />
                   </Grid>
+                  <ComboBox ItemsSource="{x:Bind ViewModel.BranchOptions, Mode=OneWay}"
+                            SelectedItem="{x:Bind ViewModel.SelectedBranchOption, Mode=TwoWay}"
+                            DisplayMemberPath="DisplayName"
+                            IsEnabled="{x:Bind ViewModel.HasBranchOptions, Mode=OneWay}"
+                            PlaceholderText="Choose branch"
+                            Style="{StaticResource CompactComboBoxStyle}"
+                            SelectionChanged="OnBranchSelectionChanged" />
+                  <ComboBox ItemsSource="{x:Bind ViewModel.PullRequestOptions, Mode=OneWay}"
+                            SelectedItem="{x:Bind ViewModel.SelectedPullRequestOption, Mode=TwoWay}"
+                            DisplayMemberPath="DisplayName"
+                            IsEnabled="{x:Bind ViewModel.HasPullRequestOptions, Mode=OneWay}"
+                            Visibility="{x:Bind ViewModel.PullRequestSelectorVisibility, Mode=OneWay}"
+                            PlaceholderText="Choose GitHub PR"
+                            Style="{StaticResource CompactComboBoxStyle}"
+                            SelectionChanged="OnPullRequestSelectionChanged" />
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <TextBlock Text="{x:Bind ViewModel.ReferenceSelectorStatusText, Mode=OneWay}" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.DiffViewCacheText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="10" VerticalAlignment="Center" />
+                  </Grid>
                   <Button Content="Apply refs" Style="{StaticResource ChromeButtonStyle}" Click="OnApplyRefsClicked" />
                 </StackPanel>
 

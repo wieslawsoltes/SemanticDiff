@@ -20,6 +20,8 @@ public sealed record SemanticDiffAppState(
     SemanticAnalysisMode SemanticAnalysisMode = SemanticAnalysisMode.WorkspaceThenSyntax,
     GraphLayoutMode LayoutMode = GraphLayoutMode.Layered,
     GraphGroupingMode GroupingMode = GraphGroupingMode.Folder,
+    string? SelectedBranchRef = null,
+    int? SelectedPullRequestNumber = null,
     double LeftPaneWidth = 260)
 {
     public DiffNodeLayoutState[] EffectiveLayoutNodes => LayoutNodes ?? [];

@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using Microsoft.UI.Xaml;
 using SemanticDiff.Core;
 using SemanticDiff.Diff;
 using SemanticDiff.Git;
@@ -16,9 +17,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly IRepositoryFileWatcherFactory repositoryFileWatcherFactory;
     private readonly IGitReviewService gitReviewService;
     private readonly IGitBlameService gitBlameService;
+    private readonly IGitReferenceDiscoveryService gitReferenceDiscoveryService;
     private readonly IReadOnlyList<IDiffAnnotationProvider> annotationProviders = [new BuiltInDiffAnnotationProvider()];
     private readonly LatestRequestGate repositoryLoadRequests = new();
+    private readonly Dictionary<string, DiffViewCacheEntry> diffViewCache = new(StringComparer.Ordinal);
+    private readonly Queue<string> diffViewCacheOrder = new();
     private readonly SynchronizationContext? synchronizationContext;
+    private const int MaxCachedDiffViews = 12;
     private GraphLayoutResult? previousLayout;
     private ImmutableHashSet<DiffDocumentId> pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
     private ImmutableArray<DiffDocumentSnapshot> currentDocuments = [];
@@ -30,6 +35,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private int currentChangeNavigationIndex = -1;
     private string currentStatusPrefix = "sample fallback";
     private string? currentRepositoryPath;
+    private GitDiffSnapshot? currentGitSnapshot;
     private SemanticDiffAppState appState = new();
     private CancellationTokenSource? currentOperation;
     private CancellationTokenSource? currentSemanticRefinementOperation;
@@ -38,6 +44,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private IRepositoryFileWatcher? repositoryFileWatcher;
     private ExplorerItemViewModel? selectedExplorerItem;
     private bool currentDocumentsAreRepositoryDocuments;
+    private bool isUpdatingReferenceSelection;
 
     public MainViewModel()
         : this(JsonAppStateStore.CreateDefault())
@@ -64,11 +71,22 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         IRepositoryFileWatcherFactory repositoryFileWatcherFactory,
         IGitReviewService gitReviewService,
         IGitBlameService gitBlameService)
+        : this(appStateStore, repositoryFileWatcherFactory, gitReviewService, gitBlameService, new GitReferenceDiscoveryService())
+    {
+    }
+
+    public MainViewModel(
+        IAppStateStore appStateStore,
+        IRepositoryFileWatcherFactory repositoryFileWatcherFactory,
+        IGitReviewService gitReviewService,
+        IGitBlameService gitBlameService,
+        IGitReferenceDiscoveryService gitReferenceDiscoveryService)
     {
         this.appStateStore = appStateStore;
         this.repositoryFileWatcherFactory = repositoryFileWatcherFactory;
         this.gitReviewService = gitReviewService;
         this.gitBlameService = gitBlameService;
+        this.gitReferenceDiscoveryService = gitReferenceDiscoveryService;
         synchronizationContext = SynchronizationContext.Current;
         InitializeSampleDocuments(SampleDiffDocuments.Create());
         _ = LoadRepositoryAsync(loadAppState: true, operationMessage: "Loading repository");
@@ -127,6 +145,33 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private string headRefText = "HEAD";
+
+    [ObservableProperty]
+    private ImmutableArray<GitBranchOptionViewModel> branchOptions = [];
+
+    [ObservableProperty]
+    private GitBranchOptionViewModel? selectedBranchOption;
+
+    [ObservableProperty]
+    private bool hasBranchOptions;
+
+    [ObservableProperty]
+    private ImmutableArray<GitPullRequestOptionViewModel> pullRequestOptions = [];
+
+    [ObservableProperty]
+    private GitPullRequestOptionViewModel? selectedPullRequestOption;
+
+    [ObservableProperty]
+    private bool hasPullRequestOptions;
+
+    [ObservableProperty]
+    private Visibility pullRequestSelectorVisibility = Visibility.Collapsed;
+
+    [ObservableProperty]
+    private string referenceSelectorStatusText = "Refs loading";
+
+    [ObservableProperty]
+    private string diffViewCacheText = "Cache empty";
 
     [ObservableProperty]
     private string diffContextModeText = "Changed";
@@ -369,9 +414,12 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        CacheCurrentDiffView();
         appState = appState with
         {
             DiffScope = diffScope,
+            SelectedBranchRef = diffScope == GitDiffScope.Branch ? appState.SelectedBranchRef : null,
+            SelectedPullRequestNumber = null,
             LayoutNodes = null
         };
         previousLayout = null;
@@ -393,10 +441,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        CacheCurrentDiffView();
         appState = appState with
         {
             BaseRef = baseRef,
             HeadRef = headRef,
+            SelectedBranchRef = null,
+            SelectedPullRequestNumber = null,
             LayoutNodes = null
         };
         previousLayout = null;
@@ -410,6 +461,142 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         {
             await LoadRepositoryAsync(loadAppState: false, operationMessage: "Reloading reference range");
         }
+    }
+
+    public async Task SelectBranchAsync(GitBranchOptionViewModel? option)
+    {
+        if (option is null || isUpdatingReferenceSelection)
+        {
+            return;
+        }
+
+        if (appState.DiffScope == GitDiffScope.Branch &&
+            appState.SelectedPullRequestNumber is null &&
+            string.Equals(appState.HeadRef, option.ReferenceName, StringComparison.Ordinal) &&
+            string.Equals(appState.SelectedBranchRef, option.ReferenceName, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        CacheCurrentDiffView();
+        appState = appState with
+        {
+            DiffScope = GitDiffScope.Branch,
+            BaseRef = null,
+            HeadRef = option.ReferenceName,
+            SelectedBranchRef = option.ReferenceName,
+            SelectedPullRequestNumber = null,
+            LayoutNodes = null
+        };
+        previousLayout = null;
+        pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
+        ApplyAppStateToPresentation();
+        await SaveOptionsAsync(CancellationToken.None);
+        AddDiagnostic("Info", $"Branch view changed to {option.ReferenceName}");
+        await LoadRepositoryAsync(loadAppState: false, operationMessage: $"Loading branch {option.ReferenceName}");
+    }
+
+    public async Task SelectPullRequestAsync(GitPullRequestOptionViewModel? option)
+    {
+        if (option is null || isUpdatingReferenceSelection || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            return;
+        }
+
+        if (appState.DiffScope == GitDiffScope.Branch && appState.SelectedPullRequestNumber == option.Number)
+        {
+            return;
+        }
+
+        CacheCurrentDiffView();
+        var operation = BeginOperation($"Preparing PR #{option.Number}");
+        try
+        {
+            var headRef = await gitReferenceDiscoveryService.EnsurePullRequestHeadAsync(currentRepositoryPath, option.ToPullRequestInfo(), operation.Token);
+            if (string.IsNullOrWhiteSpace(headRef))
+            {
+                CompleteOperation(operation, "PR unavailable");
+                AddDiagnostic("Warning", $"Unable to fetch PR #{option.Number}");
+                ApplyReferenceSelectionsToPresentation();
+                return;
+            }
+
+            appState = appState with
+            {
+                DiffScope = GitDiffScope.Branch,
+                BaseRef = option.BaseReferenceName,
+                HeadRef = headRef,
+                SelectedBranchRef = null,
+                SelectedPullRequestNumber = option.Number,
+                LayoutNodes = null
+            };
+            previousLayout = null;
+            pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
+            ApplyAppStateToPresentation();
+            await SaveOptionsAsync(operation.Token);
+            AddDiagnostic("Info", $"PR view changed to #{option.Number}");
+            CompleteOperation(operation, "PR ready");
+            await LoadRepositoryAsync(loadAppState: false, operationMessage: $"Loading PR #{option.Number}");
+        }
+        catch (OperationCanceledException)
+        {
+            CompleteOperation(operation, "PR selection canceled");
+        }
+        catch (Exception exception)
+        {
+            CompleteOperation(operation, "PR selection failed");
+            AddDiagnostic("Error", exception.Message);
+            ApplyReferenceSelectionsToPresentation();
+        }
+    }
+
+    private async Task RefreshRepositoryReferencesAsync(string repositoryPath, long repositoryRequestId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!IsCurrentRepositoryRequest(repositoryRequestId))
+            {
+                return;
+            }
+
+            ReferenceSelectorStatusText = "Loading branches";
+            var snapshot = await gitReferenceDiscoveryService.GetReferencesAsync(repositoryPath, cancellationToken);
+            if (!IsCurrentRepositoryRequest(repositoryRequestId))
+            {
+                return;
+            }
+
+            BranchOptions = snapshot.Branches.Select(GitBranchOptionViewModel.FromBranch).ToImmutableArray();
+            PullRequestOptions = snapshot.PullRequests.Select(GitPullRequestOptionViewModel.FromPullRequest).ToImmutableArray();
+            HasBranchOptions = !BranchOptions.IsDefaultOrEmpty;
+            HasPullRequestOptions = !PullRequestOptions.IsDefaultOrEmpty;
+            PullRequestSelectorVisibility = snapshot.IsGitHubRepository ? Visibility.Visible : Visibility.Collapsed;
+            ReferenceSelectorStatusText = snapshot.StatusMessage;
+            ApplyReferenceSelectionsToPresentation();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            if (IsCurrentRepositoryRequest(repositoryRequestId))
+            {
+                ReferenceSelectorStatusText = "Refs unavailable";
+                AddDiagnostic("Warning", $"Reference discovery failed: {exception.Message}");
+            }
+        }
+    }
+
+    private void ClearReferenceOptions(string status)
+    {
+        BranchOptions = [];
+        PullRequestOptions = [];
+        SelectedBranchOption = null;
+        SelectedPullRequestOption = null;
+        HasBranchOptions = false;
+        HasPullRequestOptions = false;
+        PullRequestSelectorVisibility = Visibility.Collapsed;
+        ReferenceSelectorStatusText = status;
     }
 
     public async Task SetAutoRefreshAsync(bool isEnabled)
@@ -441,6 +628,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        CacheCurrentDiffView();
         appState = appState with { DiffContextMode = contextMode };
         ApplyAppStateToPresentation();
         await SaveOptionsAsync(CancellationToken.None);
@@ -457,6 +645,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        CacheCurrentDiffView();
         appState = appState with { ReviewMode = nextMode };
         ApplyAppStateToPresentation();
         await SaveOptionsAsync(CancellationToken.None);
@@ -472,6 +661,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        CacheCurrentDiffView();
         appState = appState with { CollapseUnchangedContext = isContextFoldingEnabled };
         ApplyAppStateToPresentation();
         await SaveOptionsAsync(CancellationToken.None);
@@ -518,6 +708,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        CacheCurrentDiffView();
         appState = appState with { SemanticAnalysisMode = analysisMode, LayoutNodes = null };
         previousLayout = null;
         pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
@@ -794,6 +985,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             if (string.IsNullOrWhiteSpace(repositoryRoot))
             {
                 currentRepositoryPath = null;
+                currentGitSnapshot = null;
+                ClearReferenceOptions("Refs unavailable");
                 await StopRepositoryWatcherAsync();
                 EnsureCurrentRepositoryRequest(requestId, cancellationToken);
                 InitializeSampleDocuments(SampleDiffDocuments.Create());
@@ -803,11 +996,29 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
+            var isNewRepositoryRoot = !string.Equals(currentRepositoryPath, repositoryRoot, StringComparison.Ordinal);
             currentRepositoryPath = repositoryRoot;
             appState = appState with { RepositoryPath = repositoryRoot };
             ApplyAppStateToPresentation();
+            if (isNewRepositoryRoot || BranchOptions.IsDefaultOrEmpty)
+            {
+                ClearReferenceOptions("Loading branches");
+            }
+
+            _ = RefreshRepositoryReferencesAsync(repositoryRoot, requestId, CancellationToken.None);
             var documentService = new GitDiffDocumentService();
             var request = new GitDiffRequest(repositoryRoot, appState.DiffScope, NormalizeRef(appState.BaseRef), NormalizeRef(appState.HeadRef));
+
+            if (TryApplyCachedDiffView(repositoryRoot, request, requestId, cancellationToken))
+            {
+                await SaveOptionsAsync(cancellationToken);
+                EnsureCurrentRepositoryRequest(requestId, cancellationToken);
+                await RestartRepositoryWatcherAsync(repositoryRoot, cancellationToken);
+                EnsureCurrentRepositoryRequest(requestId, cancellationToken);
+                CompleteOperation(operation, "Cached diff ready");
+                return;
+            }
+
             ReportProgress(0.25, "Loading Git diff", cancellationToken);
             var snapshot = await documentService.LoadDocumentsAsync(request, appState.DiffContextMode, cancellationToken);
             EnsureCurrentRepositoryRequest(requestId, cancellationToken);
@@ -875,6 +1086,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         currentDocuments = documents;
         currentSemanticGraph = SemanticGraph.Empty;
+        currentGitSnapshot = null;
         currentStatusPrefix = "sample fallback";
         UpdateChangeNavigation(documents);
         currentDocumentsAreRepositoryDocuments = false;
@@ -892,6 +1104,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         currentDocuments = [];
         currentSemanticGraph = SemanticGraph.Empty;
+        currentGitSnapshot = null;
         currentStatusPrefix = contextText;
         currentDocumentsAreRepositoryDocuments = isRepository;
         previousLayout = null;
@@ -918,6 +1131,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         var preservedSelectedDocumentId = preservedSceneState?.SelectedDocumentId ?? selectedExplorerItem?.DocumentId;
         currentDocuments = documents;
+        currentGitSnapshot = gitSnapshot;
         currentStatusPrefix = statusPrefix;
         UpdateChangeNavigation(documents);
         currentRepositoryPath = string.IsNullOrWhiteSpace(repositoryPath) ? null : repositoryPath;
@@ -1001,6 +1215,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         AddDiagnostic("Info", preservedSceneState is null
             ? $"Loaded {tokenizedDocuments.Length} document nodes, {semanticGraph.Edges.Length} semantic edges, {impactSummary.ChangedSymbolCount} changed symbols"
             : $"Smart refresh synced {tokenizedDocuments.Length} document nodes without resetting the canvas view");
+        CacheCurrentDiffView();
 
         if (appState.SemanticAnalysisMode == SemanticAnalysisMode.WorkspaceThenSyntax)
         {
@@ -1044,6 +1259,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 semanticGraph.Edges.Length);
             StatusText = $"{statusPrefix} | {documents.Length} nodes | {semanticGraph.Edges.Length} semantic edges | {FormatImpactStatus(impactSummary)} | MSBuild semantics ready";
             await SaveStateAsync(cancellationToken);
+            CacheCurrentDiffView();
             AddDiagnostic("Info", $"MSBuild semantic refinement produced {semanticGraph.Edges.Length} semantic edges");
         }
         catch (OperationCanceledException)
@@ -1219,6 +1435,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             SemanticAnalysisMode = appState.SemanticAnalysisMode,
             LayoutMode = appState.LayoutMode,
             GroupingMode = appState.GroupingMode,
+            SelectedBranchRef = appState.SelectedBranchRef,
+            SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth),
             LayoutNodes = currentDocumentsAreRepositoryDocuments ? layoutNodes : appState.LayoutNodes
         };
@@ -1243,10 +1461,119 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             SemanticAnalysisMode = appState.SemanticAnalysisMode,
             LayoutMode = appState.LayoutMode,
             GroupingMode = appState.GroupingMode,
+            SelectedBranchRef = appState.SelectedBranchRef,
+            SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth)
         };
         await appStateStore.SaveAsync(appState, cancellationToken);
     }
+
+    private void CacheCurrentDiffView()
+    {
+        if (!currentDocumentsAreRepositoryDocuments || currentGitSnapshot is null || currentDocuments.IsDefaultOrEmpty || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            return;
+        }
+
+        if (!IsCacheableDiffView(currentGitSnapshot.Request))
+        {
+            return;
+        }
+
+        CaptureLayoutState(Scene);
+        var key = CreateDiffViewCacheKey(currentRepositoryPath, currentGitSnapshot.Request);
+        var selectedDocumentId = selectedExplorerItem?.DocumentId;
+        diffViewCache[key] = new DiffViewCacheEntry(
+            key,
+            currentRepositoryPath,
+            currentDocuments,
+            currentSemanticGraph,
+            Scene,
+            previousLayout,
+            pinnedDocumentIds,
+            currentGitSnapshot,
+            currentStatusPrefix,
+            selectedDocumentId,
+            DateTimeOffset.UtcNow);
+        if (!diffViewCacheOrder.Contains(key, StringComparer.Ordinal))
+        {
+            diffViewCacheOrder.Enqueue(key);
+        }
+
+        while (diffViewCacheOrder.Count > MaxCachedDiffViews)
+        {
+            var staleKey = diffViewCacheOrder.Dequeue();
+            if (!string.Equals(staleKey, key, StringComparison.Ordinal))
+            {
+                diffViewCache.Remove(staleKey);
+            }
+        }
+
+        UpdateDiffViewCacheText();
+    }
+
+    private bool TryApplyCachedDiffView(string repositoryPath, GitDiffRequest request, long repositoryRequestId, CancellationToken cancellationToken)
+    {
+        if (!IsCacheableDiffView(request))
+        {
+            return false;
+        }
+
+        var key = CreateDiffViewCacheKey(repositoryPath, request);
+        if (!diffViewCache.TryGetValue(key, out var entry))
+        {
+            return false;
+        }
+
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+        currentDocuments = entry.Documents;
+        currentSemanticGraph = entry.SemanticGraph;
+        currentGitSnapshot = entry.GitSnapshot;
+        currentStatusPrefix = entry.StatusPrefix;
+        currentRepositoryPath = entry.RepositoryPath;
+        currentDocumentsAreRepositoryDocuments = true;
+        previousLayout = entry.PreviousLayout;
+        pinnedDocumentIds = entry.PinnedDocumentIds;
+        Scene = entry.Scene.WithAnnotations(CreateAnnotations(entry.Documents, entry.SemanticGraph), appState.EffectiveAnnotationVisibility);
+        SetExplorerItems(entry.Documents.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
+        RestoreSelectedExplorerItem(entry.SelectedDocumentId);
+        UpdateChangeNavigation(entry.Documents);
+        UpdateSemanticNavigation(entry.SemanticGraph, entry.Documents);
+        var impactSummary = UpdateImpactSummary(entry.Documents, entry.SemanticGraph);
+        UpdateWorkspaceSummary(Path.GetFileName(repositoryPath), entry.StatusPrefix, entry.Documents.Length, entry.SemanticGraph.Edges.Length);
+        StatusText = $"{entry.StatusPrefix} | {entry.Documents.Length} nodes | {entry.SemanticGraph.Edges.Length} semantic edges | {FormatImpactStatus(impactSummary)} | cached view ready";
+        AddDiagnostic("Info", $"Restored cached semantic diff view for {FormatReferenceText(appState)}");
+        UpdateDiffViewCacheText();
+        return true;
+    }
+
+    private string CreateDiffViewCacheKey(string repositoryPath, GitDiffRequest request)
+    {
+        var normalizedRepositoryPath = Path.GetFullPath(repositoryPath);
+        return string.Join('\u001f',
+            normalizedRepositoryPath,
+            request.Scope.ToString(),
+            NormalizeRef(request.BaseRef) ?? string.Empty,
+            NormalizeRef(request.HeadRef) ?? string.Empty,
+            appState.DiffContextMode.ToString(),
+            appState.ReviewMode.ToString(),
+            appState.CollapseUnchangedContext ? "fold" : "full",
+            appState.SemanticAnalysisMode.ToString(),
+            appState.LayoutMode.ToString(),
+            appState.GroupingMode.ToString(),
+            appState.ShowSemanticEdges ? "edges" : "no-edges");
+    }
+
+    private void UpdateDiffViewCacheText()
+    {
+        DiffViewCacheText = diffViewCache.Count == 0 ? "Cache empty" : $"{diffViewCache.Count:N0} cached views";
+    }
+
+    private static bool IsCacheableDiffView(GitDiffRequest request) =>
+        request.Scope == GitDiffScope.Branch && !IsCurrentHeadReference(request.HeadRef);
+
+    private static bool IsCurrentHeadReference(string? reference) =>
+        string.IsNullOrWhiteSpace(reference) || string.Equals(reference.Trim(), "HEAD", StringComparison.Ordinal);
 
     private EdgeProjectionOptions CreateEdgeOptions() => appState.ShowSemanticEdges
         ? new EdgeProjectionOptions(MinimumConfidence: 0.65, MaxEdgesPerDocumentPair: 2)
@@ -1292,6 +1619,26 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         else if (repositoryFileWatcher is null)
         {
             WatchStatusText = "Watch ready";
+        }
+
+        ApplyReferenceSelectionsToPresentation();
+    }
+
+    private void ApplyReferenceSelectionsToPresentation()
+    {
+        isUpdatingReferenceSelection = true;
+        try
+        {
+            SelectedPullRequestOption = appState.SelectedPullRequestNumber is null
+                ? null
+                : PullRequestOptions.FirstOrDefault(option => option.Number == appState.SelectedPullRequestNumber.Value);
+            SelectedBranchOption = appState.DiffScope == GitDiffScope.Branch && appState.SelectedPullRequestNumber is null
+                ? BranchOptions.FirstOrDefault(option => string.Equals(option.ReferenceName, appState.SelectedBranchRef ?? appState.HeadRef, StringComparison.Ordinal))
+                : null;
+        }
+        finally
+        {
+            isUpdatingReferenceSelection = false;
         }
     }
 

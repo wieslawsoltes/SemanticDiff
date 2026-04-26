@@ -58,6 +58,13 @@ public interface IGitBlameService
     Task<GitFileBlame> GetFileBlameAsync(string repositoryPath, string path, CancellationToken cancellationToken);
 }
 
+public interface IGitReferenceDiscoveryService
+{
+    Task<GitRepositoryReferenceSnapshot> GetReferencesAsync(string repositoryPath, CancellationToken cancellationToken);
+
+    Task<string?> EnsurePullRequestHeadAsync(string repositoryPath, GitPullRequestInfo pullRequest, CancellationToken cancellationToken);
+}
+
 public sealed record GitFileBlame(string Path, ImmutableArray<GitBlameLine> Lines)
 {
     public static GitFileBlame Empty(string path) => new(path, ImmutableArray<GitBlameLine>.Empty);

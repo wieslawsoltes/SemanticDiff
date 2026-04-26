@@ -147,3 +147,24 @@ public sealed record GitFileDiff(GitFileChange FileChange, string UnifiedDiff);
 public sealed record GitDiffDocumentSnapshot(
     GitDiffSnapshot GitSnapshot,
     ImmutableArray<DiffDocumentSnapshot> Documents);
+
+public sealed record GitRepositoryReferenceSnapshot(
+    ImmutableArray<GitBranchInfo> Branches,
+    ImmutableArray<GitPullRequestInfo> PullRequests,
+    bool IsGitHubRepository,
+    string StatusMessage);
+
+public sealed record GitBranchInfo(
+    string Name,
+    string ReferenceName,
+    bool IsCurrent,
+    bool IsRemote,
+    bool IsDefault);
+
+public sealed record GitPullRequestInfo(
+    int Number,
+    string Title,
+    string BaseRefName,
+    string HeadRefName,
+    string HeadRepository,
+    bool IsFromSameRepository);

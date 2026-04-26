@@ -1041,6 +1041,19 @@ Current status: complete. Scrollbar thumbs inside document nodes now win hit tes
 
 Current status: complete. The file explorer now uses real cached macOS system icons through AppKit interop instead of simulated icon-font glyphs, while retaining deterministic fallbacks for unsupported platforms or unavailable icon data.
 
+### Phase 47: Branch and GitHub Pull Request Diff View Switching
+
+- [x] Add Git reference discovery for local and remote branches using Git's ref database without blocking the core diff model.
+- [x] Detect GitHub remotes and populate open pull requests through the GitHub API, with a `git ls-remote` pull-ref fallback when API data is unavailable.
+- [x] Add Settings dropdowns for branch views and GitHub PR views, with PR selectors shown only for GitHub repositories.
+- [x] Switch branch and PR selections into semantic branch-diff requests by updating persisted base/head refs and selected branch/PR identity.
+- [x] Fetch selected PR heads into stable remote refs so fork and pull-ref comparisons can be diffed by the existing Git pipeline.
+- [x] Cache completed semantic diff views in memory by repository, refs, diff context, review mode, semantic mode, layout mode, grouping mode, and edge visibility so switching back to a branch or PR is instant.
+- [x] Refresh cached views after background MSBuild semantic refinement so later restores use the best available semantic graph and layout.
+- [x] Add regression coverage for GitHub remote parsing, branch parsing, PR fallback discovery, PR-head fetch command generation, and selected branch/PR app-state persistence.
+
+Current status: complete. Reviewers can now jump between branch and GitHub PR semantic diff views from dropdowns, while previously loaded branch/PR scenes restore from a fully realized semantic-view cache instead of rerunning Git, tokenization, semantic analysis, or layout.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.
