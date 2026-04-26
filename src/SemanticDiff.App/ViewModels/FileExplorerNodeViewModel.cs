@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
+using SemanticDiff.App.Services;
 using SemanticDiff.Core;
 using Windows.UI;
 
@@ -14,6 +15,7 @@ public sealed record FileExplorerNodeViewModel(
     DiffFileStatus Status,
     string Language,
     FileExplorerIconKind IconKind,
+    string? RepositoryRoot,
     int Depth,
     bool IsExpanded,
     bool HasChildren,
@@ -30,13 +32,17 @@ public sealed record FileExplorerNodeViewModel(
 
     public string DisclosureGlyph => HasChildren ? IsExpanded ? "\uE70D" : "\uE76C" : string.Empty;
 
-    public string IconGlyph => NativeFileIconProvider.GetIcon(IconKind).Glyph;
+    public ImageSource? IconSource => SystemFileIconProvider.Current.GetIcon(RepositoryRoot, Path, Kind, IconKind).Source;
 
-    public FontFamily IconFontFamily => NativeFileIconProvider.Current.FontFamily;
+    public string FallbackIconGlyph => SystemFileIconProvider.Current.GetIcon(RepositoryRoot, Path, Kind, IconKind).FallbackGlyph;
 
-    public string IconAutomationText => NativeFileIconProvider.GetIcon(IconKind).AutomationText;
+    public FontFamily FallbackIconFontFamily => SystemFileIconProvider.Current.FallbackFontFamily;
 
-    public string PlatformIconText => NativeFileIconProvider.Current.PlatformText;
+    public double FallbackIconOpacity => IconSource is null ? 1d : 0d;
+
+    public string IconAutomationText => SystemFileIconProvider.Current.GetIcon(RepositoryRoot, Path, Kind, IconKind).AutomationText;
+
+    public string PlatformIconText => SystemFileIconProvider.Current.PlatformText;
 
     public Thickness IndentMargin => new(Math.Min(48, Depth * 14), 0, 0, 0);
 
@@ -52,12 +58,13 @@ public sealed record FileExplorerNodeViewModel(
         ImmutableArray<FileExplorerNode> roots,
         ImmutableHashSet<string> collapsedPaths,
         bool forceExpanded,
+        string? repositoryRoot,
         bool isLightTheme)
     {
         var builder = ImmutableArray.CreateBuilder<FileExplorerNodeViewModel>();
         foreach (var root in roots)
         {
-            AddVisibleNode(root, depth: 0, collapsedPaths, forceExpanded, isLightTheme, builder);
+            AddVisibleNode(root, depth: 0, collapsedPaths, forceExpanded, repositoryRoot, isLightTheme, builder);
         }
 
         return builder.ToImmutable();
@@ -68,6 +75,7 @@ public sealed record FileExplorerNodeViewModel(
         int depth,
         ImmutableHashSet<string> collapsedPaths,
         bool forceExpanded,
+        string? repositoryRoot,
         bool isLightTheme,
         ImmutableArray<FileExplorerNodeViewModel>.Builder builder)
     {
@@ -80,6 +88,7 @@ public sealed record FileExplorerNodeViewModel(
             node.Status,
             node.Language,
             node.IconKind,
+            repositoryRoot,
             depth,
             isExpanded,
             node.HasChildren,
@@ -93,7 +102,7 @@ public sealed record FileExplorerNodeViewModel(
 
         foreach (var child in node.Children)
         {
-            AddVisibleNode(child, depth + 1, collapsedPaths, forceExpanded, isLightTheme, builder);
+            AddVisibleNode(child, depth + 1, collapsedPaths, forceExpanded, repositoryRoot, isLightTheme, builder);
         }
     }
 
@@ -112,76 +121,6 @@ public sealed record FileExplorerNodeViewModel(
         DiffFileStatus.Unchanged => "=",
         _ => "M"
     };
-}
-
-internal sealed record NativeFileIconProfile(FontFamily FontFamily, string PlatformText)
-{
-    public string FolderGlyph { get; init; } = "\uE8B7";
-
-    public string FileGlyph { get; init; } = "\uE8A5";
-
-    public string CodeGlyph { get; init; } = "\uE943";
-
-    public string ProjectGlyph { get; init; } = "\uE8F1";
-
-    public string SolutionGlyph { get; init; } = "\uE8F1";
-
-    public string ConfigGlyph { get; init; } = "\uE713";
-
-    public string GitGlyph { get; init; } = "\uE8EE";
-
-    public string ImageGlyph { get; init; } = "\uEB9F";
-
-    public string TextGlyph { get; init; } = "\uE8A5";
-
-}
-
-internal sealed record NativeFileIconDescriptor(string Glyph, string AutomationText);
-
-internal static class NativeFileIconProvider
-{
-    public static NativeFileIconProfile Current { get; } = CreateProfile();
-
-    public static NativeFileIconDescriptor GetIcon(FileExplorerIconKind iconKind)
-    {
-        var profile = Current;
-        return iconKind switch
-        {
-            FileExplorerIconKind.Folder => new(profile.FolderGlyph, "Folder"),
-            FileExplorerIconKind.CSharp => new(profile.CodeGlyph, "C# file"),
-            FileExplorerIconKind.Xaml => new(profile.CodeGlyph, "XAML file"),
-            FileExplorerIconKind.Xml => new(profile.CodeGlyph, "XML file"),
-            FileExplorerIconKind.Json => new(profile.CodeGlyph, "JSON file"),
-            FileExplorerIconKind.Markdown => new(profile.TextGlyph, "Markdown file"),
-            FileExplorerIconKind.Project => new(profile.ProjectGlyph, "Project file"),
-            FileExplorerIconKind.Solution => new(profile.SolutionGlyph, "Solution file"),
-            FileExplorerIconKind.Config => new(profile.ConfigGlyph, "Configuration file"),
-            FileExplorerIconKind.Git => new(profile.GitGlyph, "Git file"),
-            FileExplorerIconKind.Image => new(profile.ImageGlyph, "Image file"),
-            FileExplorerIconKind.Text => new(profile.TextGlyph, "Text file"),
-            _ => new(profile.FileGlyph, "File")
-        };
-    }
-
-    private static NativeFileIconProfile CreateProfile()
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return new NativeFileIconProfile(new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), "Windows native icon profile");
-        }
-
-        if (OperatingSystem.IsMacOS())
-        {
-            return new NativeFileIconProfile(new FontFamily("Apple Symbols, SF Pro, Segoe Fluent Icons"), "macOS native icon profile");
-        }
-
-        if (OperatingSystem.IsLinux())
-        {
-            return new NativeFileIconProfile(new FontFamily("Symbols Nerd Font, Noto Sans Symbols 2, Segoe Fluent Icons"), "Linux native icon profile");
-        }
-
-        return new NativeFileIconProfile(new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), "Cross-platform icon profile");
-    }
 }
 
 internal static class DiffStatusBrushes

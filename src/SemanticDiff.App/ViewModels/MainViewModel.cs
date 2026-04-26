@@ -1338,7 +1338,12 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
         ExplorerItems = filtered;
         var tree = FileExplorerTreeBuilder.Build(filtered.Select(item => new FileExplorerFile(item.Path, item.Status, item.Language)));
-        ExplorerTreeItems = FileExplorerNodeViewModel.Flatten(tree, collapsedExplorerNodePaths, !string.IsNullOrWhiteSpace(query), IsLightThemeEnabled);
+        ExplorerTreeItems = FileExplorerNodeViewModel.Flatten(
+            tree,
+            collapsedExplorerNodePaths,
+            !string.IsNullOrWhiteSpace(query),
+            currentRepositoryPath,
+            IsLightThemeEnabled);
         UpdateSelectedExplorerTreeNode();
         ExplorerCountText = string.IsNullOrWhiteSpace(query)
             ? FormatCount(allExplorerItems.Length, "file", "files")

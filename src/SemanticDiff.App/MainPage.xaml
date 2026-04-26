@@ -132,14 +132,25 @@
                     Background="{Binding StatusSoftBrush}"
                     BorderBrush="{Binding StatusBrush}"
                     BorderThickness="1">
-              <TextBlock Text="{Binding IconGlyph}"
-                         FontFamily="{Binding IconFontFamily}"
-                         Foreground="{Binding StatusBrush}"
-                         FontSize="12"
-                         HorizontalAlignment="Center"
-                         VerticalAlignment="Center"
-                         AutomationProperties.Name="{Binding IconAutomationText}"
-                         ToolTipService.ToolTip="{Binding PlatformIconText}" />
+              <Grid>
+                <TextBlock Text="{Binding FallbackIconGlyph}"
+                           FontFamily="{Binding FallbackIconFontFamily}"
+                           Foreground="{Binding StatusBrush}"
+                           FontSize="12"
+                           Opacity="{Binding FallbackIconOpacity}"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           AutomationProperties.Name="{Binding IconAutomationText}"
+                           ToolTipService.ToolTip="{Binding PlatformIconText}" />
+                <Image Source="{Binding IconSource}"
+                       Width="16"
+                       Height="16"
+                       Stretch="Uniform"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       AutomationProperties.Name="{Binding IconAutomationText}"
+                       ToolTipService.ToolTip="{Binding PlatformIconText}" />
+              </Grid>
             </Border>
           </Grid>
           <Grid Grid.Column="2" RowDefinitions="Auto,Auto">

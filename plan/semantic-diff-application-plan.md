@@ -1030,6 +1030,17 @@ Current status: complete. Large branch graphs now fit correctly, organize hundre
 
 Current status: complete. Scrollbar thumbs inside document nodes now win hit testing over right-edge resize handles, restoring direct draggable node scrolling without weakening resize behavior elsewhere.
 
+### Phase 46: Cached Native System File Icons
+
+- [x] Replace the explorer's platform-name glyph icon profile with an app-layer system file icon provider.
+- [x] Use macOS `NSWorkspace` and AppKit/Foundation interop to obtain real Finder-quality folder and file-type icons from the operating system.
+- [x] Cache native icon PNGs by stable folder, extension, or special filename keys under the local application data folder so large trees do not repeatedly call native APIs.
+- [x] Keep deleted, generated, and unavailable files working through extension-based system icon lookup with a compact glyph fallback when native icon extraction is unavailable.
+- [x] Render explorer icons through `ImageSource` bindings while preserving status accents, automation text, and tooltips.
+- [x] Validate the change with compiler diagnostics, app build, runtime launch smoke testing, and cached icon artifact inspection.
+
+Current status: complete. The file explorer now uses real cached macOS system icons through AppKit interop instead of simulated icon-font glyphs, while retaining deterministic fallbacks for unsupported platforms or unavailable icon data.
+
 ## 14. Initial Technical Decisions
 
 - Target framework: `net10.0`, matching installed SDK and Uno template default.
