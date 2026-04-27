@@ -252,33 +252,33 @@ public sealed class CodeFileViewerControl : Grid
             return;
         }
 
-        using (new SKAutoCanvasRestore(canvasSurface, doSave: true))
+        var textClip = SKRect.Create(gutterWidth, 0, Math.Max(0, width - gutterWidth - ScrollbarWidth - ScrollbarMargin), height);
+        for (var rowIndex = firstRow; rowIndex <= lastRow; rowIndex++)
         {
-            canvasSurface.ClipRect(SKRect.Create(gutterWidth, 0, Math.Max(0, width - gutterWidth - ScrollbarWidth - ScrollbarMargin), height));
-
-            for (var rowIndex = firstRow; rowIndex <= lastRow; rowIndex++)
+            var row = visibleRows[rowIndex];
+            if (row.LineIndex < 0 || row.LineIndex >= lines.Count)
             {
-                var row = visibleRows[rowIndex];
-                if (row.LineIndex < 0 || row.LineIndex >= lines.Count)
-                {
-                    continue;
-                }
+                continue;
+            }
 
-                var y = TopPadding + rowIndex * LineHeight - (float)scrollOffsetY;
-                var line = lines[row.LineIndex];
-                var annotationKind = ShowDiffAnnotations ? line.Kind : DiffLineKind.Context;
-                DrawLineBackground(canvasSurface, palette, gutterWidth, width, y, LineHeight, annotationKind, row.CollapsedRegion is not null);
+            var y = TopPadding + rowIndex * LineHeight - (float)scrollOffsetY;
+            var line = lines[row.LineIndex];
+            var annotationKind = ShowDiffAnnotations ? line.Kind : DiffLineKind.Context;
+            DrawLineBackground(canvasSurface, palette, gutterWidth, width, y, LineHeight, annotationKind, row.CollapsedRegion is not null);
+            if (IsDiffMode)
+            {
+                DrawDiffGutter(canvasSurface, palette, line, ShowDiffAnnotations, gutterWidth, y, LineHeight, BaselineOffset, lineNumberPaint, font);
+            }
+            else
+            {
+                DrawLineNumber(canvasSurface, line.Index + 1, gutterWidth, y, BaselineOffset, lineNumberPaint, font);
+                DrawFoldMarker(canvasSurface, palette, row.LineIndex, row.CollapsedRegion, y, LineHeight);
+            }
+
+            using (new SKAutoCanvasRestore(canvasSurface, doSave: true))
+            {
+                canvasSurface.ClipRect(textClip);
                 DrawSelection(canvasSurface, palette, rowIndex, line, gutterWidth + TextPadding, y, charWidth, width);
-                if (IsDiffMode)
-                {
-                    DrawDiffGutter(canvasSurface, palette, line, ShowDiffAnnotations, gutterWidth, y, LineHeight, BaselineOffset, lineNumberPaint, font);
-                }
-                else
-                {
-                    DrawLineNumber(canvasSurface, line.Index + 1, gutterWidth, y, BaselineOffset, lineNumberPaint, font);
-                    DrawFoldMarker(canvasSurface, palette, row.LineIndex, row.CollapsedRegion, y, LineHeight);
-                }
-
                 DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, gutterWidth + TextPadding, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, palette);
             }
         }
