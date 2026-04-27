@@ -8,14 +8,15 @@ The app is designed for code review sessions where a flat patch is not enough: i
 
 | Area | Capability |
 | --- | --- |
-| Interactive diff graph | Skia-rendered canvas with draggable nodes, pannable viewport, zoom/fit controls, selectable graph nodes, persistent node layout, and grouping containers. |
+| Interactive diff graph | Skia-rendered canvas with draggable nodes, pannable viewport, zoom/fit controls, selectable graph nodes, persistent node layout, grouping containers, and SVG/PNG/PDF export. |
 | Git-native workflow | Worktree, unstaged, staged, branch, and custom range diff scopes backed by `git` commands. |
 | Branch and review request discovery | Searchable Git tab with local branches, remote branches, GitHub pull requests, and GitLab merge requests. |
 | Review discussion workflow | Searchable Review tab for GitHub/GitLab threads, comments, replies, code navigation, comment annotations, and supported thread resolve/reopen operations. |
 | Branch/PR/MR workspaces | Open branches, GitHub PRs, or GitLab MRs as cached graph workspace tabs so multiple review contexts stay available without reloading each time. |
 | History and blame exploration | Workspace tabs for commit history timelines, file blame summaries, blame commit nodes, and per-file history context. |
-| File diff tabs | Open file-specific diff/full-file tabs with syntax coloring, line numbers, folding metadata, and diff-only/full-file switching. |
-| Semantic analysis | Roslyn-backed C# analysis, XAML semantic analysis, syntax fallback, semantic edge projection, symbol navigation, and impact signals. |
+| File diff tabs | Open file-specific diff/full-file tabs with syntax coloring, line numbers, folding metadata, text selection, font controls, annotation toggles, and diff-only/full-file switching. |
+| Semantic analysis | Roslyn-backed C# analysis, XAML semantic analysis, syntax fallback, semantic edge projection, symbol navigation, symbol graph workspaces, hybrid semantic maps, and impact signals. |
+| Symbol and semantic map workspaces | Open filtered symbol graphs, symbol-neighborhood graphs, file/folder semantic maps, and grouped node/edge views from the Symbols panel, file tree, or graph nodes. |
 | Rich token rendering | TextMate tokenization plus language-service metadata for languages that are not covered by semantic diff providers. |
 | Review assistance | Noise filtering, inline change markup, moved-code signals, conflict/context annotations, stage/unstage actions, blame summary, and review status feedback. |
 | Cross-platform UI foundation | Uno Platform desktop target with Skia rendering and MVVM-oriented app state. |
@@ -31,12 +32,15 @@ The app is designed for code review sessions where a flat patch is not enough: i
 | Left pane | Tabbed workflow | Files, Git, Review, Symbols, and Settings tabs. |
 | Workspace tabs | Multi-document review surface | Keeps the active diff graph open while adding closable branch/PR/MR graph workspaces, Git history, blame, and file diff tabs in the main area. |
 | Workspace tabs | Cached graph state | Branch/PR/MR graph tabs preserve their loaded documents, semantic graph, layout, selected file, review threads, and viewport state when switching tabs. |
+| Workspace tabs | Overflow navigation | Left/right tab strip buttons keep graph, PR/MR, history, blame, file, and symbol graph tabs reachable when many tabs are open. |
+| Top bar | Quick graph controls | Layout, grouping, export, and settings controls are available directly from the workspace toolbar. |
 | Canvas | Diff node graph | Renders changed files as code nodes with status badges, syntax colors, line numbers, inline change marks, and annotations. |
 | Canvas | Groups | Groups related nodes and supports moving a group together with connected nodes. |
 | Canvas | Selection | Selecting a node updates file/review context and enables node commands. |
 | Canvas | Navigation | Focus selected node, reveal node in file tree, open file tabs, open blame tabs, previous/next changed line. |
 | Canvas | Annotations | Hoverable/clickable annotations can focus related code, open review threads, or open blame/history context depending on the annotation type. |
 | Canvas | Viewport | Smooth drag, pan, zoom, and fit-to-scene interaction. |
+| Canvas | Export | Saves the current workspace graph as SVG, PNG, or PDF using Skia-backed rendering for full-fidelity output. |
 | Status bar | Diagnostics | Shows current operation, review signals, cache state, watch state, and navigation status. |
 
 ### Files Tab
@@ -48,7 +52,7 @@ The app is designed for code review sessions where a flat patch is not enough: i
 | Status badges | Displays change status, counts, and status color bars. |
 | File icons | Uses platform/file-type icons with fallback glyphs. |
 | Selection | Selecting a file focuses the corresponding diff node. |
-| Context action | Right-click menu can navigate to the corresponding node, open diff/full-file tabs, or open a blame tab. |
+| Context action | Right-click menu can navigate to the corresponding node, open diff/full-file tabs, open a blame tab, or open file/folder semantic map tabs. |
 
 ### Git Tab
 
@@ -76,6 +80,7 @@ The app is designed for code review sessions where a flat patch is not enough: i
 | Commit actions | Context menu copies full commit hashes and can push a commit directly into the Settings range start/end fields. |
 | File blame tab | Opens from file tree or graph node actions and groups file lines by commit. |
 | Blame commit nodes | Shows commit id, subject, author/time, touched line ranges, and coverage bars for the selected file. |
+| Blame change graph | Switches the blame tab from commit cards to a connected diff-node graph with one node per loaded file-history commit. |
 | Blame timeline | Displays a compact or expanded bottom timeline for file history and blamed-line ownership. |
 
 ### Review Tab
@@ -102,8 +107,14 @@ The app is designed for code review sessions where a flat patch is not enough: i
 | Insight summary | Shows total symbols, changed symbols, linked symbols, and symbol-bearing file count. |
 | Scope filters | Quick filters for all, changed, and linked symbols. |
 | Facet filters | Scrollable kind and file facets let large diffs narrow the symbol list without shrinking the main result area. |
+| Facet layout | Splitter between facets and symbol results lets the kind/file facet area be resized for large repositories. |
 | Semantic navigation | Focuses declarations/symbols in the diff graph where semantic providers can resolve them. |
 | Impact metadata | Shows symbol kind/location and edge information. |
+| Symbol graph workspaces | Opens symbol-only graph tabs from the panel, filtered results, hot symbols, and file facets. |
+| Semantic map workspaces | Opens hybrid file + symbol graph tabs from filtered results, symbol rows, file facets, file tree entries, and graph node context menus. |
+| Semantic map visualization | Renders real file diff nodes connected to contained symbol nodes, while preserving filtered cross-symbol links such as references, bindings, resources, inheritance, and generated-file relationships. |
+| Symbol graph filtering | Graph tabs can filter by search text, scope, kind, file, edge kind, view mode, layout, and grouping mode. |
+| Symbol graph navigation | Symbol and semantic-map nodes preserve source-document routing so they can reveal source, open diff/full-file tabs, or open blame tabs. |
 | Provider fallback | Uses fast syntax analysis when full MSBuild semantic workspace analysis is not selected or unavailable. |
 | File fallback | Files without navigable type/member/resource anchors still appear as file-level symbols so unsupported file types are not hidden. |
 
@@ -123,6 +134,7 @@ The app is designed for code review sessions where a flat patch is not enough: i
 | Review | Context folding | Toggle folded unchanged context annotations. |
 | Review | Git staging | Stage/unstage selected changed file. |
 | View | Theme | Dark/light mode. |
+| View | Quick settings popup | Workspace toolbar Settings button opens the same settings controls without requiring a left-pane tab switch. |
 | View | Semantic edges | Toggle semantic graph edge projection. |
 | View | Annotation layers | Git refs, semantic, diagnostics, review, review comments, history, navigation, context folds. |
 
@@ -149,11 +161,13 @@ The app is designed for code review sessions where a flat patch is not enough: i
 | Review navigation | Thread-to-code links | Opens selected review threads at matching changed-file nodes and line numbers. |
 | Review navigation | Annotation-to-thread links | Comment annotations are hoverable/clickable entry points into the Review tab and matching code location. |
 | Workspace tabs | File diff tabs | Opens file-specific tabs from the file tree or node context menu. |
-| Workspace tabs | File display modes | File tabs can switch between node-style diff lines and full-file text. |
-| Workspace tabs | Rich file viewer | File tabs use syntax-colored rendering, line numbering, diff gutters, and fold-region metadata. |
+| Workspace tabs | File display modes | File tabs can switch between diff-only and full-file display; diff-only can show changed hunks or an expanded full-file diff. |
+| Workspace tabs | File annotations | File tabs can toggle diff annotation backgrounds, gutter markers, and accent lanes in both diff-only and full-file views. |
+| Workspace tabs | Rich file viewer | File tabs use syntax-colored rendering, line numbering, diff gutters, fold-region metadata, text selection, font-size controls, and `Ctrl`/`Cmd` + mouse wheel zoom. |
 | Workspace tabs | Branch/PR/MR graph workspaces | Opens selected Git refs or review requests as closable graph tabs and restores cached graph/review/layout state when switching between them. |
 | Workspace tabs | Git history tabs | Opens timeline tabs for branches, PRs, and MRs without replacing the graph. |
-| Workspace tabs | Blame tabs | Opens file-focused blame tabs with commit grouping, coverage bars, and file-history timeline. |
+| Workspace tabs | Blame tabs | Opens file-focused blame tabs with commit grouping, connected change graph view, coverage bars, and file-history timeline. |
+| Workspace tabs | Symbol graph and semantic map tabs | Opens symbol-only graph workspaces and hybrid file + symbol semantic maps from filters, symbol list items, file/folder items, and graph nodes. |
 | Diff parsing | Unified diff model | Converts Git diffs into document/line snapshots. |
 | Diff parsing | Context modes | Supports changed-only, full-file, and current-file contexts. |
 | Diff parsing | Noise filtering | Can hide or de-emphasize whitespace-only review noise. |
@@ -163,9 +177,12 @@ The app is designed for code review sessions where a flat patch is not enough: i
 | Semantics | XAML provider | Extracts XAML semantic structure. |
 | Semantics | Fast mode | Syntax-only fallback for quicker analysis. |
 | Semantics | Symbol insights | Provides searchable symbol results, scope filters, kind/file facets, hot symbols, changed/linked counts, and file-level fallback symbols. |
+| Semantics | Symbol graph visualization | Builds symbol-only node/edge graphs with search, scope, kind, file, edge-kind, view-mode, layout, and grouping filters. |
+| Semantics | Hybrid semantic maps | Builds file + symbol workspaces that connect actual diff file nodes to contained symbol nodes, then overlays filtered semantic edges between those symbols. |
 | Graph layout | MSAGL layout | Lays out semantic graph structures. |
 | Graph layout | Grouping modes | Groups nodes by folder, semantic structure, language, status, or no grouping. |
 | Rendering | Skia canvas | Uses SkiaSharp rendering through Uno desktop. |
+| Rendering | Graph export | Exports current workspace graphs to SVG, PNG, and PDF using Skia-backed rendering paths. |
 | Rendering | Rich annotations | Renders Git status, syntax, semantic anchors, diagnostics, review signals, review comments, history, navigation, and context folds. |
 | Rendering | Annotation interactions | Provides hover feedback and click behavior for navigating from annotations to review comments, blame tabs, and focused code. |
 | Rendering | Node controls | Supports selection, dragging, pinning, font sizing, and layout persistence. |
@@ -221,6 +238,7 @@ The app registers Control shortcuts and, where supported, platform command-key v
 | `Ctrl+Alt+P` | Pin/unpin selected canvas node. |
 | `Ctrl++` | Increase selected node font size. |
 | `Ctrl+-` | Decrease selected node font size. |
+| `Ctrl`/`Cmd` + mouse wheel in file tabs | Increase or decrease file diff/full-file text font size. |
 
 ## GitHub and GitLab Authentication
 
@@ -306,13 +324,14 @@ scripts/package-desktop.sh
 5. Right-click branches or PR/MR entries in Git to open cached graph workspace tabs for side-by-side review contexts.
 6. Right-click branches or PR/MR entries in Git to open visual history timeline tabs.
 7. Right-click history commits to copy hashes or set the comparison range start/end.
-8. Right-click files or graph nodes to open file diff tabs, then switch between diff-only and full-file display.
+8. Right-click files or graph nodes to open file diff tabs, then switch between diff-only/full-file display, changed-hunk/full-diff scope, and annotation visibility.
 9. Open blame tabs from files or graph nodes when line ownership/history is part of the review.
 10. Use Files and Symbols tabs to jump between files, file-level fallbacks, and semantic items.
-11. Use the Review tab to load discussion threads, search comments, add overview comments, reply to threads, or resolve supported threads.
-12. Click comment annotations in nodes to select the linked Review item and focus the related code.
-13. Stage or unstage selected files from Settings when reviewing local changes.
-14. Tune layout, grouping, semantic mode, context, and annotation layers for the review task.
+11. Open symbol graphs or hybrid semantic maps from Symbols, file facets, file tree folders/files, or graph nodes to inspect how changed files contain and connect through symbols.
+12. Use the Review tab to load discussion threads, search comments, add overview comments, reply to threads, or resolve supported threads.
+13. Click comment annotations in nodes to select the linked Review item and focus the related code.
+14. Stage or unstage selected files from Settings when reviewing local changes.
+15. Tune layout, grouping, semantic mode, context, annotation layers, and graph export options for the review task.
 
 ## App State
 
