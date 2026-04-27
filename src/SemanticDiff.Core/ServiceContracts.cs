@@ -34,6 +34,11 @@ public interface IGitDiffService
     Task<string> GetFileContentAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken);
 }
 
+public interface IGitHistoryService
+{
+    Task<GitHistorySnapshot> GetHistoryAsync(GitHistoryRequest request, CancellationToken cancellationToken);
+}
+
 public interface IGitRepositoryDiscovery
 {
     Task<string?> DiscoverRootAsync(string startPath, CancellationToken cancellationToken);
@@ -53,14 +58,45 @@ public interface IGitReviewService
 
 public sealed record GitReviewOperationResult(bool Succeeded, string Message);
 
+public interface IGitReviewDiscussionService
+{
+    Task<GitReviewDiscussionSnapshot> GetDiscussionAsync(
+        string repositoryPath,
+        GitPullRequestInfo reviewRequest,
+        CancellationToken cancellationToken);
+
+    Task<GitReviewOperationResult> AddCommentAsync(
+        string repositoryPath,
+        GitPullRequestInfo reviewRequest,
+        string body,
+        CancellationToken cancellationToken);
+
+    Task<GitReviewOperationResult> ReplyToThreadAsync(
+        string repositoryPath,
+        GitPullRequestInfo reviewRequest,
+        string threadId,
+        string body,
+        CancellationToken cancellationToken);
+
+    Task<GitReviewOperationResult> SetThreadResolvedAsync(
+        string repositoryPath,
+        GitPullRequestInfo reviewRequest,
+        string threadId,
+        bool isResolved,
+        CancellationToken cancellationToken);
+}
+
 public interface IGitBlameService
 {
-    Task<GitFileBlame> GetFileBlameAsync(string repositoryPath, string path, CancellationToken cancellationToken);
+    Task<GitFileBlame> GetFileBlameAsync(string repositoryPath, string path, CancellationToken cancellationToken, string? revision = null);
 }
 
 public interface IGitReferenceDiscoveryService
 {
-    Task<GitRepositoryReferenceSnapshot> GetReferencesAsync(string repositoryPath, CancellationToken cancellationToken);
+    Task<GitRepositoryReferenceSnapshot> GetReferencesAsync(
+        string repositoryPath,
+        CancellationToken cancellationToken,
+        GitReviewRequestState reviewRequestState = GitReviewRequestState.Open);
 
     Task<string?> EnsurePullRequestHeadAsync(string repositoryPath, GitPullRequestInfo pullRequest, CancellationToken cancellationToken);
 }

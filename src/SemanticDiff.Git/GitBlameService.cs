@@ -17,14 +17,27 @@ public sealed class GitBlameService : IGitBlameService
         this.commandRunner = commandRunner;
     }
 
-    public async Task<GitFileBlame> GetFileBlameAsync(string repositoryPath, string path, CancellationToken cancellationToken)
+    public async Task<GitFileBlame> GetFileBlameAsync(string repositoryPath, string path, CancellationToken cancellationToken, string? revision = null)
     {
         if (string.IsNullOrWhiteSpace(repositoryPath) || string.IsNullOrWhiteSpace(path))
         {
             return GitFileBlame.Empty(path);
         }
 
-        var result = await commandRunner.RunAsync(repositoryPath, ["blame", "--line-porcelain", "--", path], cancellationToken).ConfigureAwait(false);
+        var arguments = new List<string>
+        {
+            "blame",
+            "--line-porcelain"
+        };
+        if (!string.IsNullOrWhiteSpace(revision))
+        {
+            arguments.Add(revision.Trim());
+        }
+
+        arguments.Add("--");
+        arguments.Add(path);
+
+        var result = await commandRunner.RunAsync(repositoryPath, arguments, cancellationToken).ConfigureAwait(false);
         return result.Succeeded ? Parse(path, result.StandardOutput) : GitFileBlame.Empty(path);
     }
 

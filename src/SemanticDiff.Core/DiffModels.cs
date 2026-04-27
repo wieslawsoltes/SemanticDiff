@@ -72,7 +72,25 @@ public sealed record DiffDocumentMetadata(
     int AddedLines,
     int DeletedLines);
 
-public sealed record TokenSpan(int StartColumn, int Length, string StyleId);
+public sealed record TokenSpan(
+    int StartColumn,
+    int Length,
+    string StyleId,
+    string TokenType = "text",
+    ImmutableArray<string> Modifiers = default,
+    ImmutableArray<string> Scopes = default,
+    string? LanguageId = null,
+    string? Source = null)
+{
+    public bool HasRichMetadata =>
+        !string.IsNullOrWhiteSpace(TokenType) && TokenType != "text" ||
+        !Modifiers.IsDefaultOrEmpty ||
+        !Scopes.IsDefaultOrEmpty ||
+        !string.IsNullOrWhiteSpace(LanguageId) ||
+        !string.IsNullOrWhiteSpace(Source);
+
+    public string PrimaryScope => Scopes.IsDefaultOrEmpty ? string.Empty : Scopes[^1];
+}
 
 public sealed record DiffInlineSpan(int StartColumn, int Length, DiffInlineKind Kind);
 
@@ -119,6 +137,14 @@ public sealed record DiffDocumentSnapshot(
     public string ToSourceText() => string.Join(Environment.NewLine, Lines.Select(line => line.Text));
 }
 
+public sealed record CodeFoldRegion(
+    int StartLineIndex,
+    int EndLineIndex,
+    string Title)
+{
+    public int CollapsedLineCount => Math.Max(0, EndLineIndex - StartLineIndex);
+}
+
 public sealed record GitFileChange(
     string Path,
     string? OldPath,
@@ -148,11 +174,53 @@ public sealed record GitDiffDocumentSnapshot(
     GitDiffSnapshot GitSnapshot,
     ImmutableArray<DiffDocumentSnapshot> Documents);
 
+public sealed record GitHistoryRequest(
+    string RepositoryPath,
+    string HeadRef,
+    string? BaseRef = null,
+    int MaxCount = 200,
+    int Skip = 0,
+    string? PathFilter = null);
+
+public sealed record GitHistorySnapshot(
+    GitHistoryRequest Request,
+    ImmutableArray<GitCommitInfo> Commits,
+    bool HasMore,
+    DateTimeOffset CreatedAt);
+
+public sealed record GitCommitInfo(
+    string Id,
+    string ShortId,
+    ImmutableArray<string> ParentIds,
+    string Author,
+    string AuthorEmail,
+    DateTimeOffset? AuthorTime,
+    string Decorations,
+    string Subject)
+{
+    public bool IsMerge => ParentIds.Length > 1;
+}
+
 public sealed record GitRepositoryReferenceSnapshot(
     ImmutableArray<GitBranchInfo> Branches,
     ImmutableArray<GitPullRequestInfo> PullRequests,
-    bool IsGitHubRepository,
+    bool SupportsReviewRequests,
+    GitReviewRequestKind ReviewRequestKind,
     string StatusMessage);
+
+public enum GitReviewRequestKind
+{
+    PullRequest,
+    MergeRequest
+}
+
+public enum GitReviewRequestState
+{
+    Open,
+    Closed,
+    Merged,
+    All
+}
 
 public sealed record GitBranchInfo(
     string Name,
@@ -167,4 +235,44 @@ public sealed record GitPullRequestInfo(
     string BaseRefName,
     string HeadRefName,
     string HeadRepository,
-    bool IsFromSameRepository);
+    bool IsFromSameRepository,
+    string RemoteName = "origin",
+    GitReviewRequestKind Kind = GitReviewRequestKind.PullRequest,
+    GitReviewRequestState State = GitReviewRequestState.Open);
+
+public sealed record GitReviewDiscussionSnapshot(
+    GitPullRequestInfo ReviewRequest,
+    ImmutableArray<GitReviewThreadInfo> Threads,
+    string StatusMessage);
+
+public enum GitReviewThreadKind
+{
+    Conversation,
+    Diff,
+    Commit,
+    System
+}
+
+public sealed record GitReviewThreadInfo(
+    string Id,
+    GitReviewThreadKind Kind,
+    string Title,
+    string? Path,
+    int? Line,
+    bool IsResolved,
+    bool CanReply,
+    bool CanResolve,
+    ImmutableArray<GitReviewCommentInfo> Comments)
+{
+    public int CommentCount => Comments.Length;
+}
+
+public sealed record GitReviewCommentInfo(
+    string Id,
+    string ThreadId,
+    string Author,
+    string Body,
+    DateTimeOffset? CreatedAt,
+    DateTimeOffset? UpdatedAt,
+    string? WebUrl,
+    bool IsSystem);

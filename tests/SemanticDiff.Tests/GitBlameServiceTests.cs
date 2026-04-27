@@ -31,6 +31,17 @@ public sealed class GitBlameServiceTests
         Assert.Empty(blame.Lines);
     }
 
+    [Fact]
+    public async Task GetFileBlameAsync_AddsRevisionBeforePathSeparator()
+    {
+        var runner = new FakeGitCommandRunner(arguments => new GitCommandResult(0, string.Empty, string.Empty));
+        var service = new GitBlameService(runner);
+
+        await service.GetFileBlameAsync("/repo", "src/App.cs", CancellationToken.None, "refs/remotes/origin/pr/12/head");
+
+        Assert.Equal(["blame", "--line-porcelain", "refs/remotes/origin/pr/12/head", "--", "src/App.cs"], runner.Calls.Single());
+    }
+
     private const string BlameOutput =
         "1111111111111111111111111111111111111111 1 1 1\n" +
         "author Ada Lovelace\n" +
