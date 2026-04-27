@@ -102,6 +102,51 @@ public sealed class DiffSceneRendererTests
     }
 
     [Fact]
+    public void Render_HidesReviewCommentAnnotationsWhenDisabled()
+    {
+        var documents = SampleDiffDocuments.Create();
+        var document = documents[0];
+        var annotation = DiffAnnotation.Line(
+            document.Id,
+            DiffAnnotationKind.ReviewComment,
+            0,
+            1,
+            "comment",
+            "Open review thread",
+            DiffAnnotationSeverity.Warning);
+        var visibleScene = DiffCanvasScene.FromDocuments(documents, annotations: [annotation]);
+        var hiddenScene = DiffCanvasScene.FromDocuments(
+            documents,
+            annotations: [annotation],
+            annotationVisibility: new DiffAnnotationVisibilityState(ShowReviewComments: false));
+        var renderer = new DiffSceneRenderer();
+
+        using var visibleSurface = SKSurface.Create(new SKImageInfo(800, 600));
+        using var hiddenSurface = SKSurface.Create(new SKImageInfo(800, 600));
+
+        renderer.Render(visibleSurface.Canvas, new SKSize(800, 600), visibleScene, DiffCanvasColorTheme.Dark);
+        renderer.Render(hiddenSurface.Canvas, new SKSize(800, 600), hiddenScene, DiffCanvasColorTheme.Dark);
+
+        using var visibleImage = visibleSurface.Snapshot();
+        using var hiddenImage = hiddenSurface.Snapshot();
+        var visiblePixels = visibleImage.PeekPixels();
+        var hiddenPixels = hiddenImage.PeekPixels();
+        var differingPixels = 0;
+        for (var y = 64; y < 94; y++)
+        {
+            for (var x = 552; x < 652; x++)
+            {
+                if (hiddenPixels.GetPixelColor(x, y) != visiblePixels.GetPixelColor(x, y))
+                {
+                    differingPixels++;
+                }
+            }
+        }
+
+        Assert.True(differingPixels > 0);
+    }
+
+    [Fact]
     public void Render_UsesDistinctIndustryStatusColorsForNodeBadges()
     {
         var added = RenderStatusBadgePixel(DiffFileStatus.Added);
@@ -116,6 +161,35 @@ public sealed class DiffSceneRendererTests
         Assert.NotEqual(added, modified);
         Assert.NotEqual(modified, deleted);
         Assert.NotEqual(deleted, renamed);
+    }
+
+    [Fact]
+    public void MiddleEllipsizeText_TrimsTitleFromMiddleWithinAvailableWidth()
+    {
+        using var font = new SKFont(SKTypeface.Default, 13);
+        using var paint = new SKPaint { IsAntialias = true };
+        var path = "src/SamplesApp/UITests.Shared/Windows_UI_Xaml_Controls/ScrollViewer/ScrollViewer_Anchoring.xaml";
+        var maxWidth = font.MeasureText(path, paint) * 0.45f;
+
+        var trimmed = DiffSceneRenderer.MiddleEllipsizeText(path, maxWidth, font, paint);
+
+        Assert.Contains("...", trimmed);
+        Assert.StartsWith("src/", trimmed);
+        Assert.EndsWith(".xaml", trimmed);
+        Assert.True(trimmed.Length < path.Length);
+        Assert.True(font.MeasureText(trimmed, paint) <= maxWidth);
+    }
+
+    [Fact]
+    public void MiddleEllipsizeText_ReturnsOriginalTitleWhenItFits()
+    {
+        using var font = new SKFont(SKTypeface.Default, 13);
+        using var paint = new SKPaint { IsAntialias = true };
+        const string path = "src/App.xaml";
+
+        var trimmed = DiffSceneRenderer.MiddleEllipsizeText(path, font.MeasureText(path, paint) + 1, font, paint);
+
+        Assert.Equal(path, trimmed);
     }
 
     [Fact]
@@ -227,6 +301,32 @@ public sealed class DiffSceneRendererTests
     }
 
     [Fact]
+    public void Render_InteractiveMode_SkipsDetailedBodiesAndCachedEdgePaths()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }\nvoid M() { }\nvoid N() { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("B.cs"), "B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }\nvoid M() { }\nvoid N() { }");
+        var graph = new SemanticGraph(
+            [
+                new SemanticAnchor("A:type", first.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "A"),
+                new SemanticAnchor("B:type", second.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "B")
+            ],
+            [
+                new SemanticEdge("A->B", "A:type", "B:type", SemanticEdgeKind.SymbolReference, 0.82, "B")
+            ]);
+        var scene = DiffCanvasScene.FromDocuments([first, second], graph, groupingMode: GraphGroupingMode.None);
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(1_400, 900));
+        renderer.Render(surface.Canvas, new SKSize(1_400, 900), scene, DiffCanvasColorTheme.Dark, DiffSceneRenderMode.Interactive);
+
+        Assert.True(renderer.LastRenderStats.DrawnNodeCount > 0);
+        Assert.Equal(0, renderer.LastRenderStats.DetailedNodeCount);
+        Assert.Equal(0, renderer.LastRenderStats.CachedEdgePathCount);
+        Assert.Equal(scene.Edges.Count, renderer.LastRenderStats.DrawnEdgeCount);
+    }
+
+    [Fact]
     public void Render_KeepsGraphGroupLabelsScreenStableAcrossZoom()
     {
         var group = new GraphGroup("folder:src/App", GraphGroupingMode.Folder, "src/App", new Rect2(100, 120, 2, 2), 4, 10, 3, 0);
@@ -237,8 +337,8 @@ public sealed class DiffSceneRendererTests
         var normalBounds = MeasureGroupLabelBounds(normalScene, group);
         var zoomedBounds = MeasureGroupLabelBounds(zoomedScene, group);
 
-        Assert.InRange(normalBounds.Height, 18, 26);
-        Assert.InRange(zoomedBounds.Height, 18, 26);
+        Assert.InRange(normalBounds.Height, 24, 34);
+        Assert.InRange(zoomedBounds.Height, 24, 34);
         Assert.True(Math.Abs(normalBounds.Height - zoomedBounds.Height) <= 2);
     }
 

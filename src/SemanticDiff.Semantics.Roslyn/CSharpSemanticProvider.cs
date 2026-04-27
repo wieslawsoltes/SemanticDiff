@@ -52,23 +52,12 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
 
         if (workspaceGraph is not null)
         {
-            var coveredDocumentIds = GetCoveredDocumentIds(workspaceGraph);
-            if (csharpDocuments.All(document => coveredDocumentIds.Contains(document.Id)))
-            {
-                return workspaceGraph;
-            }
-
             var syntaxGraph = await AnalyzeWithInMemoryCompilationAsync(request.RepositoryPath, csharpDocuments, cancellationToken).ConfigureAwait(false);
             return MergeGraphs(workspaceGraph, syntaxGraph);
         }
 
         return await AnalyzeWithInMemoryCompilationAsync(request.RepositoryPath, csharpDocuments, cancellationToken).ConfigureAwait(false);
     }
-
-    private static ImmutableHashSet<DiffDocumentId> GetCoveredDocumentIds(SemanticGraph graph) => graph.Anchors
-        .Where(anchor => anchor.Kind == SemanticAnchorKind.File)
-        .Select(anchor => anchor.DocumentId)
-        .ToImmutableHashSet();
 
     private static SemanticGraph MergeGraphs(SemanticGraph first, SemanticGraph second)
     {

@@ -18,6 +18,7 @@ public enum DiffAnnotationKind
     Navigation,
     HistoryBlame,
     ReviewAction,
+    ReviewComment,
     RepositoryWatch
 }
 
@@ -35,6 +36,15 @@ public enum DiffAnnotationSeverity
     Error
 }
 
+public enum DiffAnnotationActionKind
+{
+    None,
+    FocusDocument,
+    FocusLine,
+    ReviewThread,
+    ChangeNavigation
+}
+
 public sealed record DiffAnnotation(
     string Id,
     DiffDocumentId DocumentId,
@@ -44,7 +54,9 @@ public sealed record DiffAnnotation(
     int? DisplayLineNumber,
     string Label,
     string Detail,
-    DiffAnnotationSeverity Severity = DiffAnnotationSeverity.Info)
+    DiffAnnotationSeverity Severity = DiffAnnotationSeverity.Info,
+    DiffAnnotationActionKind ActionKind = DiffAnnotationActionKind.FocusDocument,
+    string? ActionTargetId = null)
 {
     public static DiffAnnotation Node(
         DiffDocumentId documentId,
@@ -62,7 +74,7 @@ public sealed record DiffAnnotation(
         string label,
         string detail,
         DiffAnnotationSeverity severity = DiffAnnotationSeverity.Info) =>
-        new($"{documentId}:line:{lineIndex}:{kind}:{label}", documentId, kind, DiffAnnotationTarget.Line, lineIndex, displayLineNumber, label, detail, severity);
+        new($"{documentId}:line:{lineIndex}:{kind}:{label}", documentId, kind, DiffAnnotationTarget.Line, lineIndex, displayLineNumber, label, detail, severity, DiffAnnotationActionKind.FocusLine);
 }
 
 public sealed record DiffAnnotationVisibilityState(
@@ -72,7 +84,8 @@ public sealed record DiffAnnotationVisibilityState(
     bool ShowReview = true,
     bool ShowHistory = true,
     bool ShowNavigation = true,
-    bool ShowContext = true)
+    bool ShowContext = true,
+    bool ShowReviewComments = true)
 {
     public static DiffAnnotationVisibilityState Default { get; } = new();
 
@@ -84,7 +97,8 @@ public sealed record DiffAnnotationVisibilityState(
         ShowReview,
         ShowHistory,
         ShowNavigation,
-        ShowContext
+        ShowContext,
+        ShowReviewComments
     }.Count(isEnabled => isEnabled);
 
     public bool IsVisible(DiffAnnotationKind kind) => kind switch
@@ -96,6 +110,7 @@ public sealed record DiffAnnotationVisibilityState(
         DiffAnnotationKind.HistoryBlame => ShowHistory,
         DiffAnnotationKind.Navigation => ShowNavigation,
         DiffAnnotationKind.ContextFold => ShowContext,
+        DiffAnnotationKind.ReviewComment => ShowReviewComments,
         _ => true
     };
 }
@@ -118,7 +133,8 @@ public static class DiffAnnotationContextKeys
 public sealed record DiffAnnotationRequest(
     ImmutableArray<DiffDocumentSnapshot> Documents,
     SemanticGraph SemanticGraph,
-    ImmutableDictionary<string, string> Context)
+    ImmutableDictionary<string, string> Context,
+    ImmutableArray<GitReviewThreadInfo> ReviewThreads = default)
 {
     public string? GetContext(string key) => Context.TryGetValue(key, out var value) ? value : null;
 }

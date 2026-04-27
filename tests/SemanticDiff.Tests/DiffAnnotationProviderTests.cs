@@ -31,8 +31,18 @@ public sealed class DiffAnnotationProviderTests
             KeyValuePair.Create(DiffAnnotationContextKeys.CurrentChangeText, "1/2 Demo.cs:1")
         });
         var provider = new BuiltInDiffAnnotationProvider();
+        var reviewThread = new GitReviewThreadInfo(
+            "thread-1",
+            GitReviewThreadKind.Diff,
+            "Demo.cs by Ada",
+            "Demo.cs",
+            1,
+            false,
+            true,
+            true,
+            [new GitReviewCommentInfo("comment-1", "thread-1", "Ada", "Please check this line.", null, null, "https://example.test/review", false)]);
 
-        var annotations = provider.CreateAnnotations(new DiffAnnotationRequest([document], graph, context));
+        var annotations = provider.CreateAnnotations(new DiffAnnotationRequest([document], graph, context, [reviewThread]));
         var kinds = annotations.Select(annotation => annotation.Kind).ToHashSet();
 
         Assert.Contains(DiffAnnotationKind.GitStatus, kinds);
@@ -45,5 +55,21 @@ public sealed class DiffAnnotationProviderTests
         Assert.Contains(DiffAnnotationKind.Navigation, kinds);
         Assert.Contains(DiffAnnotationKind.HistoryBlame, kinds);
         Assert.Contains(DiffAnnotationKind.ReviewAction, kinds);
+        Assert.Contains(DiffAnnotationKind.ReviewComment, kinds);
+        Assert.Equal(DiffAnnotationActionKind.ChangeNavigation, annotations.Single(annotation => annotation.Kind == DiffAnnotationKind.Navigation).ActionKind);
+
+        var reviewAnnotations = annotations.Where(annotation => annotation.Kind == DiffAnnotationKind.ReviewComment).ToArray();
+        Assert.All(reviewAnnotations, annotation =>
+        {
+            Assert.Equal(DiffAnnotationActionKind.ReviewThread, annotation.ActionKind);
+            Assert.Equal(reviewThread.Id, annotation.ActionTargetId);
+        });
+    }
+
+    [Fact]
+    public void VisibilityState_TreatsReviewCommentsAsSeparateLayer()
+    {
+        Assert.True(new DiffAnnotationVisibilityState(ShowReview: false).IsVisible(DiffAnnotationKind.ReviewComment));
+        Assert.False(new DiffAnnotationVisibilityState(ShowReviewComments: false).IsVisible(DiffAnnotationKind.ReviewComment));
     }
 }

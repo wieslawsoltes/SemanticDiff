@@ -22,6 +22,7 @@ public sealed class BuiltInDiffAnnotationProvider : IDiffAnnotationProvider
         AddSemanticAnnotations(request.SemanticGraph, documentsById, builder);
         AddImpactAnnotations(request.SemanticGraph, documentsById, builder);
         AddNavigationAnnotations(request, documentsById, builder);
+        AddReviewCommentAnnotations(request, documentsById, builder);
         AddSelectedDocumentAnnotations(request, documentsById, builder);
 
         return builder
@@ -179,14 +180,17 @@ public sealed class BuiltInDiffAnnotationProvider : IDiffAnnotationProvider
         }
 
         var line = document.Lines[Math.Clamp(lineIndex, 0, document.Lines.Length - 1)];
-        builder.Add(DiffAnnotation.Line(
+        builder.Add(new DiffAnnotation(
+            $"{document.Id}:line:{line.Index}:{DiffAnnotationKind.Navigation}:focus",
             document.Id,
             DiffAnnotationKind.Navigation,
+            DiffAnnotationTarget.Line,
             line.Index,
             line.NewLineNumber ?? line.OldLineNumber ?? line.Index + 1,
             "focus",
             request.GetContext(DiffAnnotationContextKeys.CurrentChangeText) ?? "Current change navigation target",
-            DiffAnnotationSeverity.Info));
+            DiffAnnotationSeverity.Info,
+            DiffAnnotationActionKind.ChangeNavigation));
     }
 
     private static void AddSelectedDocumentAnnotations(
@@ -203,6 +207,79 @@ public sealed class BuiltInDiffAnnotationProvider : IDiffAnnotationProvider
         var documentId = new DiffDocumentId(selectedDocumentId);
         AddContextNodeAnnotation(request, builder, documentId, DiffAnnotationKind.HistoryBlame, DiffAnnotationContextKeys.BlameSummary, "blame");
         AddContextNodeAnnotation(request, builder, documentId, DiffAnnotationKind.ReviewAction, DiffAnnotationContextKeys.ReviewActionStatus, "review");
+    }
+
+    private static void AddReviewCommentAnnotations(
+        DiffAnnotationRequest request,
+        IReadOnlyDictionary<DiffDocumentId, DiffDocumentSnapshot> documentsById,
+        ImmutableArray<DiffAnnotation>.Builder builder)
+    {
+        if (request.ReviewThreads.IsDefaultOrEmpty)
+        {
+            return;
+        }
+
+        var documentsByPath = new Dictionary<string, DiffDocumentSnapshot>(StringComparer.OrdinalIgnoreCase);
+        foreach (var document in documentsById.Values)
+        {
+            AddDocumentPath(document.Metadata.Path, document);
+            if (!string.IsNullOrWhiteSpace(document.Metadata.OldPath))
+            {
+                AddDocumentPath(document.Metadata.OldPath, document);
+            }
+        }
+
+        foreach (var thread in request.ReviewThreads)
+        {
+            if (string.IsNullOrWhiteSpace(thread.Path) ||
+                !documentsByPath.TryGetValue(NormalizePath(thread.Path), out var document))
+            {
+                continue;
+            }
+
+            var detail = FormatReviewThreadDetail(thread);
+            var severity = thread.IsResolved ? DiffAnnotationSeverity.Hint : DiffAnnotationSeverity.Warning;
+            if (thread.Line is int lineNumber && lineNumber > 0)
+            {
+                builder.Add(new DiffAnnotation(
+                    $"{document.Id}:review-comment:{thread.Id}",
+                    document.Id,
+                    DiffAnnotationKind.ReviewComment,
+                    DiffAnnotationTarget.Line,
+                    FindLineIndex(document, lineNumber),
+                    lineNumber,
+                    thread.IsResolved ? "resolved" : "comment",
+                    detail,
+                    severity,
+                    DiffAnnotationActionKind.ReviewThread,
+                    thread.Id));
+            }
+            else
+            {
+                builder.Add(new DiffAnnotation(
+                    $"{document.Id}:review-comment:{thread.Id}",
+                    document.Id,
+                    DiffAnnotationKind.ReviewComment,
+                    DiffAnnotationTarget.Node,
+                    null,
+                    null,
+                    thread.IsResolved ? "resolved" : "comment",
+                    detail,
+                    severity,
+                    DiffAnnotationActionKind.ReviewThread,
+                    thread.Id));
+            }
+        }
+
+        void AddDocumentPath(string? path, DiffDocumentSnapshot document)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            documentsByPath.TryAdd(NormalizePath(path), document);
+        }
     }
 
     private static DiffAnnotation CreateLineAnnotation(
@@ -245,6 +322,22 @@ public sealed class BuiltInDiffAnnotationProvider : IDiffAnnotationProvider
         var line = document.Lines.FirstOrDefault(line => line.NewLineNumber == displayLineNumber || line.OldLineNumber == displayLineNumber);
         return line is not null ? line.Index : Math.Clamp(displayLineNumber - 1, 0, document.Lines.Length - 1);
     }
+
+    private static string FormatReviewThreadDetail(GitReviewThreadInfo thread)
+    {
+        var state = thread.IsResolved ? "resolved" : "open";
+        var count = thread.CommentCount == 1 ? "1 comment" : $"{thread.CommentCount:N0} comments";
+        var authors = thread.Comments
+            .Select(comment => comment.Author)
+            .Where(author => !string.IsNullOrWhiteSpace(author))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .ToArray();
+        var authorText = authors.Length == 0 ? string.Empty : $" by {string.Join(", ", authors)}";
+        return $"{state} review thread: {thread.Title} ({count}{authorText})";
+    }
+
+    private static string NormalizePath(string path) => path.Replace('\\', '/').Trim('/');
 
     private static bool IsImpactAnchor(SemanticAnchorKind kind) => kind is
         SemanticAnchorKind.Type or

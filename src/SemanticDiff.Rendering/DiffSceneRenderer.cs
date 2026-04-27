@@ -9,6 +9,12 @@ public enum DiffCanvasColorTheme
     Light
 }
 
+public enum DiffSceneRenderMode
+{
+    Normal,
+    Interactive
+}
+
 public sealed record DiffSceneRenderStats(
     int TotalNodeCount,
     int DrawnNodeCount,
@@ -22,6 +28,11 @@ public sealed record DiffSceneRenderStats(
 
 public sealed class DiffSceneRenderer
 {
+    private const string TextEllipsis = "...";
+    private const float TitlePathLeftInset = 40;
+    private const float TitleMetadataGap = 8;
+    private const float TitlePinnedLabelLeftInset = 188;
+
     private RenderSceneCache? renderCache;
 
     private static readonly RendererPalette DarkPalette = new(
@@ -98,16 +109,23 @@ public sealed class DiffSceneRenderer
 
     public DiffSceneRenderStats LastRenderStats { get; private set; } = DiffSceneRenderStats.Empty;
 
-    public void Render(SKCanvas canvas, SKSize canvasSize, DiffCanvasScene scene, DiffCanvasColorTheme colorTheme = DiffCanvasColorTheme.Dark)
+    public void Render(
+        SKCanvas canvas,
+        SKSize canvasSize,
+        DiffCanvasScene scene,
+        DiffCanvasColorTheme colorTheme = DiffCanvasColorTheme.Dark,
+        DiffSceneRenderMode renderMode = DiffSceneRenderMode.Normal)
     {
         var palette = colorTheme == DiffCanvasColorTheme.Light ? LightPalette : DarkPalette;
         canvas.Clear(palette.Background);
         DrawGrid(canvas, canvasSize, scene.Camera, palette);
-        var cache = GetRenderCache(scene);
+        var useInteractiveRendering = renderMode == DiffSceneRenderMode.Interactive;
+        var cache = useInteractiveRendering ? null : GetRenderCache(scene);
 
         var worldViewport = GetWorldViewport(scene.Camera, canvasSize)
             .Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 96));
-        var visibleNodes = cache.Nodes
+        var nodeSource = cache?.Nodes ?? scene.Nodes;
+        var visibleNodes = nodeSource
             .Where(node => node.Bounds.Intersects(worldViewport))
             .ToArray();
         var visibleGroups = scene.Groups
@@ -128,15 +146,22 @@ public sealed class DiffSceneRenderer
             Style = SKPaintStyle.Stroke,
             IsAntialias = true
         };
-        foreach (var edge in cache.Edges)
+        if (cache is not null)
         {
-            if (!edge.Bounds.Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 80)).Intersects(worldViewport))
+            foreach (var edge in cache.Edges)
             {
-                continue;
-            }
+                if (!edge.Bounds.Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 80)).Intersects(worldViewport))
+                {
+                    continue;
+                }
 
-            DrawEdge(canvas, edge, edgePaint, palette);
-            drawnEdges++;
+                DrawEdge(canvas, edge, edgePaint, palette);
+                drawnEdges++;
+            }
+        }
+        else
+        {
+            drawnEdges = DrawInteractiveEdges(canvas, scene, worldViewport, edgePaint, palette);
         }
 
         foreach (var node in visibleNodes)
@@ -145,11 +170,19 @@ public sealed class DiffSceneRenderer
                 canvas,
                 node,
                 palette,
-                cache.AnnotationsByDocument.GetValueOrDefault(node.Document.Id) ?? [],
-                scene.Camera.Scale);
+                cache?.AnnotationsByDocument.GetValueOrDefault(node.Document.Id) ?? [],
+                scene.Camera.Scale,
+                scene.HoveredAnnotationId,
+                drawDocumentBody: !useInteractiveRendering);
         }
 
-        LastRenderStats = new(scene.Nodes.Count, visibleNodes.Length, visibleNodes.Length, scene.Edges.Count, drawnEdges, cache.Edges.Length);
+        LastRenderStats = new(
+            scene.Nodes.Count,
+            visibleNodes.Length,
+            useInteractiveRendering ? 0 : visibleNodes.Length,
+            scene.Edges.Count,
+            drawnEdges,
+            cache?.Edges.Length ?? 0);
         canvas.Restore();
         DrawGroupLabels(canvas, scene.Camera, visibleGroups, palette, canvasSize);
         DrawFontControls(canvas, scene.Camera, visibleNodes, palette, canvasSize);
@@ -192,14 +225,14 @@ public sealed class DiffSceneRenderer
             return;
         }
 
-        using var textStyle = CreateUiTextStyle(11, palette.TextColor, true);
+        using var textStyle = CreateUiTextStyle(14, palette.TextColor, true);
         foreach (var group in groups)
         {
             var color = GroupColor(group, palette);
             var labelPoint = camera.WorldToScreen(new Point2(group.Bounds.Left + 14, group.Bounds.Top + 9));
             var label = group.SummaryText;
-            var width = Math.Clamp(textStyle.Font.MeasureText(label, textStyle.Paint) + 18, 72, 260);
-            var rect = SKRect.Create((float)labelPoint.X, (float)labelPoint.Y, width, 22);
+            var width = Math.Clamp(textStyle.Font.MeasureText(label, textStyle.Paint) + 26, 94, 340);
+            var rect = SKRect.Create((float)labelPoint.X, (float)labelPoint.Y, width, 28);
             if (rect.Right < 0 || rect.Left > canvasSize.Width || rect.Bottom < 0 || rect.Top > canvasSize.Height)
             {
                 continue;
@@ -208,10 +241,10 @@ public sealed class DiffSceneRenderer
             using var chipFill = new SKPaint { Color = palette.Background.WithAlpha(232), Style = SKPaintStyle.Fill, IsAntialias = true };
             using var chipStroke = new SKPaint { Color = color.WithAlpha(210), Style = SKPaintStyle.Stroke, StrokeWidth = 1.2f, IsAntialias = true };
             using var accent = new SKPaint { Color = color.WithAlpha(220), Style = SKPaintStyle.Fill, IsAntialias = true };
-            canvas.DrawRoundRect(rect, 4, 4, chipFill);
-            canvas.DrawRoundRect(rect, 4, 4, chipStroke);
-            canvas.DrawRoundRect(SKRect.Create(rect.Left + 6, rect.Top + 6, 4, 10), 2, 2, accent);
-            canvas.DrawText(label, rect.Left + 15, rect.Top + 15, textStyle.Font, textStyle.Paint);
+            canvas.DrawRoundRect(rect, 5, 5, chipFill);
+            canvas.DrawRoundRect(rect, 5, 5, chipStroke);
+            canvas.DrawRoundRect(SKRect.Create(rect.Left + 7, rect.Top + 7, 5, 14), 2.5f, 2.5f, accent);
+            canvas.DrawText(label, rect.Left + 18, rect.Top + 19, textStyle.Font, textStyle.Paint);
         }
     }
 
@@ -254,6 +287,44 @@ public sealed class DiffSceneRenderer
         canvas.DrawPath(edge.Path, paint);
     }
 
+    private static int DrawInteractiveEdges(SKCanvas canvas, DiffCanvasScene scene, Rect2 worldViewport, SKPaint paint, RendererPalette palette)
+    {
+        if (scene.Edges.Count == 0 || scene.Nodes.Count == 0)
+        {
+            return 0;
+        }
+
+        var nodesById = scene.Nodes.ToDictionary(node => node.Document.Id.Value, StringComparer.Ordinal);
+        var drawn = 0;
+        paint.Color = palette.EdgeColor.WithAlpha(110);
+        paint.StrokeWidth = (float)DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 1.5);
+
+        foreach (var edge in scene.Edges)
+        {
+            if (!nodesById.TryGetValue(edge.SourceNodeId, out var source) ||
+                !nodesById.TryGetValue(edge.TargetNodeId, out var target))
+            {
+                continue;
+            }
+
+            var bounds = GetEdgeBounds(source, target);
+            if (!bounds.Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 80)).Intersects(worldViewport))
+            {
+                continue;
+            }
+
+            canvas.DrawLine(
+                (float)source.Bounds.Right,
+                (float)source.Bounds.Center.Y,
+                (float)target.Bounds.Left,
+                (float)target.Bounds.Center.Y,
+                paint);
+            drawn++;
+        }
+
+        return drawn;
+    }
+
     private static SKPath CreateEdgePath(DiffNode source, DiffNode target)
     {
         var sourcePoint = new SKPoint((float)source.Bounds.Right, (float)source.Bounds.Center.Y);
@@ -279,7 +350,14 @@ public sealed class DiffSceneRenderer
         return new Rect2(left, top, right - left, bottom - top);
     }
 
-    private static void DrawNode(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, double cameraScale)
+    private static void DrawNode(
+        SKCanvas canvas,
+        DiffNode node,
+        RendererPalette palette,
+        IReadOnlyList<DiffAnnotation> annotations,
+        double cameraScale,
+        string? hoveredAnnotationId,
+        bool drawDocumentBody)
     {
         var bounds = ToRect(node.Bounds);
         var statusColor = NodeStatusColor(node.Document.Metadata.Status, palette);
@@ -289,9 +367,17 @@ public sealed class DiffSceneRenderer
         canvas.DrawRoundRect(bounds, 6, 6, backgroundPaint);
         DrawNodeStatusAccent(canvas, bounds, statusColor);
         canvas.DrawRoundRect(bounds, 6, 6, borderPaint);
-        DrawTitle(canvas, node, palette);
-        DrawDocumentBody(canvas, node, palette, annotations, cameraScale);
-        DrawFooter(canvas, node, palette, annotations);
+        DrawTitle(canvas, node, palette, cameraScale);
+        if (drawDocumentBody)
+        {
+            DrawDocumentBody(canvas, node, palette, annotations, cameraScale, hoveredAnnotationId);
+        }
+        else
+        {
+            DrawInteractiveDocumentBody(canvas, node, palette, cameraScale);
+        }
+
+        DrawFooter(canvas, node, palette, annotations, hoveredAnnotationId);
         DrawResizeHandles(canvas, node, palette, cameraScale);
     }
 
@@ -332,7 +418,7 @@ public sealed class DiffSceneRenderer
         }
     }
 
-    private static void DrawTitle(SKCanvas canvas, DiffNode node, RendererPalette palette)
+    private static void DrawTitle(SKCanvas canvas, DiffNode node, RendererPalette palette, double cameraScale)
     {
         var titleRect = SKRect.Create((float)node.Bounds.X, (float)node.Bounds.Y, (float)node.Bounds.Width, (float)DiffNode.TitleHeight);
         var statusColor = NodeStatusColor(node.Document.Metadata.Status, palette);
@@ -342,18 +428,93 @@ public sealed class DiffSceneRenderer
         using var statusPaint = new SKPaint { Color = statusColor, Style = SKPaintStyle.Fill, IsAntialias = true };
         using var statusTextStyle = CreateUiTextStyle(11, SKColors.White, true);
 
+        canvas.Save();
+        canvas.ClipRect(titleRect);
         canvas.DrawRoundRect(titleRect, 6, 6, paint);
         canvas.DrawRect(SKRect.Create(titleRect.Left, titleRect.Bottom - 6, titleRect.Width, 6), paint);
         var statusRect = SKRect.Create(titleRect.Left + 11, titleRect.Top + 7, 21, 18);
         canvas.DrawRoundRect(statusRect, 4, 4, statusPaint);
         canvas.DrawText(StatusText(node.Document.Metadata.Status), statusRect.Left + 6, statusRect.Top + 13, statusTextStyle.Font, statusTextStyle.Paint);
-        canvas.DrawText(node.Document.Metadata.Path, titleRect.Left + 40, titleRect.Top + 20, textStyle.Font, textStyle.Paint);
+        var pathTextX = titleRect.Left + TitlePathLeftInset;
+        var pathTextRight = GetTitlePathRightEdge(node, titleRect, cameraScale);
+        var pathMaxWidth = Math.Max(0, pathTextRight - pathTextX);
+        var pathText = MiddleEllipsizeText(node.Document.Metadata.Path, pathMaxWidth, textStyle.Font, textStyle.Paint);
+        canvas.DrawText(pathText, pathTextX, titleRect.Top + 20, textStyle.Font, textStyle.Paint);
         if (node.IsPinned)
         {
-            canvas.DrawText("PIN", titleRect.Right - 188, titleRect.Top + 20, metaStyle.Font, metaStyle.Paint);
+            canvas.DrawText("PIN", titleRect.Right - TitlePinnedLabelLeftInset, titleRect.Top + 20, metaStyle.Font, metaStyle.Paint);
         }
 
-        canvas.DrawText($"{node.Document.LineCount:N0} lines", titleRect.Right - 100, titleRect.Top + 20, metaStyle.Font, metaStyle.Paint);
+        canvas.DrawText($"{node.Document.LineCount:N0} lines", titleRect.Right - (float)DiffNode.FontControlLineCountInset, titleRect.Top + 20, metaStyle.Font, metaStyle.Paint);
+        canvas.Restore();
+    }
+
+    private static float GetTitlePathRightEdge(DiffNode node, SKRect titleRect, double cameraScale)
+    {
+        var metadataLeft = titleRect.Right - (float)DiffNode.FontControlLineCountInset;
+        if (node.IsPinned)
+        {
+            metadataLeft = Math.Min(metadataLeft, titleRect.Right - TitlePinnedLabelLeftInset);
+        }
+
+        if (node.CanShowFontSizeButtons(cameraScale))
+        {
+            var decreaseButton = node.GetFontSizeButtonBounds(DiffNodeFontSizeAction.Decrease, cameraScale);
+            if (!decreaseButton.IsEmpty)
+            {
+                metadataLeft = Math.Min(metadataLeft, (float)decreaseButton.Left);
+            }
+        }
+
+        return Math.Max(titleRect.Left + TitlePathLeftInset, metadataLeft - TitleMetadataGap);
+    }
+
+    internal static string MiddleEllipsizeText(string text, float maxWidth, SKFont font, SKPaint paint)
+    {
+        if (string.IsNullOrEmpty(text) || maxWidth <= 0)
+        {
+            return string.Empty;
+        }
+
+        if (font.MeasureText(text, paint) <= maxWidth)
+        {
+            return text;
+        }
+
+        if (font.MeasureText(TextEllipsis, paint) > maxWidth)
+        {
+            return string.Empty;
+        }
+
+        var best = TextEllipsis;
+        var low = 0;
+        var high = text.Length - 1;
+        while (low <= high)
+        {
+            var keepCount = low + (high - low) / 2;
+            var prefixCount = keepCount / 2;
+            var suffixCount = keepCount - prefixCount;
+            var candidate = BuildMiddleEllipsizedText(text, prefixCount, suffixCount);
+            if (font.MeasureText(candidate, paint) <= maxWidth)
+            {
+                best = candidate;
+                low = keepCount + 1;
+            }
+            else
+            {
+                high = keepCount - 1;
+            }
+        }
+
+        return best;
+    }
+
+    private static string BuildMiddleEllipsizedText(string text, int prefixCount, int suffixCount)
+    {
+        return string.Concat(
+            text.AsSpan(0, prefixCount),
+            TextEllipsis,
+            text.AsSpan(text.Length - suffixCount, suffixCount));
     }
 
     private static void DrawFontControls(SKCanvas canvas, CameraState camera, IReadOnlyList<DiffNode> nodes, RendererPalette palette, SKSize canvasSize)
@@ -388,7 +549,7 @@ public sealed class DiffSceneRenderer
         canvas.DrawText(text, rect.Left + (rect.Width - textWidth) / 2, rect.Top + rect.Height * 0.68f, textStyle.Font, textStyle.Paint);
     }
 
-    private static void DrawDocumentBody(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, double cameraScale)
+    private static void DrawDocumentBody(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, double cameraScale, string? hoveredAnnotationId)
     {
         var body = node.BodyBounds;
         var bodyRect = ToRect(body);
@@ -429,13 +590,53 @@ public sealed class DiffSceneRenderer
             var codeX = bodyRect.Left + gutterWidth + markerWidth + 10;
             var lineAnnotations = annotationsByLine.GetValueOrDefault(line.Index) ?? [];
             DrawLineBackground(canvas, line, lineRect, addedPaint, deletedPaint, ignoredPaint, movedPaint, conflictPaint, metadataPaint);
-            DrawLineAnnotationBand(canvas, lineAnnotations, lineRect, palette);
+            DrawLineAnnotationBand(canvas, lineAnnotations, lineRect, palette, hoveredAnnotationId);
             DrawLineNumber(canvas, line, bodyRect.Left + 8, (float)(y + lineHeight * 0.73), lineStyle);
             DrawMarker(canvas, line, bodyRect.Left + gutterWidth, (float)y, markerWidth, (float)lineHeight, lineStyle);
             DrawInlineSpans(canvas, line, codeX, (float)y, codeStyles.Default, inlineAddedPaint, inlineDeletedPaint, inlineChangedPaint);
             DrawCode(canvas, line, codeX, (float)(y + lineHeight * 0.73), codeStyles);
-            DrawLineAnnotationMarkers(canvas, lineAnnotations, lineRect, palette, lineStyle);
+            DrawLineAnnotationMarkers(canvas, lineAnnotations, lineRect, palette, lineStyle, hoveredAnnotationId);
             y += lineHeight;
+        }
+
+        canvas.Restore();
+        DrawScrollbar(canvas, node, palette, cameraScale);
+    }
+
+    private static void DrawInteractiveDocumentBody(SKCanvas canvas, DiffNode node, RendererPalette palette, double cameraScale)
+    {
+        var body = node.BodyBounds;
+        if (body.Width <= 0 || body.Height <= 0)
+        {
+            return;
+        }
+
+        var bodyRect = ToRect(body);
+        using var gutterPaint = new SKPaint { Color = palette.GutterBackground, Style = SKPaintStyle.Fill };
+        using var linePaint = new SKPaint
+        {
+            Color = palette.MutedTextColor.WithAlpha(70),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = (float)DiffCanvasScene.ScreenStableWorldLength(cameraScale, 1),
+            IsAntialias = false
+        };
+
+        canvas.Save();
+        canvas.ClipRect(bodyRect);
+        canvas.DrawRect(SKRect.Create(bodyRect.Left, bodyRect.Top, 94, bodyRect.Height), gutterPaint);
+
+        var lineHeight = Math.Max(10, node.LineHeight);
+        var firstY = bodyRect.Top + (float)(lineHeight - node.ScrollOffsetY % lineHeight);
+        var maxLines = Math.Min(16, (int)Math.Ceiling(bodyRect.Height / lineHeight));
+        for (var index = 0; index < maxLines; index++)
+        {
+            var y = firstY + (float)(index * lineHeight);
+            if (y > bodyRect.Bottom)
+            {
+                break;
+            }
+
+            canvas.DrawLine(bodyRect.Left + 118, y, bodyRect.Right - 18, y, linePaint);
         }
 
         canvas.Restore();
@@ -550,7 +751,7 @@ public sealed class DiffSceneRenderer
             }
 
             var length = Math.Min(token.Length, line.Text.Length - token.StartColumn);
-            var style = codeStyles.GetStyle(token.StyleId);
+            var style = codeStyles.GetStyle(token);
             canvas.DrawText(line.Text.Substring(token.StartColumn, length), x + token.StartColumn * characterWidth, y, style.Font, style.Paint);
         }
     }
@@ -569,7 +770,7 @@ public sealed class DiffSceneRenderer
         canvas.DrawRoundRect(thumbRect, radius, radius, paint);
     }
 
-    private static void DrawLineAnnotationBand(SKCanvas canvas, IReadOnlyList<DiffAnnotation> annotations, SKRect lineRect, RendererPalette palette)
+    private static void DrawLineAnnotationBand(SKCanvas canvas, IReadOnlyList<DiffAnnotation> annotations, SKRect lineRect, RendererPalette palette, string? hoveredAnnotationId)
     {
         if (annotations.Count == 0)
         {
@@ -577,16 +778,17 @@ public sealed class DiffSceneRenderer
         }
 
         var primary = annotations.OrderBy(AnnotationPriority).First();
-        if (primary.Kind is not (DiffAnnotationKind.Navigation or DiffAnnotationKind.ParserDiagnostic or DiffAnnotationKind.Conflict or DiffAnnotationKind.Impact))
+        if (primary.Kind is not (DiffAnnotationKind.Navigation or DiffAnnotationKind.ParserDiagnostic or DiffAnnotationKind.Conflict or DiffAnnotationKind.Impact or DiffAnnotationKind.ReviewComment))
         {
             return;
         }
 
-        using var paint = new SKPaint { Color = AnnotationColor(primary.Kind, palette).WithAlpha(70), Style = SKPaintStyle.Fill, IsAntialias = true };
+        var alpha = IsAnnotationHovered(annotations, hoveredAnnotationId) ? (byte)118 : (byte)70;
+        using var paint = new SKPaint { Color = AnnotationColor(primary.Kind, palette).WithAlpha(alpha), Style = SKPaintStyle.Fill, IsAntialias = true };
         canvas.DrawRect(SKRect.Create(lineRect.Left, lineRect.Top, lineRect.Width, lineRect.Height), paint);
     }
 
-    private static void DrawLineAnnotationMarkers(SKCanvas canvas, IReadOnlyList<DiffAnnotation> annotations, SKRect lineRect, RendererPalette palette, TextStyle textStyle)
+    private static void DrawLineAnnotationMarkers(SKCanvas canvas, IReadOnlyList<DiffAnnotation> annotations, SKRect lineRect, RendererPalette palette, TextStyle textStyle, string? hoveredAnnotationId)
     {
         if (annotations.Count == 0)
         {
@@ -597,27 +799,37 @@ public sealed class DiffSceneRenderer
         var markerY = lineRect.Top + 4;
         foreach (var annotation in annotations.Take(4))
         {
+            var isHovered = IsAnnotationHovered(annotation, hoveredAnnotationId);
+            var markerSize = isHovered ? 9 : 7;
+            var markerOffset = isHovered ? -1 : 0;
             using var paint = new SKPaint { Color = AnnotationColor(annotation.Kind, palette), Style = SKPaintStyle.Fill, IsAntialias = true };
-            canvas.DrawRoundRect(SKRect.Create(markerX, markerY, 7, 7), 2, 2, paint);
+            canvas.DrawRoundRect(SKRect.Create(markerX + markerOffset, markerY + markerOffset, markerSize, markerSize), 2.5f, 2.5f, paint);
             markerY += 9;
         }
 
-        var labeled = annotations.FirstOrDefault(annotation => annotation.Kind is DiffAnnotationKind.Navigation or DiffAnnotationKind.ParserDiagnostic or DiffAnnotationKind.Conflict or DiffAnnotationKind.Impact);
+        var labeled = annotations.FirstOrDefault(annotation => annotation.Kind is DiffAnnotationKind.Navigation or DiffAnnotationKind.ParserDiagnostic or DiffAnnotationKind.Conflict or DiffAnnotationKind.Impact or DiffAnnotationKind.ReviewComment);
         if (labeled is null)
         {
             return;
         }
 
-        using var chipPaint = new SKPaint { Color = AnnotationColor(labeled.Kind, palette).WithAlpha(210), Style = SKPaintStyle.Fill, IsAntialias = true };
+        var isLabeledHovered = IsAnnotationHovered(labeled, hoveredAnnotationId);
+        using var chipPaint = new SKPaint { Color = AnnotationColor(labeled.Kind, palette).WithAlpha(isLabeledHovered ? (byte)245 : (byte)210), Style = SKPaintStyle.Fill, IsAntialias = true };
         using var labelStyle = CreateUiTextStyle(9.5f, palette.Background, true);
         var label = ShortAnnotationLabel(labeled.Label);
         var width = Math.Clamp(labelStyle.Font.MeasureText(label, labelStyle.Paint) + 12, 38, 88);
         var chipRect = SKRect.Create(lineRect.Right - width - 22, lineRect.Top + 2, width, 13);
         canvas.DrawRoundRect(chipRect, 3, 3, chipPaint);
+        if (isLabeledHovered)
+        {
+            using var strokePaint = new SKPaint { Color = palette.Background.WithAlpha(230), Style = SKPaintStyle.Stroke, StrokeWidth = 1, IsAntialias = true };
+            canvas.DrawRoundRect(chipRect, 3, 3, strokePaint);
+        }
+
         canvas.DrawText(label, chipRect.Left + 6, chipRect.Top + 10, labelStyle.Font, labelStyle.Paint);
     }
 
-    private static void DrawFooter(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations)
+    private static void DrawFooter(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, string? hoveredAnnotationId)
     {
         using var textStyle = CreateUiTextStyle(11, palette.MutedTextColor, false);
         var y = (float)(node.Bounds.Bottom - 7);
@@ -627,7 +839,7 @@ public sealed class DiffSceneRenderer
         var groupedAnnotations = annotations
             .Where(annotation => annotation.Target == DiffAnnotationTarget.Node)
             .GroupBy(annotation => annotation.Kind)
-            .Select(group => (Kind: group.Key, Count: group.Count(), Label: group.First().Label))
+            .Select(group => (Kind: group.Key, Count: group.Count(), Label: group.First().Label, IsHovered: group.Any(annotation => IsAnnotationHovered(annotation, hoveredAnnotationId))))
             .OrderBy(group => AnnotationPriority(group.Kind))
             .Take(4)
             .ToArray();
@@ -643,9 +855,15 @@ public sealed class DiffSceneRenderer
             var label = annotation.Count > 1 ? $"{ShortAnnotationLabel(annotation.Label)} {annotation.Count}" : ShortAnnotationLabel(annotation.Label);
             var width = Math.Clamp(chipTextStyle.Font.MeasureText(label, chipTextStyle.Paint) + 12, 34, 84);
             right -= width;
-            using var chipPaint = new SKPaint { Color = AnnotationColor(annotation.Kind, palette).WithAlpha(215), Style = SKPaintStyle.Fill, IsAntialias = true };
+            using var chipPaint = new SKPaint { Color = AnnotationColor(annotation.Kind, palette).WithAlpha(annotation.IsHovered ? (byte)245 : (byte)215), Style = SKPaintStyle.Fill, IsAntialias = true };
             var chipRect = SKRect.Create(right, (float)node.Bounds.Bottom - 19, width, 14);
             canvas.DrawRoundRect(chipRect, 3, 3, chipPaint);
+            if (annotation.IsHovered)
+            {
+                using var strokePaint = new SKPaint { Color = palette.Background.WithAlpha(230), Style = SKPaintStyle.Stroke, StrokeWidth = 1, IsAntialias = true };
+                canvas.DrawRoundRect(chipRect, 3, 3, strokePaint);
+            }
+
             canvas.DrawText(label, chipRect.Left + 6, chipRect.Top + 10.5f, chipTextStyle.Font, chipTextStyle.Paint);
             right -= 5;
         }
@@ -744,6 +962,7 @@ public sealed class DiffSceneRenderer
         DiffAnnotationKind.Navigation => palette.Navigation,
         DiffAnnotationKind.HistoryBlame => palette.History,
         DiffAnnotationKind.ReviewAction => palette.ReviewAction,
+        DiffAnnotationKind.ReviewComment => palette.ReviewAction,
         DiffAnnotationKind.RepositoryWatch => palette.Positive,
         _ => palette.EdgeColor
     };
@@ -756,13 +975,22 @@ public sealed class DiffSceneRenderer
         DiffAnnotationKind.ParserDiagnostic => 1,
         DiffAnnotationKind.Navigation => 2,
         DiffAnnotationKind.Impact => 3,
-        DiffAnnotationKind.MovedCode => 4,
-        DiffAnnotationKind.ReviewNoise => 5,
-        DiffAnnotationKind.SemanticAnchor => 6,
-        DiffAnnotationKind.HistoryBlame => 7,
-        DiffAnnotationKind.GitStatus => 8,
+        DiffAnnotationKind.ReviewComment => 4,
+        DiffAnnotationKind.MovedCode => 5,
+        DiffAnnotationKind.ReviewNoise => 6,
+        DiffAnnotationKind.SemanticAnchor => 7,
+        DiffAnnotationKind.HistoryBlame => 8,
+        DiffAnnotationKind.GitStatus => 9,
         _ => 9
     };
+
+    private static bool IsAnnotationHovered(IEnumerable<DiffAnnotation> annotations, string? hoveredAnnotationId) =>
+        !string.IsNullOrWhiteSpace(hoveredAnnotationId) &&
+        annotations.Any(annotation => IsAnnotationHovered(annotation, hoveredAnnotationId));
+
+    private static bool IsAnnotationHovered(DiffAnnotation annotation, string? hoveredAnnotationId) =>
+        !string.IsNullOrWhiteSpace(hoveredAnnotationId) &&
+        string.Equals(annotation.Id, hoveredAnnotationId, StringComparison.Ordinal);
 
     private static string ShortAnnotationLabel(string label) => label.Length <= 10 ? label : label[..10];
 
@@ -913,6 +1141,12 @@ public sealed class DiffSceneRenderer
             Function = CreateCodeTextStyle(size, palette.Function);
             Property = CreateCodeTextStyle(size, palette.Property);
             Tag = CreateCodeTextStyle(size, palette.Tag);
+            Variable = CreateCodeTextStyle(size, palette.TextColor);
+            Parameter = CreateCodeTextStyle(size, palette.Property);
+            Operator = CreateCodeTextStyle(size, palette.Keyword);
+            Punctuation = CreateCodeTextStyle(size, palette.MutedTextColor);
+            Macro = CreateCodeTextStyle(size, palette.Tag);
+            Regexp = CreateCodeTextStyle(size, palette.String);
             Invalid = CreateCodeTextStyle(size, palette.Invalid);
         }
 
@@ -934,20 +1168,63 @@ public sealed class DiffSceneRenderer
 
         private TextStyle Tag { get; }
 
+        private TextStyle Variable { get; }
+
+        private TextStyle Parameter { get; }
+
+        private TextStyle Operator { get; }
+
+        private TextStyle Punctuation { get; }
+
+        private TextStyle Macro { get; }
+
+        private TextStyle Regexp { get; }
+
         private TextStyle Invalid { get; }
 
-        public TextStyle GetStyle(string styleId) => styleId switch
+        public TextStyle GetStyle(TokenSpan token)
         {
-            "keyword" => Keyword,
-            "type" => Type,
-            "string" => String,
-            "comment" => Comment,
-            "number" => Number,
-            "function" => Function,
-            "property" => Property,
-            "tag" => Tag,
-            "invalid" => Invalid,
-            _ => Default
+            var styleId = string.IsNullOrWhiteSpace(token.StyleId) || token.StyleId == "text"
+                ? StyleFromTokenType(token.TokenType)
+                : token.StyleId;
+
+            return styleId switch
+            {
+                "keyword" => Keyword,
+                "type" or "namespace" or "class" or "interface" or "enum" or "struct" => Type,
+                "string" => String,
+                "comment" => Comment,
+                "number" => Number,
+                "function" or "method" => Function,
+                "property" => Property,
+                "parameter" => Parameter,
+                "variable" => Variable,
+                "tag" => Tag,
+                "operator" => Operator,
+                "punctuation" => Punctuation,
+                "macro" => Macro,
+                "regexp" => Regexp,
+                "invalid" => Invalid,
+                _ => Default
+            };
+        }
+
+        private static string StyleFromTokenType(string tokenType) => tokenType switch
+        {
+            "namespace" or "class" or "enum" or "interface" or "struct" or "typeParameter" or "type" => "type",
+            "function" or "method" => "function",
+            "parameter" => "parameter",
+            "property" or "enumMember" or "event" => "property",
+            "decorator" or "macro" or "label" => "tag",
+            "comment" => "comment",
+            "string" => "string",
+            "regexp" => "regexp",
+            "keyword" => "keyword",
+            "number" => "number",
+            "operator" => "operator",
+            "variable" => "variable",
+            "invalid" => "invalid",
+            _ => "text"
         };
 
         public void Dispose()
@@ -961,6 +1238,12 @@ public sealed class DiffSceneRenderer
             Function.Dispose();
             Property.Dispose();
             Tag.Dispose();
+            Variable.Dispose();
+            Parameter.Dispose();
+            Operator.Dispose();
+            Punctuation.Dispose();
+            Macro.Dispose();
+            Regexp.Dispose();
             Invalid.Dispose();
         }
     }

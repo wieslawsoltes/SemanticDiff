@@ -189,6 +189,8 @@ public sealed record DiffCanvasSceneViewState(CameraState Camera, ImmutableArray
     public string? SelectedDocumentId => Nodes.FirstOrDefault(node => node.IsSelected)?.DocumentId.Value;
 }
 
+public sealed record DiffAnnotationHit(DiffNode Node, DiffAnnotation Annotation);
+
 public sealed record GraphEdge(string SourceNodeId, string TargetNodeId, SemanticEdgeKind Kind, double Confidence, string? Label, int BundleCount = 1);
 
 public sealed record GraphGroup(
@@ -199,7 +201,8 @@ public sealed record GraphGroup(
     int DocumentCount,
     int AddedLines,
     int DeletedLines,
-    int ColorIndex)
+    int ColorIndex,
+    ImmutableArray<DiffDocumentId> DocumentIds = default)
 {
     public string SummaryText => DocumentCount == 1 ? Label : $"{Label} ({DocumentCount:N0})";
 }
@@ -216,7 +219,7 @@ public sealed class DiffCanvasScene
 
     private readonly List<DiffNode> nodes;
     private readonly List<GraphEdge> edges;
-    private readonly ImmutableArray<GraphGroup> groups;
+    private ImmutableArray<GraphGroup> groups;
     private readonly ImmutableArray<DiffAnnotation> annotations;
     private int geometryVersion;
 
@@ -243,6 +246,8 @@ public sealed class DiffCanvasScene
     public ImmutableArray<DiffAnnotation> Annotations => annotations;
 
     public DiffAnnotationVisibilityState AnnotationVisibility { get; }
+
+    public string? HoveredAnnotationId { get; private set; }
 
     public int GeometryVersion => geometryVersion;
 
@@ -387,6 +392,63 @@ public sealed class DiffCanvasScene
         return false;
     }
 
+    public bool TryHitTestAnnotation(Point2 screenPoint, out DiffAnnotationHit? hit)
+    {
+        var worldPoint = Camera.ScreenToWorld(screenPoint);
+        for (var nodeIndex = nodes.Count - 1; nodeIndex >= 0; nodeIndex--)
+        {
+            var candidate = nodes[nodeIndex];
+            if (!candidate.Bounds.Contains(worldPoint))
+            {
+                continue;
+            }
+
+            if (TryHitTestLineAnnotation(candidate, worldPoint, out var lineAnnotation))
+            {
+                hit = new DiffAnnotationHit(candidate, lineAnnotation);
+                return true;
+            }
+
+            if (TryHitTestNodeAnnotation(candidate, worldPoint, out var nodeAnnotation))
+            {
+                hit = new DiffAnnotationHit(candidate, nodeAnnotation);
+                return true;
+            }
+        }
+
+        hit = null;
+        return false;
+    }
+
+    public bool TryHitTestGroup(Point2 screenPoint, out GraphGroup? group)
+    {
+        var worldPoint = Camera.ScreenToWorld(screenPoint);
+        for (var groupIndex = groups.Length - 1; groupIndex >= 0; groupIndex--)
+        {
+            var candidate = groups[groupIndex];
+            if (candidate.Bounds.Contains(worldPoint))
+            {
+                group = candidate;
+                return true;
+            }
+        }
+
+        group = null;
+        return false;
+    }
+
+    public bool SetHoveredAnnotation(DiffAnnotation? annotation)
+    {
+        var nextId = annotation?.Id;
+        if (string.Equals(HoveredAnnotationId, nextId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        HoveredAnnotationId = nextId;
+        return true;
+    }
+
     public void SelectNode(DiffNode? selectedNode)
     {
         foreach (var node in nodes)
@@ -407,6 +469,40 @@ public sealed class DiffCanvasScene
         node.Bounds = new Rect2(x, y, node.Bounds.Width, node.Bounds.Height);
         node.IsPinned = true;
         geometryVersion++;
+    }
+
+    public GraphGroup? MoveGroup(GraphGroup group, double deltaX, double deltaY)
+    {
+        if (Math.Abs(deltaX) < double.Epsilon && Math.Abs(deltaY) < double.Epsilon)
+        {
+            return group;
+        }
+
+        var groupIndex = -1;
+        for (var index = 0; index < groups.Length; index++)
+        {
+            if (string.Equals(groups[index].Id, group.Id, StringComparison.Ordinal))
+            {
+                groupIndex = index;
+                break;
+            }
+        }
+
+        if (groupIndex < 0)
+        {
+            return null;
+        }
+
+        foreach (var node in GetGroupNodes(groups[groupIndex]))
+        {
+            node.Bounds = node.Bounds.Translate(deltaX, deltaY);
+            node.IsPinned = true;
+        }
+
+        var movedGroup = groups[groupIndex] with { Bounds = groups[groupIndex].Bounds.Translate(deltaX, deltaY) };
+        groups = groups.SetItem(groupIndex, movedGroup);
+        geometryVersion++;
+        return movedGroup;
     }
 
     public void ResizeNode(DiffNode node, DiffNodeResizeHandle handle, double deltaX, double deltaY)
@@ -586,11 +682,109 @@ public sealed class DiffCanvasScene
         .Select(node => node.Document.Id)
         .ToImmutableHashSet();
 
+    private bool TryHitTestLineAnnotation(DiffNode node, Point2 worldPoint, out DiffAnnotation annotation)
+    {
+        annotation = default!;
+        var body = node.BodyBounds;
+        if (!body.Contains(worldPoint) || node.Document.Lines.IsDefaultOrEmpty)
+        {
+            return false;
+        }
+
+        var lineIndex = (int)Math.Floor((worldPoint.Y - body.Top + node.ScrollOffsetY) / node.LineHeight);
+        if (lineIndex < 0 || lineIndex >= node.Document.Lines.Length)
+        {
+            return false;
+        }
+
+        var lineAnnotations = annotations
+            .Where(candidate =>
+                candidate.DocumentId == node.Document.Id &&
+                candidate.Target == DiffAnnotationTarget.Line &&
+                candidate.LineIndex == lineIndex &&
+                AnnotationVisibility.IsVisible(candidate.Kind))
+            .OrderBy(AnnotationPriority)
+            .ToArray();
+        if (lineAnnotations.Length == 0)
+        {
+            return false;
+        }
+
+        var lineTop = body.Top + lineIndex * node.LineHeight - node.ScrollOffsetY;
+        var relativeY = worldPoint.Y - lineTop;
+        var markerZoneLeft = body.Right - 132;
+        var markerIndex = (int)Math.Floor((relativeY - 4) / 9);
+        var isInMarkerDot = markerIndex >= 0 &&
+            markerIndex < Math.Min(4, lineAnnotations.Length) &&
+            relativeY >= 4 + markerIndex * 9 &&
+            relativeY <= 11 + markerIndex * 9 &&
+            worldPoint.X >= body.Right - 18 &&
+            worldPoint.X <= body.Right - 5;
+        if (isInMarkerDot)
+        {
+            annotation = lineAnnotations[markerIndex];
+            return true;
+        }
+
+        var primary = lineAnnotations[0];
+        var isInteractiveBand = primary.Kind is DiffAnnotationKind.Navigation or DiffAnnotationKind.ParserDiagnostic or DiffAnnotationKind.Conflict or DiffAnnotationKind.Impact or DiffAnnotationKind.ReviewComment;
+        if (worldPoint.X >= markerZoneLeft || isInteractiveBand)
+        {
+            annotation = primary;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryHitTestNodeAnnotation(DiffNode node, Point2 worldPoint, out DiffAnnotation annotation)
+    {
+        annotation = default!;
+        if (worldPoint.Y < node.Bounds.Bottom - DiffNode.FooterHeight ||
+            worldPoint.X < node.Bounds.Right - 260)
+        {
+            return false;
+        }
+
+        var nodeAnnotations = annotations
+            .Where(candidate =>
+                candidate.DocumentId == node.Document.Id &&
+                candidate.Target == DiffAnnotationTarget.Node &&
+                AnnotationVisibility.IsVisible(candidate.Kind))
+            .OrderBy(AnnotationPriority)
+            .ToArray();
+        if (nodeAnnotations.Length == 0)
+        {
+            return false;
+        }
+
+        annotation = nodeAnnotations[0];
+        return true;
+    }
+
+    private static int AnnotationPriority(DiffAnnotation annotation) => AnnotationPriority(annotation.Kind);
+
+    private static int AnnotationPriority(DiffAnnotationKind kind) => kind switch
+    {
+        DiffAnnotationKind.Conflict => 0,
+        DiffAnnotationKind.ParserDiagnostic => 1,
+        DiffAnnotationKind.Navigation => 2,
+        DiffAnnotationKind.Impact => 3,
+        DiffAnnotationKind.ReviewComment => 4,
+        DiffAnnotationKind.MovedCode => 5,
+        DiffAnnotationKind.ReviewNoise => 6,
+        DiffAnnotationKind.SemanticAnchor => 7,
+        DiffAnnotationKind.HistoryBlame => 8,
+        DiffAnnotationKind.GitStatus => 9,
+        _ => 10
+    };
+
     public DiffCanvasScene WithAnnotations(ImmutableArray<DiffAnnotation> nextAnnotations, DiffAnnotationVisibilityState annotationVisibility)
     {
         var nextScene = new DiffCanvasScene(nodes, edges, groups, nextAnnotations, annotationVisibility)
         {
-            Camera = Camera
+            Camera = Camera,
+            HoveredAnnotationId = HoveredAnnotationId
         };
         return nextScene;
     }
@@ -667,7 +861,8 @@ public sealed class DiffCanvasScene
             nodes.Count,
             nodes.Sum(node => node.Document.Metadata.AddedLines),
             nodes.Sum(node => node.Document.Metadata.DeletedLines),
-            key.ColorIndex);
+            key.ColorIndex,
+            nodes.Select(node => node.Document.Id).ToImmutableArray());
     }
 
     private static Rect2 ExpandGroupBounds(Rect2 bounds) => bounds.IsEmpty
@@ -758,6 +953,17 @@ public sealed class DiffCanvasScene
     private static string NormalizeGroupLabel(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
 
     private static GraphGroupKey CreateStableGroupKey(string id, string label) => new(id, label, StableColorIndex(id));
+
+    private IEnumerable<DiffNode> GetGroupNodes(GraphGroup group)
+    {
+        if (!group.DocumentIds.IsDefaultOrEmpty)
+        {
+            var documentIds = group.DocumentIds.ToHashSet();
+            return nodes.Where(node => documentIds.Contains(node.Document.Id));
+        }
+
+        return nodes.Where(node => group.Bounds.Contains(node.Bounds.Center));
+    }
 
     private static int StableColorIndex(string value)
     {

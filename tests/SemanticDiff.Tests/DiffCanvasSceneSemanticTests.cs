@@ -114,6 +114,59 @@ public sealed class DiffCanvasSceneSemanticTests
     }
 
     [Fact]
+    public void MoveGroup_TranslatesMemberNodesAndPinsThem()
+    {
+        var factory = new DiffDocumentFactory();
+        var app = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/A.cs"), "src/App/A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var view = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/B.cs"), "src/App/B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var test = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("tests/App.Tests/A.cs"), "tests/App.Tests/A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class ATests { }");
+        var layout = new GraphLayoutResult([
+            new DiffNodeLayout(app.Id, new Rect2(100, 120, 620, 420)),
+            new DiffNodeLayout(view.Id, new Rect2(820, 120, 620, 420)),
+            new DiffNodeLayout(test.Id, new Rect2(100, 700, 620, 420))
+        ]);
+        var scene = DiffCanvasScene.FromDocuments([app, view, test], layoutResult: layout, groupingMode: GraphGroupingMode.Folder);
+        var group = Assert.Single(scene.Groups);
+        var appNode = scene.Nodes.Single(node => node.Document.Id == app.Id);
+        var viewNode = scene.Nodes.Single(node => node.Document.Id == view.Id);
+        var testNode = scene.Nodes.Single(node => node.Document.Id == test.Id);
+        var appBounds = appNode.Bounds;
+        var viewBounds = viewNode.Bounds;
+        var testBounds = testNode.Bounds;
+        var groupBounds = group.Bounds;
+
+        var movedGroup = scene.MoveGroup(group, 55, -30);
+
+        Assert.NotNull(movedGroup);
+        Assert.Equal(groupBounds.Translate(55, -30), movedGroup.Bounds);
+        Assert.Equal(appBounds.Translate(55, -30), appNode.Bounds);
+        Assert.Equal(viewBounds.Translate(55, -30), viewNode.Bounds);
+        Assert.Equal(testBounds, testNode.Bounds);
+        Assert.True(appNode.IsPinned);
+        Assert.True(viewNode.IsPinned);
+        Assert.False(testNode.IsPinned);
+    }
+
+    [Fact]
+    public void TryHitTestGroup_DetectsGroupRegionWhenNoNodeIsHit()
+    {
+        var factory = new DiffDocumentFactory();
+        var app = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/A.cs"), "src/App/A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var view = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/B.cs"), "src/App/B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var layout = new GraphLayoutResult([
+            new DiffNodeLayout(app.Id, new Rect2(100, 120, 620, 420)),
+            new DiffNodeLayout(view.Id, new Rect2(820, 120, 620, 420))
+        ]);
+        var scene = DiffCanvasScene.FromDocuments([app, view], layoutResult: layout, groupingMode: GraphGroupingMode.Folder);
+        var group = Assert.Single(scene.Groups);
+
+        var hit = scene.TryHitTestGroup(scene.Camera.WorldToScreen(new Point2(group.Bounds.Left + 12, group.Bounds.Top + 12)), out var hitGroup);
+
+        Assert.True(hit);
+        Assert.Same(group, hitGroup);
+    }
+
+    [Fact]
     public void TryHitTestTitleBar_DetectsChromeButNotBody()
     {
         var factory = new DiffDocumentFactory();
@@ -197,6 +250,68 @@ public sealed class DiffCanvasSceneSemanticTests
         Assert.True(hit);
         Assert.Same(node, hitNode);
         Assert.True(node.ScrollOffsetY > 0);
+    }
+
+    [Fact]
+    public void TryHitTestAnnotation_DetectsVisibleLineCommentAndTracksHover()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "first\nsecond\nthird");
+        var annotation = new DiffAnnotation(
+            "A.cs:review-comment:thread-1",
+            document.Id,
+            DiffAnnotationKind.ReviewComment,
+            DiffAnnotationTarget.Line,
+            1,
+            2,
+            "review",
+            "Please verify this line.",
+            DiffAnnotationSeverity.Warning,
+            DiffAnnotationActionKind.ReviewThread,
+            "thread-1");
+        var scene = DiffCanvasScene.FromDocuments([document], annotations: [annotation]);
+        var node = scene.Nodes[0];
+        var worldPoint = new Point2(node.BodyBounds.Right - 9, node.BodyBounds.Top + node.LineHeight + 8);
+
+        var hit = scene.TryHitTestAnnotation(scene.Camera.WorldToScreen(worldPoint), out var annotationHit);
+        var hoverChanged = scene.SetHoveredAnnotation(annotationHit?.Annotation);
+
+        Assert.True(hit);
+        Assert.NotNull(annotationHit);
+        Assert.Same(node, annotationHit.Node);
+        Assert.Equal(annotation.Id, annotationHit.Annotation.Id);
+        Assert.True(hoverChanged);
+        Assert.Equal(annotation.Id, scene.HoveredAnnotationId);
+    }
+
+    [Fact]
+    public void TryHitTestAnnotation_RespectsAnnotationVisibility()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "first\nsecond");
+        var annotation = new DiffAnnotation(
+            "A.cs:review-comment:thread-1",
+            document.Id,
+            DiffAnnotationKind.ReviewComment,
+            DiffAnnotationTarget.Line,
+            0,
+            1,
+            "review",
+            "Hidden review comment.",
+            DiffAnnotationSeverity.Warning,
+            DiffAnnotationActionKind.ReviewThread,
+            "thread-1");
+        var scene = DiffCanvasScene.FromDocuments(
+            [document],
+            annotations: [annotation],
+            annotationVisibility: new DiffAnnotationVisibilityState(ShowReviewComments: false));
+        var node = scene.Nodes[0];
+        var worldPoint = new Point2(node.BodyBounds.Right - 9, node.BodyBounds.Top + 8);
+
+        var hit = scene.TryHitTestAnnotation(scene.Camera.WorldToScreen(worldPoint), out var annotationHit);
+
+        Assert.False(hit);
+        Assert.Null(annotationHit);
     }
 
     [Fact]
@@ -348,6 +463,9 @@ public sealed class DiffCanvasSceneSemanticTests
         var group = Assert.Single(scene.Groups);
         Assert.Equal("src/App", group.Label);
         Assert.Equal(2, group.DocumentCount);
+        Assert.Contains(app.Id, group.DocumentIds);
+        Assert.Contains(view.Id, group.DocumentIds);
+        Assert.DoesNotContain(test.Id, group.DocumentIds);
         Assert.Equal(7, group.AddedLines);
         Assert.Equal(3, group.DeletedLines);
         Assert.True(group.Bounds.Left < 100);

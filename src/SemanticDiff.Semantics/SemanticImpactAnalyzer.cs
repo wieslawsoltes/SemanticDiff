@@ -21,66 +21,24 @@ public sealed class SemanticImpactAnalyzer
             return SemanticImpactSummary.Empty;
         }
 
-        var changedLinesByDocumentId = new Dictionary<DiffDocumentId, HashSet<int>>();
-        var movedLineCount = 0;
-        var ignoredLineCount = 0;
-
-        foreach (var document in documents)
-        {
-            var changedLines = new HashSet<int>();
-            foreach (var line in document.Lines)
-            {
-                if (line.Kind == DiffLineKind.Moved)
-                {
-                    movedLineCount++;
-                }
-                else if (line.Kind == DiffLineKind.Ignored)
-                {
-                    ignoredLineCount++;
-                    continue;
-                }
-
-                if (!IsImpactingLine(line.Kind))
-                {
-                    continue;
-                }
-
-                changedLines.Add(line.Index + 1);
-                if (line.OldLineNumber is { } oldLineNumber)
-                {
-                    changedLines.Add(oldLineNumber);
-                }
-
-                if (line.NewLineNumber is { } newLineNumber)
-                {
-                    changedLines.Add(newLineNumber);
-                }
-            }
-
-            if (changedLines.Count > 0)
-            {
-                changedLinesByDocumentId[document.Id] = changedLines;
-            }
-        }
+        var changedLineIndex = new SemanticChangeLineIndexBuilder().Build(documents);
 
         if (semanticGraph.Anchors.IsDefaultOrEmpty)
         {
-            return new SemanticImpactSummary(0, 0, movedLineCount, ignoredLineCount);
+            return new SemanticImpactSummary(0, 0, changedLineIndex.MovedLineCount, changedLineIndex.IgnoredLineCount);
         }
 
         var changedAnchorIds = semanticGraph.Anchors
             .Where(anchor => IsNavigable(anchor.Kind))
-            .Where(anchor => changedLinesByDocumentId.TryGetValue(anchor.DocumentId, out var changedLines) && changedLines.Contains(anchor.Range.Line))
+            .Where(changedLineIndex.Contains)
             .Select(anchor => anchor.Id)
             .ToImmutableHashSet(StringComparer.Ordinal);
         var impactedEdgeCount = semanticGraph.Edges.IsDefaultOrEmpty
             ? 0
             : semanticGraph.Edges.Count(edge => changedAnchorIds.Contains(edge.SourceAnchorId) || changedAnchorIds.Contains(edge.TargetAnchorId));
 
-        return new SemanticImpactSummary(changedAnchorIds.Count, impactedEdgeCount, movedLineCount, ignoredLineCount);
+        return new SemanticImpactSummary(changedAnchorIds.Count, impactedEdgeCount, changedLineIndex.MovedLineCount, changedLineIndex.IgnoredLineCount);
     }
-
-    private static bool IsImpactingLine(DiffLineKind kind) => kind is DiffLineKind.Added or DiffLineKind.Deleted or DiffLineKind.Modified or DiffLineKind.Moved or DiffLineKind.Conflict;
 
     private static bool IsNavigable(SemanticAnchorKind kind) => kind is
         SemanticAnchorKind.Type or
