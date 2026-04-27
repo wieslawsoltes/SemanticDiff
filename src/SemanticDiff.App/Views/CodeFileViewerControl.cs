@@ -6,6 +6,7 @@ using SemanticDiff.Core;
 using SkiaSharp;
 using SkiaSharp.Views.Windows;
 using Windows.Foundation;
+using Windows.System;
 
 namespace SemanticDiff.App.Views;
 
@@ -18,9 +19,12 @@ public sealed class CodeFileViewerControl : Grid
     private const float TextPadding = 10;
     private const float ScrollbarWidth = 8;
     private const float ScrollbarMargin = 4;
-    private const float FontSize = 12;
-    private const float LineHeight = 18;
+    private const double DefaultCodeFontSize = 15;
+    private const double MinimumCodeFontSize = 10;
+    private const double MaximumCodeFontSize = 28;
     private const int TabSize = 4;
+    private const double DefaultViewportWidth = 960;
+    private const double DefaultViewportHeight = 520;
 
     public static readonly DependencyProperty LinesProperty = DependencyProperty.Register(
         nameof(Lines),
@@ -40,6 +44,18 @@ public sealed class CodeFileViewerControl : Grid
         typeof(CodeFileViewerControl),
         new PropertyMetadata(false, OnContentChanged));
 
+    public static readonly DependencyProperty CodeFontSizeProperty = DependencyProperty.Register(
+        nameof(CodeFontSize),
+        typeof(double),
+        typeof(CodeFileViewerControl),
+        new PropertyMetadata(DefaultCodeFontSize, OnFontSizeChanged));
+
+    public static readonly DependencyProperty ShowDiffAnnotationsProperty = DependencyProperty.Register(
+        nameof(ShowDiffAnnotations),
+        typeof(bool),
+        typeof(CodeFileViewerControl),
+        new PropertyMetadata(true, OnDiffAnnotationVisibilityChanged));
+
     public static readonly DependencyProperty RefreshKeyProperty = DependencyProperty.Register(
         nameof(RefreshKey),
         typeof(object),
@@ -57,12 +73,16 @@ public sealed class CodeFileViewerControl : Grid
     private uint? activePointerId;
     private double scrollbarGrabOffsetY;
     private int? hoveredFoldStartLine;
+    private CodeTextPosition? selectionAnchor;
+    private CodeTextPosition? selectionActive;
     private bool visibleRowsDirty = true;
     private bool isDraggingScrollbar;
+    private bool isSelectingText;
 
     public CodeFileViewerControl()
     {
         Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        IsTabStop = true;
         canvas = new SKXamlCanvas
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -114,10 +134,51 @@ public sealed class CodeFileViewerControl : Grid
         set => SetValue(IsDiffModeProperty, value);
     }
 
+    public double CodeFontSize
+    {
+        get => (double)GetValue(CodeFontSizeProperty);
+        set => SetValue(CodeFontSizeProperty, value);
+    }
+
+    public bool ShowDiffAnnotations
+    {
+        get => (bool)GetValue(ShowDiffAnnotationsProperty);
+        set => SetValue(ShowDiffAnnotationsProperty, value);
+    }
+
     public object? RefreshKey
     {
         get => GetValue(RefreshKeyProperty);
         set => SetValue(RefreshKeyProperty, value);
+    }
+
+    private float EffectiveFontSize => (float)Math.Clamp(CodeFontSize, MinimumCodeFontSize, MaximumCodeFontSize);
+
+    private float LineHeight => MathF.Ceiling(EffectiveFontSize + 9);
+
+    private float BaselineOffset => MathF.Round(EffectiveFontSize + (LineHeight - EffectiveFontSize) * 0.5f);
+
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        var measured = base.MeasureOverride(availableSize);
+        return new Size(
+            ResolveMeasuredLength(measured.Width, availableSize.Width, DefaultViewportWidth),
+            ResolveMeasuredLength(measured.Height, availableSize.Height, DefaultViewportHeight));
+    }
+
+    private static double ResolveMeasuredLength(double measured, double available, double fallback)
+    {
+        if (double.IsFinite(measured) && measured > 0)
+        {
+            return measured;
+        }
+
+        if (double.IsFinite(available) && available > 0)
+        {
+            return available;
+        }
+
+        return fallback;
     }
 
     private static void OnContentChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
@@ -126,15 +187,34 @@ public sealed class CodeFileViewerControl : Grid
         {
             control.visibleRowsDirty = true;
             control.hoveredFoldStartLine = null;
+            control.ClearSelection();
             control.TrimCollapsedFoldState();
             control.ClampScrollOffset();
             control.RequestDeferredRender();
         }
     }
 
+    private static void OnFontSizeChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        if (dependencyObject is CodeFileViewerControl control)
+        {
+            control.ClampScrollOffset();
+            control.RequestDeferredRender();
+        }
+    }
+
+    private static void OnDiffAnnotationVisibilityChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        if (dependencyObject is CodeFileViewerControl control)
+        {
+            control.RequestDeferredRender();
+        }
+    }
+
     private void OnPaintSurface(object? sender, SKPaintSurfaceEventArgs args)
     {
-        lastCanvasSize = new Size2(args.Info.Width, args.Info.Height);
+        var rasterScale = GetRasterScale(args.Info.Width, args.Info.Height);
+        lastCanvasSize = new Size2(args.Info.Width / rasterScale, args.Info.Height / rasterScale);
         EnsureVisibleRows();
         ClampScrollOffset();
 
@@ -142,15 +222,18 @@ public sealed class CodeFileViewerControl : Grid
         var canvasSurface = args.Surface.Canvas;
         canvasSurface.Clear(palette.Background);
 
-        var width = args.Info.Width;
-        var height = args.Info.Height;
+        var width = (float)lastCanvasSize.Width;
+        var height = (float)lastCanvasSize.Height;
         if (width <= 0 || height <= 0)
         {
             return;
         }
 
-        using var font = new SKFont(typeface, FontSize);
-        using var boldFont = new SKFont(boldTypeface, FontSize);
+        canvasSurface.Save();
+        canvasSurface.Scale((float)rasterScale);
+
+        using var font = new SKFont(typeface, EffectiveFontSize);
+        using var boldFont = new SKFont(boldTypeface, EffectiveFontSize);
         using var defaultPaint = CreateTextPaint(palette.Text);
         using var mutedPaint = CreateTextPaint(palette.MutedText);
         using var lineNumberPaint = CreateTextPaint(palette.LineNumber);
@@ -165,6 +248,7 @@ public sealed class CodeFileViewerControl : Grid
         if (visibleRows.Length == 0 || firstRow > lastRow)
         {
             DrawEmptyState(canvasSurface, width, height, mutedPaint, font);
+            canvasSurface.Restore();
             return;
         }
 
@@ -182,22 +266,25 @@ public sealed class CodeFileViewerControl : Grid
 
                 var y = TopPadding + rowIndex * LineHeight - (float)scrollOffsetY;
                 var line = lines[row.LineIndex];
-                DrawLineBackground(canvasSurface, palette, gutterWidth, width, y, line.Kind, row.CollapsedRegion is not null);
+                var annotationKind = ShowDiffAnnotations ? line.Kind : DiffLineKind.Context;
+                DrawLineBackground(canvasSurface, palette, gutterWidth, width, y, LineHeight, annotationKind, row.CollapsedRegion is not null);
+                DrawSelection(canvasSurface, palette, rowIndex, line, gutterWidth + TextPadding, y, charWidth, width);
                 if (IsDiffMode)
                 {
-                    DrawDiffGutter(canvasSurface, palette, line, gutterWidth, y, lineNumberPaint, font);
+                    DrawDiffGutter(canvasSurface, palette, line, ShowDiffAnnotations, gutterWidth, y, LineHeight, BaselineOffset, lineNumberPaint, font);
                 }
                 else
                 {
-                    DrawLineNumber(canvasSurface, line.Index + 1, gutterWidth, y, lineNumberPaint, font);
-                    DrawFoldMarker(canvasSurface, palette, row.LineIndex, row.CollapsedRegion, y);
+                    DrawLineNumber(canvasSurface, line.Index + 1, gutterWidth, y, BaselineOffset, lineNumberPaint, font);
+                    DrawFoldMarker(canvasSurface, palette, row.LineIndex, row.CollapsedRegion, y, LineHeight);
                 }
 
-                DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, gutterWidth + TextPadding, y, charWidth, font, boldFont, defaultPaint, foldPaint, palette);
+                DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, gutterWidth + TextPadding, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, palette);
             }
         }
 
         DrawScrollbar(canvasSurface, palette, width, height);
+        canvasSurface.Restore();
     }
 
     private void OnPointerPressed(object sender, PointerRoutedEventArgs args)
@@ -230,6 +317,19 @@ public sealed class CodeFileViewerControl : Grid
             ClampScrollOffset();
             RequestRender();
             args.Handled = true;
+            return;
+        }
+
+        if (TryHitTestText(point, out var position))
+        {
+            Focus(FocusState.Pointer);
+            isSelectingText = true;
+            activePointerId = args.Pointer.PointerId;
+            selectionAnchor = position;
+            selectionActive = position;
+            CapturePointer(args.Pointer);
+            RequestRender();
+            args.Handled = true;
         }
     }
 
@@ -239,6 +339,18 @@ public sealed class CodeFileViewerControl : Grid
         if (isDraggingScrollbar && activePointerId == args.Pointer.PointerId)
         {
             DragScrollbar(point.Y);
+            args.Handled = true;
+            return;
+        }
+
+        if (isSelectingText && activePointerId == args.Pointer.PointerId)
+        {
+            if (TryHitTestText(point, out var position))
+            {
+                selectionActive = position;
+                RequestRender();
+            }
+
             args.Handled = true;
             return;
         }
@@ -256,6 +368,7 @@ public sealed class CodeFileViewerControl : Grid
         if (activePointerId == args.Pointer.PointerId)
         {
             isDraggingScrollbar = false;
+            isSelectingText = false;
             activePointerId = null;
             ReleasePointerCaptures();
             args.Handled = true;
@@ -270,11 +383,24 @@ public sealed class CodeFileViewerControl : Grid
             return;
         }
 
+        if (IsFontZoomModifierDown(args))
+        {
+            CodeFontSize = Math.Clamp(
+                CodeFontSize + Math.Sign(delta),
+                MinimumCodeFontSize,
+                MaximumCodeFontSize);
+            args.Handled = true;
+            return;
+        }
+
         scrollOffsetY -= delta / 120.0 * LineHeight * 3;
         ClampScrollOffset();
         RequestRender();
         args.Handled = true;
     }
+
+    private static bool IsFontZoomModifierDown(PointerRoutedEventArgs args) =>
+        (args.KeyModifiers & (VirtualKeyModifiers.Control | VirtualKeyModifiers.Windows)) != 0;
 
     private void OnPointerExited(object sender, PointerRoutedEventArgs args)
     {
@@ -304,7 +430,7 @@ public sealed class CodeFileViewerControl : Grid
         RequestRender();
     }
 
-    private void DrawGutter(SKCanvas canvasSurface, ViewerPalette palette, float gutterWidth, int height)
+    private void DrawGutter(SKCanvas canvasSurface, ViewerPalette palette, float gutterWidth, float height)
     {
         using var gutterPaint = new SKPaint { Color = palette.GutterBackground, Style = SKPaintStyle.Fill };
         using var borderPaint = new SKPaint { Color = palette.Border, StrokeWidth = 1, Style = SKPaintStyle.Stroke };
@@ -312,7 +438,7 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawLine(gutterWidth - 0.5f, 0, gutterWidth - 0.5f, height, borderPaint);
     }
 
-    private static void DrawLineBackground(SKCanvas canvasSurface, ViewerPalette palette, float gutterWidth, int width, float y, DiffLineKind kind, bool isCollapsed)
+    private static void DrawLineBackground(SKCanvas canvasSurface, ViewerPalette palette, float gutterWidth, float width, float y, float lineHeight, DiffLineKind kind, bool isCollapsed)
     {
         var color = kind switch
         {
@@ -332,39 +458,75 @@ public sealed class CodeFileViewerControl : Grid
         }
 
         using var paint = new SKPaint { Color = color, Style = SKPaintStyle.Fill, IsAntialias = true };
-        canvasSurface.DrawRect(SKRect.Create(gutterWidth, y, Math.Max(0, width - gutterWidth - ScrollbarWidth - ScrollbarMargin), LineHeight), paint);
+        canvasSurface.DrawRect(SKRect.Create(gutterWidth, y, Math.Max(0, width - gutterWidth - ScrollbarWidth - ScrollbarMargin), lineHeight), paint);
     }
 
-    private static void DrawLineNumber(SKCanvas canvasSurface, int lineNumber, float gutterWidth, float y, SKPaint paint, SKFont font)
+    private void DrawSelection(SKCanvas canvasSurface, ViewerPalette palette, int rowIndex, DiffLine line, float textX, float y, float charWidth, float width)
+    {
+        if (!TryGetSelectionRange(out var start, out var end) ||
+            rowIndex < start.RowIndex ||
+            rowIndex > end.RowIndex)
+        {
+            return;
+        }
+
+        var startColumn = rowIndex == start.RowIndex ? start.Column : 0;
+        var endColumn = rowIndex == end.RowIndex ? end.Column : line.Text.Length;
+        startColumn = Math.Clamp(startColumn, 0, line.Text.Length);
+        endColumn = Math.Clamp(endColumn, 0, line.Text.Length);
+
+        var startVisualColumn = GetVisualColumn(line.Text, startColumn);
+        var endVisualColumn = GetVisualColumn(line.Text, endColumn);
+        var selectionLeft = textX + startVisualColumn * charWidth;
+        var selectionRight = textX + Math.Max(startVisualColumn, endVisualColumn) * charWidth;
+        var maxRight = Math.Max(selectionLeft + 1, width - ScrollbarWidth - ScrollbarMargin);
+
+        using var selectionPaint = new SKPaint { Color = palette.SelectionBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
+        if (selectionRight <= selectionLeft)
+        {
+            if (!isSelectingText)
+            {
+                return;
+            }
+
+            canvasSurface.DrawRoundRect(SKRect.Create(selectionLeft, y + 3, 2, Math.Max(1, LineHeight - 6)), 1, 1, selectionPaint);
+            return;
+        }
+
+        canvasSurface.DrawRect(SKRect.Create(selectionLeft, y + 2, Math.Min(selectionRight, maxRight) - selectionLeft, Math.Max(1, LineHeight - 4)), selectionPaint);
+    }
+
+    private static void DrawLineNumber(SKCanvas canvasSurface, int lineNumber, float gutterWidth, float y, float baselineOffset, SKPaint paint, SKFont font)
     {
         var text = lineNumber.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var width = font.MeasureText(text, paint);
-        canvasSurface.DrawText(text, gutterWidth - 10 - width, y + 13, font, paint);
+        canvasSurface.DrawText(text, gutterWidth - 10 - width, y + baselineOffset, font, paint);
     }
 
-    private static void DrawDiffGutter(SKCanvas canvasSurface, ViewerPalette palette, DiffLine line, float gutterWidth, float y, SKPaint lineNumberPaint, SKFont font)
+    private static void DrawDiffGutter(SKCanvas canvasSurface, ViewerPalette palette, DiffLine line, bool showDiffAnnotations, float gutterWidth, float y, float lineHeight, float baselineOffset, SKPaint lineNumberPaint, SKFont font)
     {
-        var markerPaint = CreateTextPaint(LineAccentColor(line.Kind, palette));
+        var annotationKind = showDiffAnnotations ? line.Kind : DiffLineKind.Context;
+        var markerPaint = CreateTextPaint(LineAccentColor(annotationKind, palette));
         try
         {
             var oldText = line.OldLineNumber?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
             var newText = line.NewLineNumber?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
-            var marker = MarkerFor(line.Kind);
+            var marker = showDiffAnnotations ? MarkerFor(line.Kind) : string.Empty;
             var oldX = LeftPadding + 34;
             var newX = oldX + 44;
             var markerX = newX + 34;
 
-            DrawRightAlignedText(canvasSurface, oldText, oldX, y + 13, font, lineNumberPaint);
-            DrawRightAlignedText(canvasSurface, newText, newX, y + 13, font, lineNumberPaint);
+            DrawRightAlignedText(canvasSurface, oldText, oldX, y + baselineOffset, font, lineNumberPaint);
+            DrawRightAlignedText(canvasSurface, newText, newX, y + baselineOffset, font, lineNumberPaint);
             if (!string.IsNullOrEmpty(marker))
             {
-                canvasSurface.DrawText(marker, markerX, y + 13, font, markerPaint);
+                canvasSurface.DrawText(marker, markerX, y + baselineOffset, font, markerPaint);
             }
 
-            using var lanePaint = new SKPaint { Color = LineAccentColor(line.Kind, palette), Style = SKPaintStyle.Fill, IsAntialias = true };
-            if (line.Kind is DiffLineKind.Added or DiffLineKind.Deleted or DiffLineKind.Modified or DiffLineKind.Moved or DiffLineKind.Conflict)
+            using var lanePaint = new SKPaint { Color = LineAccentColor(annotationKind, palette), Style = SKPaintStyle.Fill, IsAntialias = true };
+            if (showDiffAnnotations && line.Kind is DiffLineKind.Added or DiffLineKind.Deleted or DiffLineKind.Modified or DiffLineKind.Moved or DiffLineKind.Conflict)
             {
-                canvasSurface.DrawRoundRect(SKRect.Create(gutterWidth - 4, y + 2, 3, LineHeight - 4), 1.5f, 1.5f, lanePaint);
+                canvasSurface.DrawRoundRect(SKRect.Create(gutterWidth - 4, y + 2, 3, lineHeight - 4), 1.5f, 1.5f, lanePaint);
             }
         }
         finally
@@ -383,7 +545,7 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawText(text, right - font.MeasureText(text, paint), baseline, font, paint);
     }
 
-    private void DrawFoldMarker(SKCanvas canvasSurface, ViewerPalette palette, int lineIndex, CodeFoldRegion? collapsedRegion, float y)
+    private void DrawFoldMarker(SKCanvas canvasSurface, ViewerPalette palette, int lineIndex, CodeFoldRegion? collapsedRegion, float y, float lineHeight)
     {
         if (!foldRegionsByStart.TryGetValue(lineIndex, out var region))
         {
@@ -410,6 +572,8 @@ public sealed class CodeFileViewerControl : Grid
         CodeFoldRegion? collapsedRegion,
         float x,
         float y,
+        float baselineOffset,
+        float lineHeight,
         float charWidth,
         SKFont font,
         SKFont boldFont,
@@ -417,7 +581,7 @@ public sealed class CodeFileViewerControl : Grid
         SKPaint foldPaint,
         ViewerPalette palette)
     {
-        DrawTokenizedText(canvasSurface, line.Text, line.Tokens, x, y + 13, charWidth, font, boldFont, defaultPaint, palette);
+        DrawTokenizedText(canvasSurface, line.Text, line.Tokens, x, y + baselineOffset, charWidth, font, boldFont, defaultPaint, palette);
         if (collapsedRegion is null)
         {
             return;
@@ -428,9 +592,9 @@ public sealed class CodeFileViewerControl : Grid
         using var chipPaint = new SKPaint { Color = palette.FoldChipBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
         var chipX = x + visualLength * charWidth + 8;
         var chipWidth = Math.Max(140, boldFont.MeasureText(placeholder, foldPaint) + 12);
-        var chipRect = SKRect.Create(chipX, y + 2, chipWidth, LineHeight - 4);
+        var chipRect = SKRect.Create(chipX, y + 2, chipWidth, lineHeight - 4);
         canvasSurface.DrawRoundRect(chipRect, 4, 4, chipPaint);
-        canvasSurface.DrawText(placeholder, chipRect.Left + 6, y + 13, boldFont, foldPaint);
+        canvasSurface.DrawText(placeholder, chipRect.Left + 6, y + baselineOffset, boldFont, foldPaint);
     }
 
     private static void DrawTokenizedText(
@@ -489,14 +653,14 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawText(value, x + visualColumn * charWidth, baseline, font, paint);
     }
 
-    private static void DrawEmptyState(SKCanvas canvasSurface, int width, int height, SKPaint paint, SKFont font)
+    private static void DrawEmptyState(SKCanvas canvasSurface, float width, float height, SKPaint paint, SKFont font)
     {
         const string text = "Full file content unavailable";
         var textWidth = font.MeasureText(text, paint);
         canvasSurface.DrawText(text, Math.Max(16, (width - textWidth) / 2), Math.Max(32, height / 2), font, paint);
     }
 
-    private void DrawScrollbar(SKCanvas canvasSurface, ViewerPalette palette, int width, int height)
+    private void DrawScrollbar(SKCanvas canvasSurface, ViewerPalette palette, float width, float height)
     {
         var contentHeight = GetContentHeight();
         if (contentHeight <= height)
@@ -551,6 +715,59 @@ public sealed class CodeFileViewerControl : Grid
         return thumb.Contains((float)point.X, (float)point.Y);
     }
 
+    private bool TryHitTestText(Point2 point, out CodeTextPosition position)
+    {
+        EnsureVisibleRows();
+        position = default;
+        var lines = GetLines();
+        if (visibleRows.Length == 0 || lines.Count == 0)
+        {
+            return false;
+        }
+
+        using var font = new SKFont(typeface, EffectiveFontSize);
+        using var paint = CreateTextPaint(SKColors.Black);
+        var charWidth = Math.Max(1, font.MeasureText("M", paint));
+        var gutterWidth = CalculateGutterWidth(charWidth, lines);
+        var rowIndex = (int)Math.Floor((scrollOffsetY + point.Y - TopPadding) / LineHeight);
+        rowIndex = Math.Clamp(rowIndex, 0, visibleRows.Length - 1);
+
+        var row = visibleRows[rowIndex];
+        if (row.LineIndex < 0 || row.LineIndex >= lines.Count)
+        {
+            return false;
+        }
+
+        var line = lines[row.LineIndex];
+        var column = GetSourceColumnFromVisualOffset(line.Text, (float)(point.X - gutterWidth - TextPadding), charWidth);
+        position = new CodeTextPosition(rowIndex, column);
+        return true;
+    }
+
+    private bool TryGetSelectionRange(out CodeTextPosition start, out CodeTextPosition end)
+    {
+        start = default;
+        end = default;
+        if (selectionAnchor is not { } anchor || selectionActive is not { } active)
+        {
+            return false;
+        }
+
+        if (anchor.RowIndex < active.RowIndex ||
+            (anchor.RowIndex == active.RowIndex && anchor.Column <= active.Column))
+        {
+            start = anchor;
+            end = active;
+        }
+        else
+        {
+            start = active;
+            end = anchor;
+        }
+
+        return true;
+    }
+
     private void EnsureVisibleRows()
     {
         if (!visibleRowsDirty)
@@ -589,6 +806,13 @@ public sealed class CodeFileViewerControl : Grid
     {
         var starts = GetFoldRegions().Select(region => region.StartLineIndex).ToHashSet();
         collapsedFoldStarts.RemoveWhere(start => !starts.Contains(start));
+    }
+
+    private void ClearSelection()
+    {
+        selectionAnchor = null;
+        selectionActive = null;
+        isSelectingText = false;
     }
 
     private IReadOnlyList<DiffLine> GetLines() => Lines switch
@@ -653,6 +877,14 @@ public sealed class CodeFileViewerControl : Grid
         return new Point2(point.X * scaleX, point.Y * scaleY);
     }
 
+    private double GetRasterScale(int pixelWidth, int pixelHeight)
+    {
+        var scaleX = ActualWidth > 0 ? pixelWidth / ActualWidth : 1;
+        var scaleY = ActualHeight > 0 ? pixelHeight / ActualHeight : scaleX;
+        var scale = Math.Min(scaleX, scaleY);
+        return double.IsFinite(scale) && scale > 0 ? Math.Max(1, scale) : 1;
+    }
+
     private Size2 GetCanvasSize()
     {
         if (lastCanvasSize.Width > 0 && lastCanvasSize.Height > 0)
@@ -681,6 +913,30 @@ public sealed class CodeFileViewerControl : Grid
         }
 
         return visualColumn;
+    }
+
+    private static int GetSourceColumnFromVisualOffset(string text, float visualOffset, float charWidth)
+    {
+        if (string.IsNullOrEmpty(text) || visualOffset <= 0)
+        {
+            return 0;
+        }
+
+        var targetVisualColumn = visualOffset / Math.Max(1, charWidth);
+        var visualColumn = 0;
+        for (var index = 0; index < text.Length; index++)
+        {
+            var nextVisualColumn = visualColumn + (text[index] == '\t' ? TabSize : 1);
+            if (targetVisualColumn < nextVisualColumn)
+            {
+                var midpoint = visualColumn + (nextVisualColumn - visualColumn) / 2.0;
+                return targetVisualColumn < midpoint ? index : index + 1;
+            }
+
+            visualColumn = nextVisualColumn;
+        }
+
+        return text.Length;
     }
 
     private static SKPaint CreateTextPaint(SKColor color) => new()
@@ -745,6 +1001,8 @@ public sealed class CodeFileViewerControl : Grid
 
     private readonly record struct VisibleCodeRow(int LineIndex, CodeFoldRegion? CollapsedRegion);
 
+    private readonly record struct CodeTextPosition(int RowIndex, int Column);
+
     private sealed record ViewerPalette(
         SKColor Background,
         SKColor GutterBackground,
@@ -770,6 +1028,7 @@ public sealed class CodeFileViewerControl : Grid
         SKColor ConflictAccent,
         SKColor MetadataAccent,
         SKColor Accent,
+        SKColor SelectionBackground,
         SKColor Keyword,
         SKColor Type,
         SKColor String,
@@ -811,6 +1070,7 @@ public sealed class CodeFileViewerControl : Grid
                 new SKColor(203, 36, 49),
                 new SKColor(22, 107, 154),
                 new SKColor(22, 107, 154),
+                new SKColor(0, 122, 204, 78),
                 new SKColor(0, 92, 197),
                 new SKColor(111, 66, 193),
                 new SKColor(3, 106, 56),
@@ -850,6 +1110,7 @@ public sealed class CodeFileViewerControl : Grid
                 new SKColor(255, 123, 114),
                 new SKColor(88, 166, 214),
                 new SKColor(88, 166, 214),
+                new SKColor(88, 166, 214, 96),
                 new SKColor(121, 192, 255),
                 new SKColor(210, 168, 255),
                 new SKColor(165, 214, 255),
