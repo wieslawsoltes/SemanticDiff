@@ -8,13 +8,6 @@ namespace SemanticDiff.Diff;
 
 public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
 {
-    private static readonly HashSet<string> CSharpKeywords = new(StringComparer.Ordinal)
-    {
-        "abstract", "async", "await", "class", "const", "enum", "event", "interface", "namespace",
-        "new", "override", "partial", "private", "protected", "public", "record", "return", "sealed",
-        "static", "struct", "using", "var", "void"
-    };
-
     public string Id => "plain-text";
 
     public ValueTask<ImmutableArray<TokenSpan>> TokenizeLineAsync(
@@ -28,19 +21,21 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
 
     private static ImmutableArray<TokenSpan> TokenizeLine(DiffDocumentSnapshot document, DiffLine line)
     {
-
-        if (document.Metadata.Language.Equals("C#", StringComparison.OrdinalIgnoreCase))
+        if (line.Kind is DiffLineKind.Metadata or DiffLineKind.Imaginary || line.Text.Length == 0)
         {
-            return TokenizeCSharp(line.Text);
+            return ImmutableArray<TokenSpan>.Empty;
         }
 
-        if (document.Metadata.Language.Contains("XAML", StringComparison.OrdinalIgnoreCase) ||
-            document.Metadata.Language.Equals("XML", StringComparison.OrdinalIgnoreCase))
+        var descriptor = LanguageServiceRegistry.Identify(document);
+        return descriptor.Definition?.SyntaxKind switch
         {
-            return TokenizeXml(line.Text);
-        }
-
-        return ImmutableArray<TokenSpan>.Empty;
+            LanguageSyntaxKind.Xml => TokenizeXml(line.Text, descriptor.Id),
+            LanguageSyntaxKind.Json => TokenizeJson(line.Text, descriptor.Id),
+            LanguageSyntaxKind.Yaml => TokenizeYamlLike(line.Text, descriptor.Id, descriptor.Definition),
+            LanguageSyntaxKind.Css => TokenizeCss(line.Text, descriptor.Id, descriptor.Definition),
+            LanguageSyntaxKind.Markdown => TokenizeMarkdown(line.Text, descriptor.Id),
+            _ => TokenizeCode(line.Text, descriptor.Id, descriptor.Definition)
+        };
     }
 
     public ValueTask<ImmutableArray<DiffLine>> TokenizePageAsync(
@@ -66,65 +61,536 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
         return new ValueTask<ImmutableArray<DiffLine>>(builder.ToImmutable());
     }
 
-    private static ImmutableArray<TokenSpan> TokenizeCSharp(string text)
+    private static ImmutableArray<TokenSpan> TokenizeCode(string text, string languageId, LanguageDefinition? definition)
+    {
+        var builder = ImmutableArray.CreateBuilder<TokenSpan>();
+        var column = 0;
+        var keywords = definition?.Keywords ?? ImmutableHashSet<string>.Empty;
+        var lineCommentPrefixes = definition?.LineCommentPrefixes ?? ImmutableArray.Create("//", "#");
+        var blockComments = definition?.BlockComments ?? ImmutableArray.Create(("/*", "*/"));
+        var stringDelimiters = definition?.StringDelimiters ?? ImmutableArray.Create("\"", "'", "`");
+
+        while (column < text.Length)
+        {
+            var lineCommentPrefix = FindPrefix(text, column, lineCommentPrefixes);
+            if (lineCommentPrefix is not null)
+            {
+                AddToken(builder, column, text.Length - column, "comment", "comment", languageId);
+                break;
+            }
+
+            var blockComment = FindBlockComment(text, column, blockComments);
+            if (blockComment is not null)
+            {
+                var end = text.IndexOf(blockComment.Value.Close, column + blockComment.Value.Open.Length, StringComparison.Ordinal);
+                var length = end < 0 ? text.Length - column : end + blockComment.Value.Close.Length - column;
+                AddToken(builder, column, length, "comment", "comment", languageId);
+                column += Math.Max(1, length);
+                continue;
+            }
+
+            var stringDelimiter = FindPrefix(text, column, stringDelimiters);
+            if (stringDelimiter is not null)
+            {
+                var length = ReadStringLength(text, column, stringDelimiter);
+                AddToken(builder, column, length, "string", "string", languageId);
+                column += length;
+                continue;
+            }
+
+            if (IsNumberStart(text, column))
+            {
+                var length = ReadNumberLength(text, column);
+                AddToken(builder, column, length, "number", "number", languageId);
+                column += length;
+                continue;
+            }
+
+            if (IsIdentifierStart(text[column]))
+            {
+                var startColumn = column;
+                column++;
+
+                while (column < text.Length && IsIdentifierPart(text[column]))
+                {
+                    column++;
+                }
+
+                var token = text[startColumn..column];
+                var normalizedToken = languageId == "sql" ? token.ToUpperInvariant() : token;
+                if (keywords.Contains(normalizedToken))
+                {
+                    AddToken(builder, startColumn, column - startColumn, "keyword", "keyword", languageId);
+                }
+                else if (NextNonWhitespaceIs(text, column, '('))
+                {
+                    AddToken(builder, startColumn, column - startColumn, "function", "function", languageId);
+                }
+                else if (PreviousNonWhitespaceIs(text, startColumn, '.'))
+                {
+                    AddToken(builder, startColumn, column - startColumn, "property", "property", languageId);
+                }
+
+                continue;
+            }
+
+            if (IsOperator(text[column]))
+            {
+                var startColumn = column;
+                column++;
+                while (column < text.Length && IsOperator(text[column]))
+                {
+                    column++;
+                }
+
+                AddToken(builder, startColumn, column - startColumn, "operator", "operator", languageId);
+                continue;
+            }
+
+            column++;
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static ImmutableArray<TokenSpan> TokenizeXml(string text, string languageId)
     {
         var builder = ImmutableArray.CreateBuilder<TokenSpan>();
         var column = 0;
 
         while (column < text.Length)
         {
-            if (!char.IsLetter(text[column]) && text[column] != '_')
+            if (text.AsSpan(column).StartsWith("<!--", StringComparison.Ordinal))
+            {
+                var end = text.IndexOf("-->", column + 4, StringComparison.Ordinal);
+                var length = end < 0 ? text.Length - column : end + 3 - column;
+                AddToken(builder, column, length, "comment", "comment", languageId);
+                column += Math.Max(1, length);
+                continue;
+            }
+
+            if (text[column] != '<')
             {
                 column++;
                 continue;
             }
 
-            var startColumn = column;
+            AddToken(builder, column, 1, "punctuation", "operator", languageId);
             column++;
+            if (column < text.Length && text[column] == '/')
+            {
+                AddToken(builder, column, 1, "punctuation", "operator", languageId);
+                column++;
+            }
 
-            while (column < text.Length && (char.IsLetterOrDigit(text[column]) || text[column] == '_'))
+            column = SkipWhitespace(text, column);
+            var tagStart = column;
+            while (column < text.Length && IsXmlNameCharacter(text[column]))
             {
                 column++;
             }
 
-            var token = text[startColumn..column];
-            if (CSharpKeywords.Contains(token))
+            if (column > tagStart)
             {
-                builder.Add(new TokenSpan(startColumn, column - startColumn, "keyword"));
+                AddToken(builder, tagStart, column - tagStart, "tag", "type", languageId);
+            }
+
+            while (column < text.Length && text[column] != '>')
+            {
+                if (text.AsSpan(column).StartsWith("/>", StringComparison.Ordinal))
+                {
+                    AddToken(builder, column, 2, "punctuation", "operator", languageId);
+                    column += 2;
+                    break;
+                }
+
+                if (text[column] is '"' or '\'')
+                {
+                    var length = ReadStringLength(text, column, text[column].ToString());
+                    AddToken(builder, column, length, "string", "string", languageId);
+                    column += length;
+                    continue;
+                }
+
+                if (text[column] == '=')
+                {
+                    AddToken(builder, column, 1, "operator", "operator", languageId);
+                    column++;
+                    continue;
+                }
+
+                if (IsXmlNameStartCharacter(text[column]))
+                {
+                    var attributeStart = column;
+                    column++;
+                    while (column < text.Length && IsXmlNameCharacter(text[column]))
+                    {
+                        column++;
+                    }
+
+                    AddToken(builder, attributeStart, column - attributeStart, "property", "property", languageId);
+                    continue;
+                }
+
+                column++;
+            }
+
+            if (column < text.Length && text[column] == '>')
+            {
+                AddToken(builder, column, 1, "punctuation", "operator", languageId);
+                column++;
             }
         }
 
         return builder.ToImmutable();
     }
 
-    private static ImmutableArray<TokenSpan> TokenizeXml(string text)
+    private static ImmutableArray<TokenSpan> TokenizeJson(string text, string languageId)
     {
         var builder = ImmutableArray.CreateBuilder<TokenSpan>();
-        var openIndex = text.IndexOf('<', StringComparison.Ordinal);
+        var column = 0;
 
-        while (openIndex >= 0 && openIndex + 1 < text.Length)
+        while (column < text.Length)
         {
-            var startColumn = openIndex + 1;
-            if (text[startColumn] == '/')
+            if (text.AsSpan(column).StartsWith("//", StringComparison.Ordinal))
             {
-                startColumn++;
+                AddToken(builder, column, text.Length - column, "comment", "comment", languageId);
+                break;
             }
 
-            var column = startColumn;
-            while (column < text.Length && (char.IsLetterOrDigit(text[column]) || text[column] is ':' or '_' or '.'))
+            if (text.AsSpan(column).StartsWith("/*", StringComparison.Ordinal))
             {
+                var end = text.IndexOf("*/", column + 2, StringComparison.Ordinal);
+                var length = end < 0 ? text.Length - column : end + 2 - column;
+                AddToken(builder, column, length, "comment", "comment", languageId);
+                column += Math.Max(1, length);
+                continue;
+            }
+
+            if (text[column] == '"')
+            {
+                var length = ReadStringLength(text, column, "\"");
+                var style = NextNonWhitespaceIs(text, column + length, ':') ? "property" : "string";
+                var tokenType = style == "property" ? "property" : "string";
+                AddToken(builder, column, length, style, tokenType, languageId);
+                column += length;
+                continue;
+            }
+
+            if (IsNumberStart(text, column))
+            {
+                var length = ReadNumberLength(text, column);
+                AddToken(builder, column, length, "number", "number", languageId);
+                column += length;
+                continue;
+            }
+
+            if (IsIdentifierStart(text[column]))
+            {
+                var startColumn = column;
                 column++;
+                while (column < text.Length && IsIdentifierPart(text[column]))
+                {
+                    column++;
+                }
+
+                var token = text[startColumn..column];
+                if (token is "true" or "false" or "null")
+                {
+                    AddToken(builder, startColumn, column - startColumn, "keyword", "keyword", languageId);
+                }
+
+                continue;
             }
 
-            if (column > startColumn)
+            if (IsJsonPunctuation(text[column]))
             {
-                builder.Add(new TokenSpan(startColumn, column - startColumn, "type"));
+                AddToken(builder, column, 1, "punctuation", "operator", languageId);
             }
 
-            openIndex = text.IndexOf('<', openIndex + 1);
+            column++;
         }
 
         return builder.ToImmutable();
+    }
+
+    private static ImmutableArray<TokenSpan> TokenizeYamlLike(string text, string languageId, LanguageDefinition definition)
+    {
+        var builder = ImmutableArray.CreateBuilder<TokenSpan>();
+        var trimmedStart = text.Length - text.TrimStart().Length;
+        if (trimmedStart < text.Length && text[trimmedStart] is '[' or ']')
+        {
+            AddToken(builder, trimmedStart, 1, "punctuation", "operator", languageId);
+        }
+
+        var commentIndex = FindUnquotedComment(text, '#');
+        if (commentIndex >= 0)
+        {
+            AddToken(builder, commentIndex, text.Length - commentIndex, "comment", "comment", languageId);
+        }
+
+        var limit = commentIndex >= 0 ? commentIndex : text.Length;
+        var colonIndex = text.IndexOf(':', 0, limit);
+        if (colonIndex > 0)
+        {
+            var keyStart = SkipWhitespace(text, 0);
+            if (keyStart < colonIndex)
+            {
+                AddToken(builder, keyStart, colonIndex - keyStart, "property", "property", languageId);
+            }
+
+            AddToken(builder, colonIndex, 1, "operator", "operator", languageId);
+        }
+
+        AddStringAndNumberTokens(builder, text, languageId, definition, limit);
+        return builder.ToImmutable();
+    }
+
+    private static ImmutableArray<TokenSpan> TokenizeCss(string text, string languageId, LanguageDefinition definition)
+    {
+        var builder = ImmutableArray.CreateBuilder<TokenSpan>();
+        var commentIndex = text.IndexOf("/*", StringComparison.Ordinal);
+        if (commentIndex >= 0)
+        {
+            var end = text.IndexOf("*/", commentIndex + 2, StringComparison.Ordinal);
+            var length = end < 0 ? text.Length - commentIndex : end + 2 - commentIndex;
+            AddToken(builder, commentIndex, length, "comment", "comment", languageId);
+        }
+
+        var limit = commentIndex >= 0 ? commentIndex : text.Length;
+        var colonIndex = text.IndexOf(':', 0, limit);
+        if (colonIndex > 0)
+        {
+            var propertyStart = SkipWhitespace(text, 0);
+            if (propertyStart < colonIndex && text[propertyStart] != '@')
+            {
+                AddToken(builder, propertyStart, colonIndex - propertyStart, "property", "property", languageId);
+            }
+        }
+
+        AddStringAndNumberTokens(builder, text, languageId, definition, limit);
+        return builder.ToImmutable();
+    }
+
+    private static ImmutableArray<TokenSpan> TokenizeMarkdown(string text, string languageId)
+    {
+        var builder = ImmutableArray.CreateBuilder<TokenSpan>();
+        var trimmedStart = text.Length - text.TrimStart().Length;
+        if (trimmedStart < text.Length && text[trimmedStart] == '#')
+        {
+            var headingLength = 0;
+            while (trimmedStart + headingLength < text.Length && text[trimmedStart + headingLength] == '#')
+            {
+                headingLength++;
+            }
+
+            AddToken(builder, trimmedStart, headingLength, "keyword", "keyword", languageId);
+        }
+
+        if (text.AsSpan(trimmedStart).StartsWith("```", StringComparison.Ordinal))
+        {
+            AddToken(builder, trimmedStart, text.Length - trimmedStart, "tag", "label", languageId);
+        }
+
+        var inlineCodeStart = text.IndexOf('`', StringComparison.Ordinal);
+        if (inlineCodeStart >= 0)
+        {
+            var inlineCodeEnd = text.IndexOf('`', inlineCodeStart + 1);
+            if (inlineCodeEnd > inlineCodeStart)
+            {
+                AddToken(builder, inlineCodeStart, inlineCodeEnd - inlineCodeStart + 1, "string", "string", languageId);
+            }
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static void AddStringAndNumberTokens(
+        ImmutableArray<TokenSpan>.Builder builder,
+        string text,
+        string languageId,
+        LanguageDefinition definition,
+        int limit)
+    {
+        var column = 0;
+        while (column < limit)
+        {
+            var delimiter = FindPrefix(text, column, definition.StringDelimiters);
+            if (delimiter is not null)
+            {
+                var length = Math.Min(ReadStringLength(text, column, delimiter), limit - column);
+                AddToken(builder, column, length, "string", "string", languageId);
+                column += length;
+                continue;
+            }
+
+            if (IsNumberStart(text, column))
+            {
+                var length = Math.Min(ReadNumberLength(text, column), limit - column);
+                AddToken(builder, column, length, "number", "number", languageId);
+                column += length;
+                continue;
+            }
+
+            column++;
+        }
+    }
+
+    private static void AddToken(
+        ImmutableArray<TokenSpan>.Builder builder,
+        int startColumn,
+        int length,
+        string styleId,
+        string tokenType,
+        string languageId)
+    {
+        if (length <= 0)
+        {
+            return;
+        }
+
+        builder.Add(TokenClassification.Create(startColumn, length, styleId, tokenType, languageId, TokenClassification.FallbackSource));
+    }
+
+    private static string? FindPrefix(string text, int column, ImmutableArray<string> prefixes)
+    {
+        foreach (var prefix in prefixes.OrderByDescending(prefix => prefix.Length))
+        {
+            if (prefix.Length > 0 && text.AsSpan(column).StartsWith(prefix, StringComparison.Ordinal))
+            {
+                return prefix;
+            }
+        }
+
+        return null;
+    }
+
+    private static (string Open, string Close)? FindBlockComment(string text, int column, ImmutableArray<(string Open, string Close)> blockComments)
+    {
+        foreach (var blockComment in blockComments.OrderByDescending(comment => comment.Open.Length))
+        {
+            if (blockComment.Open.Length > 0 && text.AsSpan(column).StartsWith(blockComment.Open, StringComparison.Ordinal))
+            {
+                return blockComment;
+            }
+        }
+
+        return null;
+    }
+
+    private static int ReadStringLength(string text, int startColumn, string delimiter)
+    {
+        var contentStart = startColumn + delimiter.Length;
+        var column = contentStart;
+        while (column < text.Length)
+        {
+            if (text.AsSpan(column).StartsWith(delimiter, StringComparison.Ordinal))
+            {
+                return column + delimiter.Length - startColumn;
+            }
+
+            column += text[column] == '\\' && column + 1 < text.Length ? 2 : 1;
+        }
+
+        return text.Length - startColumn;
+    }
+
+    private static int ReadNumberLength(string text, int startColumn)
+    {
+        var column = startColumn;
+        if (text[column] is '+' or '-')
+        {
+            column++;
+        }
+
+        while (column < text.Length && (char.IsLetterOrDigit(text[column]) || text[column] is '.' or '_' or 'x' or 'X'))
+        {
+            column++;
+        }
+
+        return Math.Max(1, column - startColumn);
+    }
+
+    private static int SkipWhitespace(string text, int column)
+    {
+        while (column < text.Length && char.IsWhiteSpace(text[column]))
+        {
+            column++;
+        }
+
+        return column;
+    }
+
+    private static bool NextNonWhitespaceIs(string text, int column, char expected)
+    {
+        column = SkipWhitespace(text, column);
+        return column < text.Length && text[column] == expected;
+    }
+
+    private static bool PreviousNonWhitespaceIs(string text, int column, char expected)
+    {
+        column--;
+        while (column >= 0 && char.IsWhiteSpace(text[column]))
+        {
+            column--;
+        }
+
+        return column >= 0 && text[column] == expected;
+    }
+
+    private static bool IsNumberStart(string text, int column)
+    {
+        return char.IsDigit(text[column]) ||
+            text[column] is '+' or '-' && column + 1 < text.Length && char.IsDigit(text[column + 1]);
+    }
+
+    private static bool IsIdentifierStart(char character) => char.IsLetter(character) || character is '_' or '$' or '@';
+
+    private static bool IsIdentifierPart(char character) => char.IsLetterOrDigit(character) || character is '_' or '$' or '-' or '@';
+
+    private static bool IsOperator(char character) => character is
+        '+' or '-' or '*' or '/' or '%' or '=' or '!' or '<' or '>' or '&' or '|' or '^' or '~' or '?' or ':' or '.';
+
+    private static bool IsJsonPunctuation(char character) => character is '{' or '}' or '[' or ']' or ',' or ':';
+
+    private static bool IsXmlNameStartCharacter(char character) => char.IsLetter(character) || character is '_' or ':';
+
+    private static bool IsXmlNameCharacter(char character) => IsXmlNameStartCharacter(character) || char.IsDigit(character) || character is '-' or '.';
+
+    private static int FindUnquotedComment(string text, char commentMarker)
+    {
+        var quote = '\0';
+        for (var column = 0; column < text.Length; column++)
+        {
+            if (quote != '\0')
+            {
+                if (text[column] == '\\' && column + 1 < text.Length)
+                {
+                    column++;
+                    continue;
+                }
+
+                if (text[column] == quote)
+                {
+                    quote = '\0';
+                }
+
+                continue;
+            }
+
+            if (text[column] is '"' or '\'')
+            {
+                quote = text[column];
+                continue;
+            }
+
+            if (text[column] == commentMarker)
+            {
+                return column;
+            }
+        }
+
+        return -1;
     }
 }
 
@@ -172,7 +638,8 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var grammar = GetGrammar(document);
+        var language = LanguageServiceRegistry.Identify(document);
+        var grammar = GetGrammar(document, language);
         if (grammar is null)
         {
             return fallback.TokenizePageAsync(document, firstLineIndex, lineCount, cancellationToken);
@@ -190,7 +657,7 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
             var builder = ImmutableArray.CreateBuilder<DiffLine>(lastLine - firstLine);
             for (var lineIndex = firstLine; lineIndex < lastLine; lineIndex++)
             {
-                var page = GetOrCreatePage(document, grammar, AlignPageStart(lineIndex), cancellationToken);
+                var page = GetOrCreatePage(document, grammar, language.Id, AlignPageStart(lineIndex), cancellationToken);
                 var tokens = page.LineTokens[lineIndex - page.FirstLineIndex];
                 builder.Add(document.Lines[lineIndex] with { Tokens = tokens });
             }
@@ -199,9 +666,9 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
         }
     }
 
-    private IGrammar? GetGrammar(DiffDocumentSnapshot document)
+    private IGrammar? GetGrammar(DiffDocumentSnapshot document, LanguageDescriptor language)
     {
-        var scopeName = ResolveScopeName(document);
+        var scopeName = ResolveScopeName(document, language);
         if (string.IsNullOrWhiteSpace(scopeName))
         {
             return null;
@@ -228,9 +695,9 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
         }
     }
 
-    private string? ResolveScopeName(DiffDocumentSnapshot document)
+    private string? ResolveScopeName(DiffDocumentSnapshot document, LanguageDescriptor language)
     {
-        foreach (var languageId in GetLanguageIds(document))
+        foreach (var languageId in LanguageServiceRegistry.GetLanguageIdCandidates(document))
         {
             var scopeName = TryGetScopeByLanguageId(languageId);
             if (!string.IsNullOrWhiteSpace(scopeName))
@@ -239,40 +706,7 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
             }
         }
 
-        var extension = Path.GetExtension(document.Metadata.Path);
-        return string.IsNullOrWhiteSpace(extension) ? null : TryGetScopeByExtension(extension);
-    }
-
-    private static IEnumerable<string> GetLanguageIds(DiffDocumentSnapshot document)
-    {
-        var extension = Path.GetExtension(document.Metadata.Path).ToLowerInvariant();
-        switch (extension)
-        {
-            case ".cs":
-                yield return "csharp";
-                break;
-            case ".xaml":
-            case ".axaml":
-            case ".xml":
-                yield return "xml";
-                break;
-            case ".json":
-                yield return "json";
-                break;
-            case ".md":
-                yield return "markdown";
-                break;
-        }
-
-        var language = document.Metadata.Language.ToLowerInvariant();
-        if (language is "c#" or "cs")
-        {
-            yield return "csharp";
-        }
-        else if (language.Contains("xaml", StringComparison.Ordinal) || language == "xml")
-        {
-            yield return "xml";
-        }
+        return string.IsNullOrWhiteSpace(language.Extension) ? null : TryGetScopeByExtension(language.Extension);
     }
 
     private string? TryGetScopeByLanguageId(string languageId)
@@ -304,6 +738,7 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
     private TokenPage GetOrCreatePage(
         DiffDocumentSnapshot document,
         IGrammar grammar,
+        string languageId,
         int pageStart,
         CancellationToken cancellationToken)
     {
@@ -331,7 +766,7 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
         {
             if (!documentCache.Pages.TryGetValue(currentPageStart, out cachedPage))
             {
-                cachedPage = TokenizePage(document, grammar, currentPageStart, state, cancellationToken);
+                cachedPage = TokenizePage(document, grammar, languageId, currentPageStart, state, cancellationToken);
                 documentCache.Pages.Add(currentPageStart, cachedPage);
             }
 
@@ -350,6 +785,7 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
     private TokenPage TokenizePage(
         DiffDocumentSnapshot document,
         IGrammar grammar,
+        string languageId,
         int firstLineIndex,
         IStateStack? initialState,
         CancellationToken cancellationToken)
@@ -371,13 +807,13 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
 
             var result = grammar.TokenizeLine(new LineText(line.Text), state, TokenizeLineTimeout);
             state = result.RuleStack;
-            tokenLines.Add(ConvertTokens(line.Text, result.Tokens));
+            tokenLines.Add(ConvertTokens(line.Text, result.Tokens, languageId));
         }
 
         return new TokenPage(firstLineIndex, tokenLines.ToImmutable(), state);
     }
 
-    private static ImmutableArray<TokenSpan> ConvertTokens(string text, IReadOnlyList<IToken> tokens)
+    private static ImmutableArray<TokenSpan> ConvertTokens(string text, IReadOnlyList<IToken> tokens, string languageId)
     {
         if (text.Length == 0 || tokens.Count == 0)
         {
@@ -387,7 +823,7 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
         var builder = ImmutableArray.CreateBuilder<TokenSpan>(tokens.Count);
         foreach (var token in tokens)
         {
-            var styleId = MapScopesToStyle(token.Scopes);
+            var (styleId, tokenType, modifiers) = TokenClassification.FromScopes(token.Scopes);
             if (styleId == "text")
             {
                 continue;
@@ -397,65 +833,19 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
             var length = Math.Clamp(token.Length, 0, text.Length - startColumn);
             if (length > 0)
             {
-                builder.Add(new TokenSpan(startColumn, length, styleId));
+                builder.Add(TokenClassification.Create(
+                    startColumn,
+                    length,
+                    styleId,
+                    tokenType,
+                    languageId,
+                    TokenClassification.TextMateSource,
+                    modifiers,
+                    token.Scopes.ToImmutableArray()));
             }
         }
 
         return builder.ToImmutable();
-    }
-
-    private static string MapScopesToStyle(IReadOnlyList<string> scopes)
-    {
-        for (var scopeIndex = scopes.Count - 1; scopeIndex >= 0; scopeIndex--)
-        {
-            var scope = scopes[scopeIndex];
-            if (scope.Contains("invalid", StringComparison.Ordinal))
-            {
-                return "invalid";
-            }
-
-            if (scope.Contains("comment", StringComparison.Ordinal))
-            {
-                return "comment";
-            }
-
-            if (scope.Contains("string", StringComparison.Ordinal))
-            {
-                return "string";
-            }
-
-            if (scope.Contains("constant.numeric", StringComparison.Ordinal) || scope.Contains("constant.language", StringComparison.Ordinal))
-            {
-                return "number";
-            }
-
-            if (scope.Contains("keyword", StringComparison.Ordinal) || scope.Contains("storage", StringComparison.Ordinal))
-            {
-                return "keyword";
-            }
-
-            if (scope.Contains("entity.name.function", StringComparison.Ordinal) || scope.Contains("support.function", StringComparison.Ordinal))
-            {
-                return "function";
-            }
-
-            if (scope.Contains("entity.name.type", StringComparison.Ordinal) || scope.Contains("support.type", StringComparison.Ordinal))
-            {
-                return "type";
-            }
-
-            if (scope.Contains("entity.name.tag", StringComparison.Ordinal))
-            {
-                return "tag";
-            }
-
-            if (scope.Contains("entity.other.attribute-name", StringComparison.Ordinal) || scope.Contains("variable.parameter", StringComparison.Ordinal))
-            {
-                return "property";
-            }
-        }
-
-        return "text";
     }
 
     private sealed class DocumentTokenCache
