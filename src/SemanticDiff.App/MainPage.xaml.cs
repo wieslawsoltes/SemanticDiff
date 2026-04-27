@@ -1,7 +1,13 @@
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using SemanticDiff.Core;
 using SemanticDiff.Rendering;
+using SkiaSharp;
+using System.Collections.Specialized;
+using System.IO;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage.Pickers;
 using Windows.System;
@@ -11,14 +17,29 @@ namespace SemanticDiff.App;
 
 public sealed partial class MainPage : Page
 {
+    private enum WorkspaceGraphExportFormat
+    {
+        Svg,
+        Png,
+        Pdf
+    }
+
     private const double MinimumLeftPaneWidth = 220;
     private const double MaximumLeftPaneWidth = 520;
     private const double MinimumCanvasWidth = 480;
+    private const double DefaultSymbolFacetsHeight = 220;
+    private const double MinimumSymbolFacetsHeight = 140;
+    private const double MaximumSymbolFacetsHeight = 420;
 
     private bool isPaneSplitterDragging;
     private bool isPaneSplitterPointerOver;
     private double paneSplitterStartX;
     private double paneSplitterStartWidth;
+    private bool isSymbolFacetSplitterDragging;
+    private bool isSymbolFacetSplitterPointerOver;
+    private double symbolFacetSplitterStartY;
+    private double symbolFacetSplitterStartHeight;
+    private ScrollViewer? workspaceTabsScrollViewer;
 
     public ViewModels.MainViewModel ViewModel { get; } = new();
 
@@ -27,9 +48,11 @@ public sealed partial class MainPage : Page
         this.InitializeComponent();
         RegisterKeyboardAccelerators();
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
+        ViewModel.WorkspaceTabs.CollectionChanged += OnWorkspaceTabsCollectionChanged;
         DiffCanvas.NodeNavigationRequested += OnDiffCanvasNodeNavigationRequested;
         DiffCanvas.NodeDiffTabRequested += OnDiffCanvasNodeDiffTabRequested;
         DiffCanvas.NodeBlameTabRequested += OnDiffCanvasNodeBlameTabRequested;
+        DiffCanvas.NodeSymbolGraphRequested += OnDiffCanvasNodeSymbolGraphRequested;
         DiffCanvas.AnnotationInteractionRequested += OnDiffCanvasAnnotationInteractionRequested;
         ApplyRequestedTheme();
         ApplyLeftPaneWidth(ViewModel.LeftPaneWidth);
@@ -163,12 +186,134 @@ public sealed partial class MainPage : Page
     private async void OnUnloaded(object sender, RoutedEventArgs args)
     {
         ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        ViewModel.WorkspaceTabs.CollectionChanged -= OnWorkspaceTabsCollectionChanged;
         DiffCanvas.NodeNavigationRequested -= OnDiffCanvasNodeNavigationRequested;
         DiffCanvas.NodeDiffTabRequested -= OnDiffCanvasNodeDiffTabRequested;
         DiffCanvas.NodeBlameTabRequested -= OnDiffCanvasNodeBlameTabRequested;
+        DiffCanvas.NodeSymbolGraphRequested -= OnDiffCanvasNodeSymbolGraphRequested;
         DiffCanvas.AnnotationInteractionRequested -= OnDiffCanvasAnnotationInteractionRequested;
         RootShellGrid.SizeChanged -= OnRootShellGridSizeChanged;
+        if (workspaceTabsScrollViewer is not null)
+        {
+            workspaceTabsScrollViewer.ViewChanged -= OnWorkspaceTabsScrollViewerViewChanged;
+        }
+
         await ViewModel.DisposeAsync();
+    }
+
+    private void OnWorkspaceTabListLoaded(object sender, RoutedEventArgs args)
+    {
+        EnsureWorkspaceTabsScrollViewer();
+        QueueWorkspaceTabsScrollStateUpdate(scrollSelectedIntoView: true);
+    }
+
+    private void OnWorkspaceTabListSizeChanged(object sender, SizeChangedEventArgs args)
+    {
+        QueueWorkspaceTabsScrollStateUpdate();
+    }
+
+    private void OnWorkspaceTabListSelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        QueueWorkspaceTabsScrollStateUpdate(scrollSelectedIntoView: true);
+    }
+
+    private void OnWorkspaceTabsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
+    {
+        QueueWorkspaceTabsScrollStateUpdate(scrollSelectedIntoView: true);
+    }
+
+    private void OnWorkspaceTabsScrollViewerViewChanged(object? sender, ScrollViewerViewChangedEventArgs args)
+    {
+        UpdateWorkspaceTabsScrollButtons();
+    }
+
+    private void OnWorkspaceTabsScrollLeftClicked(object sender, RoutedEventArgs args)
+    {
+        ScrollWorkspaceTabs(-1);
+    }
+
+    private void OnWorkspaceTabsScrollRightClicked(object sender, RoutedEventArgs args)
+    {
+        ScrollWorkspaceTabs(1);
+    }
+
+    private void ScrollWorkspaceTabs(int direction)
+    {
+        var scrollViewer = EnsureWorkspaceTabsScrollViewer();
+        if (scrollViewer is null)
+        {
+            return;
+        }
+
+        var page = Math.Max(160, scrollViewer.ViewportWidth * 0.72);
+        var nextOffset = Math.Clamp(scrollViewer.HorizontalOffset + direction * page, 0, scrollViewer.ScrollableWidth);
+        scrollViewer.ChangeView(nextOffset, null, null, disableAnimation: false);
+        QueueWorkspaceTabsScrollStateUpdate();
+    }
+
+    private void QueueWorkspaceTabsScrollStateUpdate(bool scrollSelectedIntoView = false)
+    {
+        _ = DispatcherQueue?.TryEnqueue(() =>
+        {
+            if (scrollSelectedIntoView && WorkspaceTabList.SelectedItem is { } selectedItem)
+            {
+                WorkspaceTabList.ScrollIntoView(selectedItem);
+            }
+
+            EnsureWorkspaceTabsScrollViewer();
+            UpdateWorkspaceTabsScrollButtons();
+        });
+    }
+
+    private ScrollViewer? EnsureWorkspaceTabsScrollViewer()
+    {
+        if (workspaceTabsScrollViewer is not null)
+        {
+            return workspaceTabsScrollViewer;
+        }
+
+        var scrollViewer = FindDescendant<ScrollViewer>(WorkspaceTabList);
+        if (scrollViewer is null)
+        {
+            return null;
+        }
+
+        workspaceTabsScrollViewer = scrollViewer;
+        workspaceTabsScrollViewer.ViewChanged += OnWorkspaceTabsScrollViewerViewChanged;
+        return workspaceTabsScrollViewer;
+    }
+
+    private void UpdateWorkspaceTabsScrollButtons()
+    {
+        var scrollViewer = EnsureWorkspaceTabsScrollViewer();
+        var hasOverflow = scrollViewer is not null && scrollViewer.ScrollableWidth > 0.5;
+        var visibility = hasOverflow ? Visibility.Visible : Visibility.Collapsed;
+        WorkspaceTabsScrollLeftButton.Visibility = visibility;
+        WorkspaceTabsScrollRightButton.Visibility = visibility;
+        WorkspaceTabsScrollLeftButton.IsEnabled = hasOverflow && scrollViewer!.HorizontalOffset > 0.5;
+        WorkspaceTabsScrollRightButton.IsEnabled = hasOverflow && scrollViewer!.HorizontalOffset < scrollViewer.ScrollableWidth - 0.5;
+    }
+
+    private static T? FindDescendant<T>(DependencyObject root)
+        where T : class
+    {
+        var childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < childCount; index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is T match)
+            {
+                return match;
+            }
+
+            var descendant = FindDescendant<T>(child);
+            if (descendant is not null)
+            {
+                return descendant;
+            }
+        }
+
+        return null;
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs args)
@@ -271,6 +416,95 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private void OnSymbolFacetSplitterPointerPressed(object sender, PointerRoutedEventArgs args)
+    {
+        var pointerPoint = args.GetCurrentPoint(SymbolPanelGrid);
+        if (!pointerPoint.Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        isSymbolFacetSplitterDragging = true;
+        SetSymbolFacetSplitterCursor(isResizeCursorEnabled: true);
+        symbolFacetSplitterStartY = pointerPoint.Position.Y;
+        symbolFacetSplitterStartHeight = SymbolFacetsRow.ActualHeight > 0
+            ? SymbolFacetsRow.ActualHeight
+            : DefaultSymbolFacetsHeight;
+        SymbolFacetSplitter.CapturePointer(args.Pointer);
+        SymbolFacetSplitterLine.Height = 2;
+        args.Handled = true;
+    }
+
+    private void OnSymbolFacetSplitterPointerMoved(object sender, PointerRoutedEventArgs args)
+    {
+        if (!isSymbolFacetSplitterDragging)
+        {
+            return;
+        }
+
+        var pointerPoint = args.GetCurrentPoint(SymbolPanelGrid);
+        var nextHeight = symbolFacetSplitterStartHeight + pointerPoint.Position.Y - symbolFacetSplitterStartY;
+        ApplySymbolFacetsHeight(nextHeight);
+        args.Handled = true;
+    }
+
+    private void OnSymbolFacetSplitterPointerReleased(object sender, PointerRoutedEventArgs args)
+    {
+        if (!isSymbolFacetSplitterDragging)
+        {
+            return;
+        }
+
+        isSymbolFacetSplitterDragging = false;
+        SymbolFacetSplitter.ReleasePointerCaptures();
+        SetSymbolFacetSplitterCursor(isSymbolFacetSplitterPointerOver);
+        SymbolFacetSplitterLine.Height = 1;
+        args.Handled = true;
+    }
+
+    private void OnSymbolFacetSplitterPointerEntered(object sender, PointerRoutedEventArgs args)
+    {
+        isSymbolFacetSplitterPointerOver = true;
+        SetSymbolFacetSplitterCursor(isResizeCursorEnabled: true);
+        SymbolFacetSplitterLine.Height = 2;
+    }
+
+    private void OnSymbolFacetSplitterPointerExited(object sender, PointerRoutedEventArgs args)
+    {
+        isSymbolFacetSplitterPointerOver = false;
+        if (!isSymbolFacetSplitterDragging)
+        {
+            SetSymbolFacetSplitterCursor(isResizeCursorEnabled: false);
+            SymbolFacetSplitterLine.Height = 1;
+        }
+    }
+
+    private void SetSymbolFacetSplitterCursor(bool isResizeCursorEnabled)
+    {
+        if (isResizeCursorEnabled)
+        {
+            SymbolFacetSplitter.UseVerticalResizeCursor();
+        }
+        else
+        {
+            SymbolFacetSplitter.ClearCursor();
+        }
+    }
+
+    private void ApplySymbolFacetsHeight(double requestedHeight)
+    {
+        SymbolFacetsRow.Height = new GridLength(ClampSymbolFacetsHeight(requestedHeight));
+    }
+
+    private double ClampSymbolFacetsHeight(double requestedHeight)
+    {
+        var maximumFromPanel = SymbolPanelGrid.ActualHeight > 0
+            ? SymbolPanelGrid.ActualHeight - 180
+            : MaximumSymbolFacetsHeight;
+        var maximumHeight = Math.Max(MinimumSymbolFacetsHeight, Math.Min(MaximumSymbolFacetsHeight, maximumFromPanel));
+        return Math.Clamp(double.IsFinite(requestedHeight) ? requestedHeight : DefaultSymbolFacetsHeight, MinimumSymbolFacetsHeight, maximumHeight);
+    }
+
     private void ApplyLeftPaneWidth(double requestedWidth)
     {
         var width = ClampLeftPaneWidth(requestedWidth);
@@ -305,6 +539,180 @@ public sealed partial class MainPage : Page
         {
             ViewModel.ReportInteractionError(exception.Message);
         }
+    }
+
+    private async Task ExportWorkspaceGraphAsync(WorkspaceGraphExportFormat format)
+    {
+        try
+        {
+            var scene = ViewModel.Scene;
+            if (scene is null || scene.Nodes.Count == 0 || scene.GraphBounds.IsEmpty)
+            {
+                ViewModel.ReportInteractionError("No workspace graph to export");
+                return;
+            }
+
+            var picker = CreateWorkspaceGraphSavePicker(format);
+            var file = await picker.PickSaveFileAsync();
+            if (file is null)
+            {
+                return;
+            }
+
+            await using var stream = File.Open(file.Path, FileMode.Create, FileAccess.Write, FileShare.None);
+            ExportWorkspaceGraph(scene, stream, format, ViewModel.IsLightThemeEnabled);
+            await stream.FlushAsync();
+            ViewModel.ReportInteractionInfo($"Exported workspace graph to {file.Path}");
+        }
+        catch (Exception exception)
+        {
+            ViewModel.ReportInteractionError($"Graph export failed: {exception.Message}");
+        }
+    }
+
+    private FileSavePicker CreateWorkspaceGraphSavePicker(WorkspaceGraphExportFormat format)
+    {
+        var picker = new FileSavePicker
+        {
+            SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
+            SuggestedFileName = BuildWorkspaceGraphExportFileName(format)
+        };
+
+        switch (format)
+        {
+            case WorkspaceGraphExportFormat.Svg:
+                picker.FileTypeChoices.Add("SVG image", [".svg"]);
+                break;
+            case WorkspaceGraphExportFormat.Png:
+                picker.FileTypeChoices.Add("PNG image", [".png"]);
+                break;
+            case WorkspaceGraphExportFormat.Pdf:
+                picker.FileTypeChoices.Add("PDF document", [".pdf"]);
+                break;
+        }
+
+        return picker;
+    }
+
+    private string BuildWorkspaceGraphExportFileName(WorkspaceGraphExportFormat format)
+    {
+        var repositoryName = string.IsNullOrWhiteSpace(ViewModel.RepositoryName)
+            ? "workspace"
+            : ViewModel.RepositoryName.Trim();
+        var safeName = new string(repositoryName
+            .Select(character => Path.GetInvalidFileNameChars().Contains(character) ? '-' : character)
+            .ToArray());
+        return $"{safeName}-diff-graph.{FileExtension(format)}";
+    }
+
+    private static string FileExtension(WorkspaceGraphExportFormat format) => format switch
+    {
+        WorkspaceGraphExportFormat.Svg => "svg",
+        WorkspaceGraphExportFormat.Png => "png",
+        WorkspaceGraphExportFormat.Pdf => "pdf",
+        _ => "png"
+    };
+
+    private static void ExportWorkspaceGraph(DiffCanvasScene sourceScene, Stream stream, WorkspaceGraphExportFormat format, bool isLightTheme)
+    {
+        var exportScene = CloneSceneForExport(sourceScene);
+        var exportSize = GetExportSize(exportScene.GraphBounds, format);
+        exportScene.FitToGraph(new Size2(exportSize.Width, exportSize.Height));
+
+        switch (format)
+        {
+            case WorkspaceGraphExportFormat.Svg:
+                ExportWorkspaceGraphAsSvg(exportScene, stream, exportSize, isLightTheme);
+                break;
+            case WorkspaceGraphExportFormat.Png:
+                ExportWorkspaceGraphAsPng(exportScene, stream, exportSize, isLightTheme);
+                break;
+            case WorkspaceGraphExportFormat.Pdf:
+                ExportWorkspaceGraphAsPdf(exportScene, stream, exportSize, isLightTheme);
+                break;
+        }
+    }
+
+    private static void ExportWorkspaceGraphAsSvg(DiffCanvasScene scene, Stream stream, SKSizeI exportSize, bool isLightTheme)
+    {
+        using var canvas = SKSvgCanvas.Create(SKRect.Create(exportSize.Width, exportSize.Height), stream);
+        RenderWorkspaceGraph(canvas, scene, exportSize, isLightTheme);
+        canvas.Flush();
+    }
+
+    private static void ExportWorkspaceGraphAsPng(DiffCanvasScene scene, Stream stream, SKSizeI exportSize, bool isLightTheme)
+    {
+        var imageInfo = new SKImageInfo(exportSize.Width, exportSize.Height, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using var surface = SKSurface.Create(imageInfo);
+        RenderWorkspaceGraph(surface.Canvas, scene, exportSize, isLightTheme);
+        using var image = surface.Snapshot();
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        data.SaveTo(stream);
+    }
+
+    private static void ExportWorkspaceGraphAsPdf(DiffCanvasScene scene, Stream stream, SKSizeI exportSize, bool isLightTheme)
+    {
+        using var document = SKDocument.CreatePdf(stream);
+        var canvas = document.BeginPage(exportSize.Width, exportSize.Height);
+        RenderWorkspaceGraph(canvas, scene, exportSize, isLightTheme);
+        document.EndPage();
+        document.Close();
+    }
+
+    private static void RenderWorkspaceGraph(SKCanvas canvas, DiffCanvasScene scene, SKSizeI exportSize, bool isLightTheme)
+    {
+        var renderer = new DiffSceneRenderer();
+        renderer.Render(
+            canvas,
+            new SKSize(exportSize.Width, exportSize.Height),
+            scene,
+            isLightTheme ? DiffCanvasColorTheme.Light : DiffCanvasColorTheme.Dark,
+            DiffSceneRenderMode.Normal);
+    }
+
+    private static DiffCanvasScene CloneSceneForExport(DiffCanvasScene sourceScene)
+    {
+        var nodes = sourceScene.Nodes
+            .Select(node =>
+            {
+                var clone = new DiffNode(node.Document, node.Bounds, node.IsPinned, node.FontSize)
+                {
+                    IsSelected = node.IsSelected
+                };
+                clone.RestoreScrollOffset(node.ScrollOffsetY);
+                return clone;
+            })
+            .ToArray();
+
+        return new DiffCanvasScene(
+            nodes,
+            sourceScene.Edges.ToArray(),
+            sourceScene.Groups,
+            sourceScene.Annotations,
+            sourceScene.AnnotationVisibility);
+    }
+
+    private static SKSizeI GetExportSize(Rect2 graphBounds, WorkspaceGraphExportFormat format)
+    {
+        const double margin = 96;
+        const int minimumWidth = 1200;
+        const int minimumHeight = 800;
+        const int maximumVectorEdge = 20000;
+        const int maximumPngEdge = 12000;
+        const double maximumPngPixels = 72_000_000;
+
+        var desiredWidth = Math.Max(minimumWidth, graphBounds.Width + margin * 2);
+        var desiredHeight = Math.Max(minimumHeight, graphBounds.Height + margin * 2);
+        var maximumEdge = format == WorkspaceGraphExportFormat.Png ? maximumPngEdge : maximumVectorEdge;
+        var scale = Math.Min(1, maximumEdge / Math.Max(desiredWidth, desiredHeight));
+        if (format == WorkspaceGraphExportFormat.Png && desiredWidth * desiredHeight * scale * scale > maximumPngPixels)
+        {
+            scale = Math.Sqrt(maximumPngPixels / (desiredWidth * desiredHeight));
+        }
+
+        return new SKSizeI(
+            Math.Max(1, (int)Math.Ceiling(desiredWidth * scale)),
+            Math.Max(1, (int)Math.Ceiling(desiredHeight * scale)));
     }
 
     private async Task RelayoutAndFitAsync()
@@ -403,6 +811,18 @@ public sealed partial class MainPage : Page
     private async void OnLayoutClicked(object sender, RoutedEventArgs args)
     {
         await RelayoutAndFitAsync();
+    }
+
+    private async void OnExportWorkspaceGraphClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is not FrameworkElement { Tag: string tag } ||
+            !Enum.TryParse<WorkspaceGraphExportFormat>(tag, ignoreCase: true, out var format))
+        {
+            ViewModel.ReportInteractionError("Unknown graph export format");
+            return;
+        }
+
+        await ExportWorkspaceGraphAsync(format);
     }
 
     private void OnCancelClicked(object sender, RoutedEventArgs args)
@@ -569,12 +989,80 @@ public sealed partial class MainPage : Page
                 : ViewModels.FileDiffDisplayMode.DiffOnly);
     }
 
+    private void OnFileDiffScopeModeClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is not FrameworkElement { DataContext: ViewModels.WorkspaceTabViewModel tab, Tag: string mode })
+        {
+            return;
+        }
+
+        ViewModel.SetFileDiffScopeMode(
+            tab,
+            string.Equals(mode, "FullFileDiff", StringComparison.Ordinal)
+                ? ViewModels.FileDiffScopeMode.FullFileDiff
+                : ViewModels.FileDiffScopeMode.Changes);
+    }
+
+    private void OnFileDiffAnnotationToggleClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is ToggleButton { DataContext: ViewModels.WorkspaceTabViewModel tab } toggle)
+        {
+            ViewModel.SetFileDiffAnnotationVisibility(tab, toggle.IsChecked == true);
+        }
+    }
+
+    private async void OnFileDiffOpenBlameClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.WorkspaceTabViewModel { FileDiff: { } fileDiff } })
+        {
+            await ViewModel.OpenBlameTabAsync(fileDiff.DocumentId);
+        }
+    }
+
+    private void OnFileDiffDecreaseFontSizeClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { DataContext: ViewModels.WorkspaceTabViewModel { FileDiff: { } fileDiff } })
+        {
+            fileDiff.DecreaseCodeFontSize();
+        }
+    }
+
+    private void OnFileDiffIncreaseFontSizeClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { DataContext: ViewModels.WorkspaceTabViewModel { FileDiff: { } fileDiff } })
+        {
+            fileDiff.IncreaseCodeFontSize();
+        }
+    }
+
+    private void OnFileDiffFontSizeSelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (sender is ComboBox { SelectedItem: double size, DataContext: ViewModels.WorkspaceTabViewModel { FileDiff: { } fileDiff } })
+        {
+            fileDiff.SetCodeFontSize(size);
+        }
+    }
+
     private void OnBlameTimelineToggleClicked(object sender, RoutedEventArgs args)
     {
         if (sender is FrameworkElement { Tag: ViewModels.WorkspaceTabViewModel tab })
         {
             ViewModel.ToggleBlameTimeline(tab);
         }
+    }
+
+    private void OnBlameDisplayModeClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is not FrameworkElement { DataContext: ViewModels.WorkspaceTabViewModel tab, Tag: string mode })
+        {
+            return;
+        }
+
+        ViewModel.SetBlameDisplayMode(
+            tab,
+            string.Equals(mode, "ChangeGraph", StringComparison.Ordinal)
+                ? ViewModels.BlameDisplayMode.ChangeGraph
+                : ViewModels.BlameDisplayMode.CommitTimeline);
     }
 
     private async void OnGitHistoryContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
@@ -795,6 +1283,14 @@ public sealed partial class MainPage : Page
             menu.Items.Add(openBlameItem);
         }
 
+        var openSymbolsItem = new MenuFlyoutItem
+        {
+            Text = item.IsFile ? "Open semantic map" : "Open folder semantic map",
+            Tag = item
+        };
+        openSymbolsItem.Click += OnExplorerNodeOpenSymbolsGraphClicked;
+        menu.Items.Add(openSymbolsItem);
+
         menu.ShowAt(element, new FlyoutShowOptions { Position = args.GetPosition(element) });
         args.Handled = true;
     }
@@ -820,6 +1316,14 @@ public sealed partial class MainPage : Page
         if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
         {
             await ViewModel.OpenBlameTabAsync(item);
+        }
+    }
+
+    private void OnExplorerNodeOpenSymbolsGraphClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
+        {
+            ViewModel.OpenSemanticMapForExplorerNode(item);
         }
     }
 
@@ -940,6 +1444,11 @@ public sealed partial class MainPage : Page
         await ViewModel.OpenBlameTabAsync(args.DocumentId);
     }
 
+    private void OnDiffCanvasNodeSymbolGraphRequested(object? sender, Views.DiffCanvasNodeSymbolGraphRequestedEventArgs args)
+    {
+        ViewModel.OpenSemanticMapForDocumentId(args.DocumentId);
+    }
+
     private async void OnDiffCanvasAnnotationInteractionRequested(object? sender, Views.DiffCanvasAnnotationInteractionRequestedEventArgs args)
     {
         if (args.Annotation.Kind == DiffAnnotationKind.HistoryBlame)
@@ -980,6 +1489,56 @@ public sealed partial class MainPage : Page
         if (sender is FrameworkElement { Tag: ViewModels.SemanticSymbolDocumentFacetViewModel facet })
         {
             FocusCanvas(ViewModel.SetSymbolDocumentFilter(facet));
+        }
+    }
+
+    private void OnOpenFilteredSymbolGraphClicked(object sender, RoutedEventArgs args)
+    {
+        ViewModel.OpenSymbolGraphFromCurrentFilters();
+    }
+
+    private void OnOpenFilteredSemanticMapClicked(object sender, RoutedEventArgs args)
+    {
+        ViewModel.OpenSemanticMapFromCurrentFilters();
+    }
+
+    private void OnSemanticItemOpenSymbolGraphClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.SemanticNavigationItemViewModel item })
+        {
+            ViewModel.OpenSymbolGraphForSymbol(item);
+        }
+    }
+
+    private void OnSemanticItemOpenSemanticMapClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.SemanticNavigationItemViewModel item })
+        {
+            ViewModel.OpenSemanticMapForSymbol(item);
+        }
+    }
+
+    private void OnSymbolDocumentFacetOpenGraphClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.SemanticSymbolDocumentFacetViewModel facet })
+        {
+            ViewModel.OpenSymbolGraphForDocumentFacet(facet);
+        }
+    }
+
+    private void OnSymbolDocumentFacetOpenMapClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.SemanticSymbolDocumentFacetViewModel facet })
+        {
+            ViewModel.OpenSemanticMapForDocumentFacet(facet);
+        }
+    }
+
+    private void OnSymbolGraphResetFiltersClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { DataContext: ViewModels.WorkspaceTabViewModel { SymbolGraph: { } symbolGraph } })
+        {
+            symbolGraph.ResetFilters();
         }
     }
 
