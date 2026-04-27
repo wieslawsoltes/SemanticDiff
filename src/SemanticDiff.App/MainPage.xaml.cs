@@ -1043,6 +1043,78 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private void OnFileViewerLineContextRequested(object? sender, Views.CodeFileLineContextRequestedEventArgs args)
+    {
+        if (sender is not FrameworkElement { DataContext: ViewModels.WorkspaceTabViewModel { FileDiff: { } fileDiff } } element)
+        {
+            return;
+        }
+
+        var documentId = fileDiff.DocumentId;
+        var symbol = ViewModel.FindSemanticItemForLineContext(documentId, args.LineNumber, args.SymbolText);
+        var menu = new MenuFlyout();
+
+        var focusLineItem = new MenuFlyoutItem { Text = $"Focus line {args.LineNumber} in graph" };
+        focusLineItem.Click += (_, _) => FocusCanvas(new ViewModels.FocusRequest(documentId, args.LineNumber));
+        menu.Items.Add(focusLineItem);
+
+        var revealFileItem = new MenuFlyoutItem { Text = "Reveal file in Files" };
+        revealFileItem.Click += (_, _) => ViewModel.RevealDocumentInExplorer(documentId);
+        menu.Items.Add(revealFileItem);
+
+        var mapFileItem = new MenuFlyoutItem { Text = "Open file semantic map" };
+        mapFileItem.Click += (_, _) => ViewModel.OpenSemanticMapForDocumentId(documentId);
+        menu.Items.Add(mapFileItem);
+
+        var graphFileItem = new MenuFlyoutItem { Text = "Open file symbol graph" };
+        graphFileItem.Click += (_, _) => ViewModel.OpenSymbolGraphForDocumentId(documentId);
+        menu.Items.Add(graphFileItem);
+
+        if (symbol is not null)
+        {
+            menu.Items.Add(new MenuFlyoutSeparator());
+
+            var symbolLabel = TrimMenuText(symbol.DisplayName);
+            var focusSymbolItem = new MenuFlyoutItem { Text = $"Focus symbol {symbolLabel}" };
+            focusSymbolItem.Click += (_, _) => FocusCanvas(ViewModel.FocusSemanticItem(symbol));
+            menu.Items.Add(focusSymbolItem);
+
+            var mapSymbolItem = new MenuFlyoutItem { Text = $"Open map for {symbolLabel}" };
+            mapSymbolItem.Click += (_, _) => ViewModel.OpenSemanticMapForSymbol(symbol);
+            menu.Items.Add(mapSymbolItem);
+
+            var graphSymbolItem = new MenuFlyoutItem { Text = $"Open symbol graph for {symbolLabel}" };
+            graphSymbolItem.Click += (_, _) => ViewModel.OpenSymbolGraphForSymbol(symbol);
+            menu.Items.Add(graphSymbolItem);
+        }
+
+        menu.Items.Add(new MenuFlyoutSeparator());
+
+        var diffTabItem = new MenuFlyoutItem { Text = "Open diff tab" };
+        diffTabItem.Click += async (_, _) => await ViewModel.OpenFileDiffTabAsync(documentId, ViewModels.FileDiffDisplayMode.DiffOnly);
+        menu.Items.Add(diffTabItem);
+
+        var fullFileItem = new MenuFlyoutItem { Text = "Open full file tab" };
+        fullFileItem.Click += async (_, _) => await ViewModel.OpenFileDiffTabAsync(documentId, ViewModels.FileDiffDisplayMode.FullFile);
+        menu.Items.Add(fullFileItem);
+
+        var blameItem = new MenuFlyoutItem { Text = "Open blame tab" };
+        blameItem.Click += async (_, _) => await ViewModel.OpenBlameTabAsync(documentId);
+        menu.Items.Add(blameItem);
+
+        var copyLineItem = new MenuFlyoutItem { Text = "Copy line text" };
+        copyLineItem.Click += (_, _) =>
+        {
+            var package = new DataPackage();
+            package.SetText(args.Line.Text);
+            Clipboard.SetContent(package);
+            ViewModel.ReportInteractionInfo($"Copied line {args.LineNumber}");
+        };
+        menu.Items.Add(copyLineItem);
+
+        menu.ShowAt(element, new FlyoutShowOptions { Position = args.Position });
+    }
+
     private void OnBlameTimelineToggleClicked(object sender, RoutedEventArgs args)
     {
         if (sender is FrameworkElement { Tag: ViewModels.WorkspaceTabViewModel tab })
@@ -1560,6 +1632,16 @@ public sealed partial class MainPage : Page
         {
             ViewModel.ReportInteractionError($"Could not focus {focusRequest.DocumentId}");
         }
+    }
+
+    private static string TrimMenuText(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "symbol";
+        }
+
+        return value.Length <= 42 ? value : $"{value[..18]}...{value[^18..]}";
     }
 
     private static void KeepSelectedToggleChecked(object sender)

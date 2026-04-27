@@ -99,6 +99,7 @@ public sealed class CodeFileViewerControl : Grid
         PointerCaptureLost += OnPointerReleased;
         PointerWheelChanged += OnPointerWheelChanged;
         PointerExited += OnPointerExited;
+        RightTapped += OnRightTapped;
         Loaded += (_, _) => RequestDeferredRender();
         SizeChanged += (_, _) =>
         {
@@ -151,6 +152,8 @@ public sealed class CodeFileViewerControl : Grid
         get => GetValue(RefreshKeyProperty);
         set => SetValue(RefreshKeyProperty, value);
     }
+
+    public event EventHandler<CodeFileLineContextRequestedEventArgs>? LineContextRequested;
 
     private float EffectiveFontSize => (float)Math.Clamp(CodeFontSize, MinimumCodeFontSize, MaximumCodeFontSize);
 
@@ -409,6 +412,30 @@ public sealed class CodeFileViewerControl : Grid
             hoveredFoldStartLine = null;
             RequestRender();
         }
+    }
+
+    private void OnRightTapped(object sender, RightTappedRoutedEventArgs args)
+    {
+        var position = args.GetPosition(this);
+        var point = ToCanvasPoint(position);
+        if (!TryHitTestLine(point, out var line, out var rowIndex, out var column))
+        {
+            return;
+        }
+
+        var lineNumber = line.NewLineNumber ?? line.OldLineNumber ?? line.Index + 1;
+        var symbolText = column >= 0 ? GetSymbolTextAtColumn(line, column) : string.Empty;
+        LineContextRequested?.Invoke(
+            this,
+            new CodeFileLineContextRequestedEventArgs(
+                line,
+                rowIndex,
+                lineNumber,
+                column,
+                symbolText,
+                position,
+                IsDiffMode));
+        args.Handled = true;
     }
 
     private void DragScrollbar(double pointerY)
@@ -744,6 +771,43 @@ public sealed class CodeFileViewerControl : Grid
         return true;
     }
 
+    private bool TryHitTestLine(Point2 point, out DiffLine line, out int rowIndex, out int column)
+    {
+        EnsureVisibleRows();
+        line = default!;
+        rowIndex = -1;
+        column = 0;
+        var lines = GetLines();
+        if (visibleRows.Length == 0 || lines.Count == 0)
+        {
+            return false;
+        }
+
+        rowIndex = (int)Math.Floor((scrollOffsetY + point.Y - TopPadding) / LineHeight);
+        if (rowIndex < 0 || rowIndex >= visibleRows.Length)
+        {
+            return false;
+        }
+
+        var row = visibleRows[rowIndex];
+        if (row.LineIndex < 0 || row.LineIndex >= lines.Count)
+        {
+            return false;
+        }
+
+        using var font = new SKFont(typeface, EffectiveFontSize);
+        using var paint = CreateTextPaint(SKColors.Black);
+        var charWidth = Math.Max(1, font.MeasureText("M", paint));
+        var gutterWidth = CalculateGutterWidth(charWidth, lines);
+        line = lines[row.LineIndex];
+        var textOffset = (float)(point.X - gutterWidth - TextPadding);
+        var lineTextWidth = GetVisualColumn(line.Text, line.Text.Length) * charWidth;
+        column = textOffset >= 0 && textOffset <= lineTextWidth
+            ? GetSourceColumnFromVisualOffset(line.Text, textOffset, charWidth)
+            : -1;
+        return true;
+    }
+
     private bool TryGetSelectionRange(out CodeTextPosition start, out CodeTextPosition end)
     {
         start = default;
@@ -939,6 +1003,53 @@ public sealed class CodeFileViewerControl : Grid
         return text.Length;
     }
 
+    private static string GetSymbolTextAtColumn(DiffLine line, int column)
+    {
+        var text = line.Text;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        if (!line.Tokens.IsDefaultOrEmpty)
+        {
+            var token = line.Tokens
+                .OrderBy(token => token.StartColumn)
+                .LastOrDefault(token => column >= token.StartColumn && column < token.StartColumn + token.Length);
+            if (token is { Length: > 0 })
+            {
+                var start = Math.Clamp(token.StartColumn, 0, text.Length);
+                var end = Math.Clamp(token.StartColumn + token.Length, start, text.Length);
+                var tokenText = TrimSymbolText(text[start..end]);
+                if (!string.IsNullOrWhiteSpace(tokenText))
+                {
+                    return tokenText;
+                }
+            }
+        }
+
+        var boundedColumn = Math.Clamp(column, 0, text.Length);
+        var startIndex = boundedColumn;
+        while (startIndex > 0 && IsSymbolTextCharacter(text[startIndex - 1]))
+        {
+            startIndex--;
+        }
+
+        var endIndex = boundedColumn;
+        while (endIndex < text.Length && IsSymbolTextCharacter(text[endIndex]))
+        {
+            endIndex++;
+        }
+
+        return startIndex >= endIndex ? string.Empty : TrimSymbolText(text[startIndex..endIndex]);
+    }
+
+    private static bool IsSymbolTextCharacter(char character) =>
+        char.IsLetterOrDigit(character) || character is '_' or '.' or ':' or '<' or '>';
+
+    private static string TrimSymbolText(string value) =>
+        value.Trim().Trim('.', ':', ';', ',', '(', ')', '[', ']', '{', '}', '<', '>', '"', '\'', '/', '\\');
+
     private static SKPaint CreateTextPaint(SKColor color) => new()
     {
         Color = color,
@@ -1126,4 +1237,39 @@ public sealed class CodeFileViewerControl : Grid
                 new SKColor(82, 96, 114),
                 new SKColor(122, 140, 162));
     }
+}
+
+public sealed class CodeFileLineContextRequestedEventArgs : EventArgs
+{
+    public CodeFileLineContextRequestedEventArgs(
+        DiffLine line,
+        int rowIndex,
+        int lineNumber,
+        int column,
+        string symbolText,
+        Point position,
+        bool isDiffMode)
+    {
+        Line = line;
+        RowIndex = rowIndex;
+        LineNumber = lineNumber;
+        Column = column;
+        SymbolText = symbolText;
+        Position = position;
+        IsDiffMode = isDiffMode;
+    }
+
+    public DiffLine Line { get; }
+
+    public int RowIndex { get; }
+
+    public int LineNumber { get; }
+
+    public int Column { get; }
+
+    public string SymbolText { get; }
+
+    public Point Position { get; }
+
+    public bool IsDiffMode { get; }
 }

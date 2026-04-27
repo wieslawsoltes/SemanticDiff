@@ -2003,6 +2003,85 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         return new FocusRequest(item.DocumentId, item.Line);
     }
 
+    public SemanticNavigationItemViewModel? FindSemanticItemForLineContext(string documentId, int? lineNumber, string? symbolText)
+    {
+        if (string.IsNullOrWhiteSpace(documentId))
+        {
+            return null;
+        }
+
+        var sourceDocumentId = ResolveSourceDocumentId(documentId);
+        var documentItems = allSemanticNavigationItems
+            .Where(item => string.Equals(item.DocumentId.Value, sourceDocumentId, StringComparison.Ordinal))
+            .ToArray();
+        if (documentItems.Length == 0)
+        {
+            return null;
+        }
+
+        var normalizedSymbol = NormalizeSymbolSearchText(symbolText);
+        IEnumerable<SemanticNavigationItem> candidates = documentItems;
+        if (lineNumber is > 0)
+        {
+            var exactLine = documentItems
+                .Where(item => item.Line == lineNumber.Value)
+                .ToArray();
+            if (exactLine.Length > 0)
+            {
+                return SemanticNavigationItemViewModel.FromItem(ChooseSemanticLineCandidate(exactLine, normalizedSymbol, lineNumber.Value));
+            }
+
+            if (!string.IsNullOrWhiteSpace(normalizedSymbol))
+            {
+                var nearby = documentItems
+                    .Where(item => Math.Abs(item.Line - lineNumber.Value) <= 2 && SymbolNameMatches(item.DisplayName, normalizedSymbol))
+                    .ToArray();
+                if (nearby.Length > 0)
+                {
+                    return SemanticNavigationItemViewModel.FromItem(ChooseSemanticLineCandidate(nearby, normalizedSymbol, lineNumber.Value));
+                }
+            }
+
+            candidates = documentItems
+                .Where(item => item.Line <= lineNumber.Value)
+                .OrderByDescending(item => item.Line)
+                .Take(12);
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedSymbol))
+        {
+            var sameDocumentMatch = documentItems
+                .Where(item => SymbolNameMatches(item.DisplayName, normalizedSymbol))
+                .ToArray();
+            if (sameDocumentMatch.Length > 0)
+            {
+                return SemanticNavigationItemViewModel.FromItem(ChooseSemanticLineCandidate(sameDocumentMatch, normalizedSymbol, lineNumber));
+            }
+
+            var globalMatch = ChooseGlobalSymbolCandidate(allSemanticNavigationItems, normalizedSymbol);
+            if (globalMatch is not null)
+            {
+                return SemanticNavigationItemViewModel.FromItem(globalMatch);
+            }
+        }
+
+        var fallbackCandidates = candidates.ToArray();
+        if (fallbackCandidates.Length == 0 && lineNumber is > 0)
+        {
+            fallbackCandidates = documentItems
+                .OrderBy(item => Math.Abs(item.Line - lineNumber.Value))
+                .Take(12)
+                .ToArray();
+        }
+
+        var fallback = fallbackCandidates
+            .OrderByDescending(item => item.IsChanged)
+            .ThenByDescending(item => item.IsLinked)
+            .ThenByDescending(item => item.IncidentEdgeCount)
+            .FirstOrDefault();
+        return fallback is null ? null : SemanticNavigationItemViewModel.FromItem(fallback);
+    }
+
     public void OpenSymbolGraphFromCurrentFilters()
     {
         OpenSymbolGraphTab(
@@ -2311,6 +2390,80 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     private static string CreateSymbolGraphTabId(string scopeKey, SymbolGraphViewMode viewMode) =>
         $"symbols:{viewMode}:{((uint)scopeKey.GetHashCode(StringComparison.Ordinal)).ToString("x8", System.Globalization.CultureInfo.InvariantCulture)}";
+
+    private static SemanticNavigationItem ChooseSemanticLineCandidate(IEnumerable<SemanticNavigationItem> candidates, string normalizedSymbol, int? lineNumber)
+    {
+        return candidates
+            .OrderByDescending(item => !string.IsNullOrWhiteSpace(normalizedSymbol) && SymbolNameMatches(item.DisplayName, normalizedSymbol))
+            .ThenBy(item => lineNumber is > 0 ? Math.Abs(item.Line - lineNumber.Value) : 0)
+            .ThenByDescending(item => item.IsChanged)
+            .ThenByDescending(item => item.IsLinked)
+            .ThenByDescending(item => item.IncidentEdgeCount)
+            .First();
+    }
+
+    private static string NormalizeSymbolSearchText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var normalized = value.Trim().Trim('.', ':', ';', ',', '(', ')', '[', ']', '{', '}', '<', '>', '"', '\'', '/', '\\');
+        var genericIndex = normalized.IndexOf('<', StringComparison.Ordinal);
+        if (genericIndex > 0)
+        {
+            normalized = normalized[..genericIndex];
+        }
+
+        return normalized.Trim();
+    }
+
+    private static bool SymbolNameMatches(string displayName, string symbolText)
+    {
+        if (string.IsNullOrWhiteSpace(displayName) || string.IsNullOrWhiteSpace(symbolText) || symbolText.Length < 2)
+        {
+            return false;
+        }
+
+        var simpleName = GetSimpleSymbolName(displayName);
+        var simpleSymbol = GetSimpleSymbolName(symbolText);
+        return string.Equals(simpleName, simpleSymbol, StringComparison.OrdinalIgnoreCase) ||
+            displayName.EndsWith($".{simpleSymbol}", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(displayName, symbolText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static SemanticNavigationItem? ChooseGlobalSymbolCandidate(IEnumerable<SemanticNavigationItem> items, string symbolText)
+    {
+        if (string.IsNullOrWhiteSpace(symbolText) || symbolText.Length < 3)
+        {
+            return null;
+        }
+
+        var exactMatches = items
+            .Where(item => string.Equals(item.DisplayName, symbolText, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (exactMatches.Length > 0)
+        {
+            return ChooseSemanticLineCandidate(exactMatches, symbolText, null);
+        }
+
+        var simpleSymbol = GetSimpleSymbolName(symbolText);
+        var simpleMatches = items
+            .Where(item => string.Equals(GetSimpleSymbolName(item.DisplayName), simpleSymbol, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        return simpleMatches.Length == 1
+            ? simpleMatches[0]
+            : null;
+    }
+
+    private static string GetSimpleSymbolName(string value)
+    {
+        var separators = new[] { '.', ':', '/', '\\' };
+        var trimmed = value.Trim();
+        var index = trimmed.LastIndexOfAny(separators);
+        return index >= 0 && index + 1 < trimmed.Length ? trimmed[(index + 1)..] : trimmed;
+    }
 
     private static string ShortenTitle(string value)
     {

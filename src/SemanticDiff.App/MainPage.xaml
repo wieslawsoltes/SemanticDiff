@@ -504,7 +504,8 @@
                                            IsDiffMode="True"
                                            ShowDiffAnnotations="{Binding FileDiff.IsDiffAnnotationEnabled}"
                                            CodeFontSize="{Binding FileDiff.CodeFontSize, Mode=TwoWay}"
-                                           RefreshKey="{Binding FileDiff.RefreshKey}" />
+                                           RefreshKey="{Binding FileDiff.RefreshKey}"
+                                           LineContextRequested="OnFileViewerLineContextRequested" />
             </Grid>
             <Grid Visibility="{Binding FileDiff.FullFileVisibility}" RowDefinitions="Auto,*" Padding="14">
               <TextBlock Text="{Binding FileDiff.FullFileHeader}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" Margin="0,0,0,8" />
@@ -513,7 +514,8 @@
                                            FoldRegions="{Binding FileDiff.FoldRegions}"
                                            ShowDiffAnnotations="{Binding FileDiff.IsDiffAnnotationEnabled}"
                                            CodeFontSize="{Binding FileDiff.CodeFontSize, Mode=TwoWay}"
-                                           RefreshKey="{Binding FileDiff.RefreshKey}" />
+                                           RefreshKey="{Binding FileDiff.RefreshKey}"
+                                           LineContextRequested="OnFileViewerLineContextRequested" />
             </Grid>
           </Grid>
         </Grid>
