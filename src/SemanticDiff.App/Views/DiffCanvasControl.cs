@@ -14,6 +14,9 @@ namespace SemanticDiff.App.Views;
 
 public sealed class DiffCanvasControl : Grid
 {
+    private const double DefaultViewportWidth = 960;
+    private const double DefaultViewportHeight = 600;
+
     private enum ActiveInteraction
     {
         None,
@@ -67,6 +70,8 @@ public sealed class DiffCanvasControl : Grid
         ManipulationMode = ManipulationModes.None;
         canvas = new SKXamlCanvas
         {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
             IsHitTestVisible = false
         };
         canvas.PaintSurface += OnPaintSurface;
@@ -105,11 +110,36 @@ public sealed class DiffCanvasControl : Grid
         set => SetValue(IsLightThemeProperty, value);
     }
 
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        var measured = base.MeasureOverride(availableSize);
+        return new Size(
+            ResolveMeasuredLength(measured.Width, availableSize.Width, DefaultViewportWidth),
+            ResolveMeasuredLength(measured.Height, availableSize.Height, DefaultViewportHeight));
+    }
+
+    private static double ResolveMeasuredLength(double measured, double available, double fallback)
+    {
+        if (double.IsFinite(measured) && measured > 0)
+        {
+            return measured;
+        }
+
+        if (double.IsFinite(available) && available > 0)
+        {
+            return available;
+        }
+
+        return fallback;
+    }
+
     public event EventHandler<DiffCanvasNodeNavigationRequestedEventArgs>? NodeNavigationRequested;
 
     public event EventHandler<DiffCanvasNodeDiffTabRequestedEventArgs>? NodeDiffTabRequested;
 
     public event EventHandler<DiffCanvasNodeBlameTabRequestedEventArgs>? NodeBlameTabRequested;
+
+    public event EventHandler<DiffCanvasNodeSymbolGraphRequestedEventArgs>? NodeSymbolGraphRequested;
 
     public event EventHandler<DiffCanvasAnnotationInteractionRequestedEventArgs>? AnnotationInteractionRequested;
 
@@ -177,6 +207,18 @@ public sealed class DiffCanvasControl : Grid
         }
 
         NodeBlameTabRequested?.Invoke(this, new DiffCanvasNodeBlameTabRequestedEventArgs(node.Document.Id.Value));
+        return true;
+    }
+
+    public bool OpenSelectedNodeSymbolGraphTab()
+    {
+        var node = GetSelectedNode();
+        if (node is null)
+        {
+            return false;
+        }
+
+        NodeSymbolGraphRequested?.Invoke(this, new DiffCanvasNodeSymbolGraphRequestedEventArgs(node.Document.Id.Value));
         return true;
     }
 
@@ -506,6 +548,10 @@ public sealed class DiffCanvasControl : Grid
         openBlameItem.Click += (_, _) => NodeBlameTabRequested?.Invoke(this, new DiffCanvasNodeBlameTabRequestedEventArgs(node.Document.Id.Value));
         menu.Items.Add(openBlameItem);
 
+        var openSymbolsItem = new MenuFlyoutItem { Text = "Open semantic map" };
+        openSymbolsItem.Click += (_, _) => NodeSymbolGraphRequested?.Invoke(this, new DiffCanvasNodeSymbolGraphRequestedEventArgs(node.Document.Id.Value));
+        menu.Items.Add(openSymbolsItem);
+
         var fitItem = new MenuFlyoutItem { Text = "Focus node" };
         fitItem.Click += (_, _) =>
         {
@@ -826,6 +872,16 @@ public sealed class DiffCanvasNodeDiffTabRequestedEventArgs : EventArgs
 public sealed class DiffCanvasNodeBlameTabRequestedEventArgs : EventArgs
 {
     public DiffCanvasNodeBlameTabRequestedEventArgs(string documentId)
+    {
+        DocumentId = documentId;
+    }
+
+    public string DocumentId { get; }
+}
+
+public sealed class DiffCanvasNodeSymbolGraphRequestedEventArgs : EventArgs
+{
+    public DiffCanvasNodeSymbolGraphRequestedEventArgs(string documentId)
     {
         DocumentId = documentId;
     }

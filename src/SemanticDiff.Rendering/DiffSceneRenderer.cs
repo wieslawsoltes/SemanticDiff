@@ -225,14 +225,14 @@ public sealed class DiffSceneRenderer
             return;
         }
 
-        using var textStyle = CreateUiTextStyle(14, palette.TextColor, true);
+        using var textStyle = CreateUiTextStyle(18, palette.TextColor, true);
         foreach (var group in groups)
         {
             var color = GroupColor(group, palette);
             var labelPoint = camera.WorldToScreen(new Point2(group.Bounds.Left + 14, group.Bounds.Top + 9));
             var label = group.SummaryText;
-            var width = Math.Clamp(textStyle.Font.MeasureText(label, textStyle.Paint) + 26, 94, 340);
-            var rect = SKRect.Create((float)labelPoint.X, (float)labelPoint.Y, width, 28);
+            var width = Math.Clamp(textStyle.Font.MeasureText(label, textStyle.Paint) + 30, 104, 420);
+            var rect = SKRect.Create((float)labelPoint.X, (float)labelPoint.Y, width, 32);
             if (rect.Right < 0 || rect.Left > canvasSize.Width || rect.Bottom < 0 || rect.Top > canvasSize.Height)
             {
                 continue;
@@ -243,8 +243,8 @@ public sealed class DiffSceneRenderer
             using var accent = new SKPaint { Color = color.WithAlpha(220), Style = SKPaintStyle.Fill, IsAntialias = true };
             canvas.DrawRoundRect(rect, 5, 5, chipFill);
             canvas.DrawRoundRect(rect, 5, 5, chipStroke);
-            canvas.DrawRoundRect(SKRect.Create(rect.Left + 7, rect.Top + 7, 5, 14), 2.5f, 2.5f, accent);
-            canvas.DrawText(label, rect.Left + 18, rect.Top + 19, textStyle.Font, textStyle.Paint);
+            canvas.DrawRoundRect(SKRect.Create(rect.Left + 7, rect.Top + 7, 5, 18), 2.5f, 2.5f, accent);
+            canvas.DrawText(label, rect.Left + 18, rect.Top + 23, textStyle.Font, textStyle.Paint);
         }
     }
 
@@ -423,7 +423,7 @@ public sealed class DiffSceneRenderer
         var titleRect = SKRect.Create((float)node.Bounds.X, (float)node.Bounds.Y, (float)node.Bounds.Width, (float)DiffNode.TitleHeight);
         var statusColor = NodeStatusColor(node.Document.Metadata.Status, palette);
         using var paint = new SKPaint { Color = palette.TitleBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
-        using var textStyle = CreateUiTextStyle(13, palette.TextColor, true);
+        using var textStyle = CreateUiTextStyle(17, palette.TextColor, true);
         using var metaStyle = CreateUiTextStyle(11.5f, palette.MutedTextColor, false);
         using var statusPaint = new SKPaint { Color = statusColor, Style = SKPaintStyle.Fill, IsAntialias = true };
         using var statusTextStyle = CreateUiTextStyle(11, SKColors.White, true);
@@ -439,7 +439,7 @@ public sealed class DiffSceneRenderer
         var pathTextRight = GetTitlePathRightEdge(node, titleRect, cameraScale);
         var pathMaxWidth = Math.Max(0, pathTextRight - pathTextX);
         var pathText = MiddleEllipsizeText(node.Document.Metadata.Path, pathMaxWidth, textStyle.Font, textStyle.Paint);
-        canvas.DrawText(pathText, pathTextX, titleRect.Top + 20, textStyle.Font, textStyle.Paint);
+        canvas.DrawText(pathText, pathTextX, titleRect.Top + 23, textStyle.Font, textStyle.Paint);
         if (node.IsPinned)
         {
             canvas.DrawText("PIN", titleRect.Right - TitlePinnedLabelLeftInset, titleRect.Top + 20, metaStyle.Font, metaStyle.Paint);
