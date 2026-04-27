@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
+using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media;
 using SemanticDiff.Core;
 using SemanticDiff.Diff;
 using SemanticDiff.Git;
@@ -8,6 +10,7 @@ using SemanticDiff.Rendering;
 using SemanticDiff.Semantics;
 using SemanticDiff.Semantics.Roslyn;
 using SemanticDiff.Semantics.Xaml;
+using Windows.UI;
 
 namespace SemanticDiff.App.ViewModels;
 
@@ -16,26 +19,39 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly IAppStateStore appStateStore;
     private readonly IRepositoryFileWatcherFactory repositoryFileWatcherFactory;
     private readonly IGitReviewService gitReviewService;
+    private readonly IGitReviewDiscussionService gitReviewDiscussionService;
     private readonly IGitBlameService gitBlameService;
     private readonly IGitReferenceDiscoveryService gitReferenceDiscoveryService;
+    private readonly IGitHistoryService gitHistoryService;
     private readonly IReadOnlyList<IDiffAnnotationProvider> annotationProviders = [new BuiltInDiffAnnotationProvider()];
     private readonly LatestRequestGate repositoryLoadRequests = new();
     private readonly Dictionary<string, DiffViewCacheEntry> diffViewCache = new(StringComparer.Ordinal);
     private readonly Queue<string> diffViewCacheOrder = new();
     private readonly SynchronizationContext? synchronizationContext;
     private const int MaxCachedDiffViews = 12;
+    private const int GitHistoryPageSize = 200;
     private GraphLayoutResult? previousLayout;
     private ImmutableHashSet<DiffDocumentId> pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
     private ImmutableArray<DiffDocumentSnapshot> currentDocuments = [];
     private SemanticGraph currentSemanticGraph = SemanticGraph.Empty;
     private ImmutableArray<ExplorerItemViewModel> allExplorerItems = [];
     private ImmutableHashSet<string> collapsedExplorerNodePaths = ImmutableHashSet<string>.Empty;
+    private ImmutableHashSet<string> collapsedGitReferenceNodeIds = ImmutableHashSet<string>.Empty;
     private ImmutableArray<SemanticNavigationItem> allSemanticNavigationItems = [];
+    private SemanticSymbolInsightSummary currentSymbolInsight = SemanticSymbolInsightSummary.Empty;
+    private string selectedSymbolScopeFilter = SymbolScopeFilterViewModel.AllKey;
+    private string selectedSymbolKindFilter = SymbolFilterAll;
+    private string selectedSymbolDocumentFilter = SymbolFilterAll;
     private ImmutableArray<DiffChangeNavigationItem> changeNavigationItems = [];
     private int currentChangeNavigationIndex = -1;
     private string currentStatusPrefix = "sample fallback";
     private string? currentRepositoryPath;
     private GitDiffSnapshot? currentGitSnapshot;
+    private ImmutableArray<GitBranchOptionViewModel> allBranchOptions = [];
+    private ImmutableArray<GitPullRequestOptionViewModel> allPullRequestOptions = [];
+    private ImmutableArray<ReviewThreadItemViewModel> allReviewThreadItems = [];
+    private ImmutableArray<GitReviewThreadInfo> currentReviewThreads = [];
+    private GitReviewRequestKind currentReviewRequestKind = GitReviewRequestKind.PullRequest;
     private SemanticDiffAppState appState = new();
     private CancellationTokenSource? currentOperation;
     private CancellationTokenSource? currentSemanticRefinementOperation;
@@ -45,6 +61,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private ExplorerItemViewModel? selectedExplorerItem;
     private bool currentDocumentsAreRepositoryDocuments;
     private bool isUpdatingReferenceSelection;
+    private const string SymbolFilterAll = "All";
 
     public MainViewModel()
         : this(JsonAppStateStore.CreateDefault())
@@ -71,7 +88,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         IRepositoryFileWatcherFactory repositoryFileWatcherFactory,
         IGitReviewService gitReviewService,
         IGitBlameService gitBlameService)
-        : this(appStateStore, repositoryFileWatcherFactory, gitReviewService, gitBlameService, new GitReferenceDiscoveryService())
+        : this(appStateStore, repositoryFileWatcherFactory, gitReviewService, new GitReviewDiscussionService(), gitBlameService, new GitReferenceDiscoveryService(), new GitHistoryService())
     {
     }
 
@@ -79,21 +96,48 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         IAppStateStore appStateStore,
         IRepositoryFileWatcherFactory repositoryFileWatcherFactory,
         IGitReviewService gitReviewService,
+        IGitReviewDiscussionService gitReviewDiscussionService,
+        IGitBlameService gitBlameService)
+        : this(appStateStore, repositoryFileWatcherFactory, gitReviewService, gitReviewDiscussionService, gitBlameService, new GitReferenceDiscoveryService(), new GitHistoryService())
+    {
+    }
+
+    public MainViewModel(
+        IAppStateStore appStateStore,
+        IRepositoryFileWatcherFactory repositoryFileWatcherFactory,
+        IGitReviewService gitReviewService,
+        IGitReviewDiscussionService gitReviewDiscussionService,
         IGitBlameService gitBlameService,
-        IGitReferenceDiscoveryService gitReferenceDiscoveryService)
+        IGitReferenceDiscoveryService gitReferenceDiscoveryService,
+        IGitHistoryService gitHistoryService)
     {
         this.appStateStore = appStateStore;
         this.repositoryFileWatcherFactory = repositoryFileWatcherFactory;
         this.gitReviewService = gitReviewService;
+        this.gitReviewDiscussionService = gitReviewDiscussionService;
         this.gitBlameService = gitBlameService;
         this.gitReferenceDiscoveryService = gitReferenceDiscoveryService;
+        this.gitHistoryService = gitHistoryService;
         synchronizationContext = SynchronizationContext.Current;
+        WorkspaceTabs.Add(WorkspaceTabViewModel.Graph());
+        SelectedWorkspaceTab = WorkspaceTabs[0];
         InitializeSampleDocuments(SampleDiffDocuments.Create());
         _ = LoadRepositoryAsync(loadAppState: true, operationMessage: "Loading repository");
     }
 
+    public ObservableCollection<WorkspaceTabViewModel> WorkspaceTabs { get; } = [];
+
     [ObservableProperty]
     private DiffCanvasScene scene = DiffCanvasScene.FromDocuments([]);
+
+    [ObservableProperty]
+    private WorkspaceTabViewModel? selectedWorkspaceTab;
+
+    [ObservableProperty]
+    private Visibility graphWorkspaceVisibility = Visibility.Visible;
+
+    [ObservableProperty]
+    private Visibility auxiliaryWorkspaceVisibility = Visibility.Collapsed;
 
     [ObservableProperty]
     private ImmutableArray<ExplorerItemViewModel> explorerItems = [];
@@ -106,6 +150,18 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private int selectedRailTabIndex;
+
+    [ObservableProperty]
+    private string gitReferenceSearchText = string.Empty;
+
+    [ObservableProperty]
+    private ImmutableArray<GitReferenceTreeItemViewModel> gitReferenceTreeItems = [];
+
+    [ObservableProperty]
+    private GitReferenceTreeItemViewModel? selectedGitReferenceTreeItem;
+
+    [ObservableProperty]
+    private string gitReferenceCountText = "0 refs";
 
     [ObservableProperty]
     private string statusText = "Loading repository diff...";
@@ -163,6 +219,14 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private bool hasPullRequestOptions;
+
+    public ImmutableArray<ReviewRequestStateOptionViewModel> ReviewRequestStateOptions { get; } = ReviewRequestStateOptionViewModel.All;
+
+    [ObservableProperty]
+    private ReviewRequestStateOptionViewModel selectedReviewRequestStateOption = ReviewRequestStateOptionViewModel.All[0];
+
+    [ObservableProperty]
+    private string reviewRequestStateText = "Open";
 
     [ObservableProperty]
     private Visibility pullRequestSelectorVisibility = Visibility.Collapsed;
@@ -247,10 +311,10 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private bool isSemanticFastModeSelected;
 
     [ObservableProperty]
-    private string visualizationButtonText = "Visuals 7/7";
+    private string visualizationButtonText = "Visuals 8/8";
 
     [ObservableProperty]
-    private string visualizationSummaryText = "Visual layers 7/7";
+    private string visualizationSummaryText = "Visual layers 8/8";
 
     [ObservableProperty]
     private bool isGitVisualizationEnabled = true;
@@ -263,6 +327,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private bool isReviewVisualizationEnabled = true;
+
+    [ObservableProperty]
+    private bool isReviewCommentVisualizationEnabled = true;
 
     [ObservableProperty]
     private bool isHistoryVisualizationEnabled = true;
@@ -286,6 +353,24 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private string symbolCountText = "0 symbols";
 
     [ObservableProperty]
+    private string symbolInsightSummaryText = "No symbol insight";
+
+    [ObservableProperty]
+    private string symbolFilterStatusText = "All symbols";
+
+    [ObservableProperty]
+    private ImmutableArray<SymbolScopeFilterViewModel> symbolScopeFilters = [];
+
+    [ObservableProperty]
+    private ImmutableArray<SemanticSymbolKindFacetViewModel> symbolKindFacets = [];
+
+    [ObservableProperty]
+    private ImmutableArray<SemanticSymbolDocumentFacetViewModel> symbolDocumentFacets = [];
+
+    [ObservableProperty]
+    private ImmutableArray<SemanticNavigationItemViewModel> hotSemanticItems = [];
+
+    [ObservableProperty]
     private string impactSummaryText = "Impact 0 symbols";
 
     [ObservableProperty]
@@ -305,6 +390,42 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private string reviewActionStatusText = "No file selected";
+
+    [ObservableProperty]
+    private string reviewSearchText = string.Empty;
+
+    [ObservableProperty]
+    private ImmutableArray<ReviewThreadItemViewModel> reviewThreadItems = [];
+
+    [ObservableProperty]
+    private ReviewThreadItemViewModel? selectedReviewThreadItem;
+
+    [ObservableProperty]
+    private ImmutableArray<ReviewCommentItemViewModel> selectedReviewComments = [];
+
+    [ObservableProperty]
+    private string reviewThreadCountText = "0 threads";
+
+    [ObservableProperty]
+    private string reviewPanelStatusText = "Select a PR or MR";
+
+    [ObservableProperty]
+    private string reviewCommentText = string.Empty;
+
+    [ObservableProperty]
+    private bool hasSelectedReviewThread;
+
+    [ObservableProperty]
+    private bool canNavigateToSelectedReviewThread;
+
+    [ObservableProperty]
+    private bool canReplyToSelectedReviewThread;
+
+    [ObservableProperty]
+    private bool canResolveSelectedReviewThread;
+
+    [ObservableProperty]
+    private string reviewResolveButtonText = "Resolve";
 
     [ObservableProperty]
     private string blameSummaryText = "Blame unavailable";
@@ -427,6 +548,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         ApplyAppStateToPresentation();
         await SaveOptionsAsync(CancellationToken.None);
         AddDiagnostic("Info", $"Diff scope changed to {diffScope}");
+        ClearReviewDiscussion("Select a PR or MR");
         await LoadRepositoryAsync(loadAppState: false, operationMessage: $"Loading {diffScope} diff");
     }
 
@@ -434,8 +556,10 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         var baseRef = NormalizeRef(BaseRefText);
         var headRef = NormalizeRef(HeadRefText);
+        var nextScope = IsRangeScopeSelected ? GitDiffScope.CommitRange : appState.DiffScope;
         if (string.Equals(appState.BaseRef, baseRef, StringComparison.Ordinal) &&
-            string.Equals(appState.HeadRef, headRef, StringComparison.Ordinal))
+            string.Equals(appState.HeadRef, headRef, StringComparison.Ordinal) &&
+            appState.DiffScope == nextScope)
         {
             await SaveOptionsAsync(CancellationToken.None);
             return;
@@ -444,6 +568,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         CacheCurrentDiffView();
         appState = appState with
         {
+            DiffScope = nextScope,
             BaseRef = baseRef,
             HeadRef = headRef,
             SelectedBranchRef = null,
@@ -455,6 +580,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         ApplyAppStateToPresentation();
         await SaveOptionsAsync(CancellationToken.None);
         AddDiagnostic("Info", $"Reference range changed to {FormatReferenceText(appState)}");
+        ClearReviewDiscussion("Select a PR or MR");
         RefreshSceneAnnotations();
 
         if (appState.DiffScope is GitDiffScope.Branch or GitDiffScope.CommitRange or GitDiffScope.Custom)
@@ -493,6 +619,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         ApplyAppStateToPresentation();
         await SaveOptionsAsync(CancellationToken.None);
         AddDiagnostic("Info", $"Branch view changed to {option.ReferenceName}");
+        ClearReviewDiscussion("Select a PR or MR");
         await LoadRepositoryAsync(loadAppState: false, operationMessage: $"Loading branch {option.ReferenceName}");
     }
 
@@ -509,14 +636,14 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         }
 
         CacheCurrentDiffView();
-        var operation = BeginOperation($"Preparing PR #{option.Number}");
+        var operation = BeginOperation($"Preparing {option.KindText} {option.NumberText}");
         try
         {
             var headRef = await gitReferenceDiscoveryService.EnsurePullRequestHeadAsync(currentRepositoryPath, option.ToPullRequestInfo(), operation.Token);
             if (string.IsNullOrWhiteSpace(headRef))
             {
-                CompleteOperation(operation, "PR unavailable");
-                AddDiagnostic("Warning", $"Unable to fetch PR #{option.Number}");
+                CompleteOperation(operation, $"{option.KindText} unavailable");
+                AddDiagnostic("Warning", $"Unable to fetch {option.KindText} {option.NumberText}");
                 ApplyReferenceSelectionsToPresentation();
                 return;
             }
@@ -534,17 +661,18 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
             ApplyAppStateToPresentation();
             await SaveOptionsAsync(operation.Token);
-            AddDiagnostic("Info", $"PR view changed to #{option.Number}");
-            CompleteOperation(operation, "PR ready");
-            await LoadRepositoryAsync(loadAppState: false, operationMessage: $"Loading PR #{option.Number}");
+            AddDiagnostic("Info", $"{option.KindText} view changed to {option.NumberText}");
+            CompleteOperation(operation, $"{option.KindText} ready");
+            await LoadRepositoryAsync(loadAppState: false, operationMessage: $"Loading {option.KindText} {option.NumberText}");
+            await RefreshReviewDiscussionAsync(CancellationToken.None);
         }
         catch (OperationCanceledException)
         {
-            CompleteOperation(operation, "PR selection canceled");
+            CompleteOperation(operation, $"{option.KindText} selection canceled");
         }
         catch (Exception exception)
         {
-            CompleteOperation(operation, "PR selection failed");
+            CompleteOperation(operation, $"{option.KindText} selection failed");
             AddDiagnostic("Error", exception.Message);
             ApplyReferenceSelectionsToPresentation();
         }
@@ -559,20 +687,28 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
-            ReferenceSelectorStatusText = "Loading branches";
-            var snapshot = await gitReferenceDiscoveryService.GetReferencesAsync(repositoryPath, cancellationToken);
+            ReferenceSelectorStatusText = $"Loading {FormatReviewRequestState(appState.ReviewRequestState)} review requests";
+            var snapshot = await gitReferenceDiscoveryService.GetReferencesAsync(repositoryPath, cancellationToken, appState.ReviewRequestState);
             if (!IsCurrentRepositoryRequest(repositoryRequestId))
             {
                 return;
             }
 
-            BranchOptions = snapshot.Branches.Select(GitBranchOptionViewModel.FromBranch).ToImmutableArray();
-            PullRequestOptions = snapshot.PullRequests.Select(GitPullRequestOptionViewModel.FromPullRequest).ToImmutableArray();
-            HasBranchOptions = !BranchOptions.IsDefaultOrEmpty;
-            HasPullRequestOptions = !PullRequestOptions.IsDefaultOrEmpty;
-            PullRequestSelectorVisibility = snapshot.IsGitHubRepository ? Visibility.Visible : Visibility.Collapsed;
+            allBranchOptions = snapshot.Branches.Select(GitBranchOptionViewModel.FromBranch).ToImmutableArray();
+            allPullRequestOptions = snapshot.PullRequests.Select(GitPullRequestOptionViewModel.FromPullRequest).ToImmutableArray();
+            currentReviewRequestKind = snapshot.ReviewRequestKind;
+            ApplyReferenceOptionFilters();
+            PullRequestSelectorVisibility = snapshot.SupportsReviewRequests ? Visibility.Visible : Visibility.Collapsed;
             ReferenceSelectorStatusText = snapshot.StatusMessage;
             ApplyReferenceSelectionsToPresentation();
+            if (SelectedPullRequestOption is null)
+            {
+                ClearReviewDiscussion(snapshot.SupportsReviewRequests ? "Select a PR or MR" : "Review workflow unavailable");
+            }
+            else
+            {
+                _ = RefreshReviewDiscussionAsync(CancellationToken.None);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -589,15 +725,514 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     private void ClearReferenceOptions(string status)
     {
+        allBranchOptions = [];
+        allPullRequestOptions = [];
+        currentReviewRequestKind = GitReviewRequestKind.PullRequest;
+        GitReferenceSearchText = string.Empty;
         BranchOptions = [];
         PullRequestOptions = [];
+        GitReferenceTreeItems = [];
+        SelectedGitReferenceTreeItem = null;
+        GitReferenceCountText = "0 refs";
         SelectedBranchOption = null;
         SelectedPullRequestOption = null;
         HasBranchOptions = false;
         HasPullRequestOptions = false;
         PullRequestSelectorVisibility = Visibility.Collapsed;
         ReferenceSelectorStatusText = status;
+        ClearReviewDiscussion("Select a PR or MR");
     }
+
+    partial void OnGitReferenceSearchTextChanged(string value) => ApplyReferenceOptionFilters();
+
+    partial void OnReviewSearchTextChanged(string value) => ApplyReviewThreadFilter();
+
+    partial void OnSelectedWorkspaceTabChanged(WorkspaceTabViewModel? value)
+    {
+        var isGraph = value?.Kind == WorkspaceTabKind.Graph;
+        GraphWorkspaceVisibility = isGraph ? Visibility.Visible : Visibility.Collapsed;
+        AuxiliaryWorkspaceVisibility = isGraph ? Visibility.Collapsed : Visibility.Visible;
+        if (isGraph && value is not null)
+        {
+            RestoreGraphWorkspaceState(value);
+        }
+    }
+
+    partial void OnSelectedWorkspaceTabChanging(WorkspaceTabViewModel? oldValue, WorkspaceTabViewModel? newValue)
+    {
+        if (!ReferenceEquals(oldValue, newValue))
+        {
+            CaptureGraphWorkspaceState(oldValue);
+        }
+    }
+
+    partial void OnSelectedReviewThreadItemChanged(ReviewThreadItemViewModel? value)
+    {
+        SelectedReviewComments = value?.Comments ?? [];
+        HasSelectedReviewThread = value is not null;
+        CanNavigateToSelectedReviewThread = !string.IsNullOrWhiteSpace(value?.Path);
+        CanReplyToSelectedReviewThread = value?.CanReply == true;
+        CanResolveSelectedReviewThread = value?.CanResolve == true;
+        ReviewResolveButtonText = value?.IsResolved == true ? "Reopen" : "Resolve";
+    }
+
+    private void ApplyReferenceOptionFilters()
+    {
+        BranchOptions = FilterReferenceOptions(allBranchOptions, GitReferenceSearchText, option => option.SearchText);
+        PullRequestOptions = FilterReferenceOptions(allPullRequestOptions, GitReferenceSearchText, option => option.SearchText);
+        HasBranchOptions = !allBranchOptions.IsDefaultOrEmpty;
+        HasPullRequestOptions = !allPullRequestOptions.IsDefaultOrEmpty;
+        BuildGitReferenceTree();
+        ApplyReferenceSelectionsToPresentation();
+    }
+
+    private void ClearReviewDiscussion(string status)
+    {
+        allReviewThreadItems = [];
+        currentReviewThreads = [];
+        ReviewSearchText = string.Empty;
+        ReviewThreadItems = [];
+        SelectedReviewThreadItem = null;
+        SelectedReviewComments = [];
+        ReviewCommentText = string.Empty;
+        ReviewThreadCountText = "0 threads";
+        ReviewPanelStatusText = status;
+        HasSelectedReviewThread = false;
+        CanNavigateToSelectedReviewThread = false;
+        CanReplyToSelectedReviewThread = false;
+        CanResolveSelectedReviewThread = false;
+        ReviewResolveButtonText = "Resolve";
+        RefreshSceneAnnotations();
+    }
+
+    private void ApplyReviewThreadFilter()
+    {
+        var query = ReviewSearchText.Trim();
+        ReviewThreadItems = string.IsNullOrWhiteSpace(query)
+            ? allReviewThreadItems
+            : allReviewThreadItems.Where(item => item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase)).ToImmutableArray();
+        ReviewThreadCountText = string.IsNullOrWhiteSpace(query)
+            ? FormatThreadCount(allReviewThreadItems.Length)
+            : $"{ReviewThreadItems.Length:N0}/{allReviewThreadItems.Length:N0} threads";
+
+        if (SelectedReviewThreadItem is not null && ReviewThreadItems.Any(item => string.Equals(item.Id, SelectedReviewThreadItem.Id, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        SelectedReviewThreadItem = ReviewThreadItems.FirstOrDefault();
+    }
+
+    public void ToggleGitReferenceNode(GitReferenceTreeItemViewModel? node)
+    {
+        if (node is null || !node.HasChildren)
+        {
+            return;
+        }
+
+        collapsedGitReferenceNodeIds = collapsedGitReferenceNodeIds.Contains(node.Id)
+            ? collapsedGitReferenceNodeIds.Remove(node.Id)
+            : collapsedGitReferenceNodeIds.Add(node.Id);
+        BuildGitReferenceTree();
+        ApplyReferenceSelectionsToPresentation();
+    }
+
+    public async Task SelectGitReferenceNodeAsync(GitReferenceTreeItemViewModel? node)
+    {
+        if (node is null)
+        {
+            return;
+        }
+
+        if (node.Branch is not null)
+        {
+            await SelectBranchAsync(node.Branch);
+            return;
+        }
+
+        if (node.PullRequest is not null)
+        {
+            await SelectPullRequestAsync(node.PullRequest);
+            return;
+        }
+
+        ToggleGitReferenceNode(node);
+    }
+
+    public async Task OpenGitHistoryTabAsync(GitReferenceTreeItemViewModel? node)
+    {
+        if (node?.Branch is null && node?.PullRequest is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            AddDiagnostic("Warning", "Open a repository before loading history");
+            return;
+        }
+
+        if (node.Branch is not null)
+        {
+            await OpenBranchHistoryTabAsync(node.Branch);
+            return;
+        }
+
+        if (node.PullRequest is not null)
+        {
+            await OpenPullRequestHistoryTabAsync(node.PullRequest);
+        }
+    }
+
+    public async Task OpenGitWorkspaceTabAsync(GitReferenceTreeItemViewModel? node)
+    {
+        if (node?.Branch is null && node?.PullRequest is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            AddDiagnostic("Warning", "Open a repository before opening a workspace tab");
+            return;
+        }
+
+        if (node.Branch is not null)
+        {
+            await OpenBranchWorkspaceTabAsync(node.Branch);
+            return;
+        }
+
+        if (node.PullRequest is not null)
+        {
+            await OpenPullRequestWorkspaceTabAsync(node.PullRequest);
+        }
+    }
+
+    private async Task OpenBranchWorkspaceTabAsync(GitBranchOptionViewModel branch)
+    {
+        var tabId = $"workspace:branch:{branch.ReferenceName}";
+        if (SelectWorkspaceTab(tabId))
+        {
+            return;
+        }
+
+        var request = new GitDiffRequest(currentRepositoryPath!, GitDiffScope.Branch, HeadRef: branch.ReferenceName);
+        var tab = WorkspaceTabViewModel.CreateGraphWorkspace(
+            tabId,
+            branch.ShortBranchName,
+            branch.ReferenceName,
+            request,
+            branch.ReferenceName,
+            null);
+        AddWorkspaceTab(tab);
+        tab.IsLoading = true;
+        tab.StatusText = $"Loading workspace for {branch.ReferenceName}";
+        try
+        {
+            await SelectBranchAsync(branch);
+            CaptureGraphWorkspaceState(tab);
+            tab.StatusText = StatusText;
+            AddDiagnostic("Info", $"Opened workspace tab for {branch.ReferenceName}");
+        }
+        finally
+        {
+            tab.IsLoading = false;
+        }
+    }
+
+    private async Task OpenPullRequestWorkspaceTabAsync(GitPullRequestOptionViewModel pullRequest)
+    {
+        var tabId = $"workspace:{pullRequest.KindText.ToLowerInvariant()}:{pullRequest.RemoteName}:{pullRequest.Number}";
+        if (SelectWorkspaceTab(tabId))
+        {
+            return;
+        }
+
+        var reviewRequest = pullRequest.ToPullRequestInfo();
+        var request = new GitDiffRequest(currentRepositoryPath!, GitDiffScope.Branch, pullRequest.BaseReferenceName, pullRequest.HeadRefName);
+        var tab = WorkspaceTabViewModel.CreateGraphWorkspace(
+            tabId,
+            $"{pullRequest.KindText} {pullRequest.NumberText}",
+            pullRequest.Title,
+            request,
+            null,
+            reviewRequest);
+        AddWorkspaceTab(tab);
+        tab.IsLoading = true;
+        tab.StatusText = $"Loading workspace for {pullRequest.KindText} {pullRequest.NumberText}";
+        try
+        {
+            await SelectPullRequestAsync(pullRequest);
+            CaptureGraphWorkspaceState(tab);
+            tab.StatusText = StatusText;
+            AddDiagnostic("Info", $"Opened workspace tab for {pullRequest.KindText} {pullRequest.NumberText}");
+        }
+        finally
+        {
+            tab.IsLoading = false;
+        }
+    }
+
+    private async Task OpenBranchHistoryTabAsync(GitBranchOptionViewModel branch)
+    {
+        var tabId = $"history:branch:{branch.ReferenceName}";
+        if (SelectWorkspaceTab(tabId))
+        {
+            return;
+        }
+
+        var tab = WorkspaceTabViewModel.CreateHistory(tabId, $"History {branch.ShortBranchName}", branch.ReferenceName);
+        tab.History = GitHistoryTimelineViewModel.Create(
+            branch.ReferenceName,
+            new GitHistoryRequest(currentRepositoryPath!, branch.ReferenceName, MaxCount: GitHistoryPageSize));
+        AddWorkspaceTab(tab);
+        var operation = BeginOperation($"Loading history for {branch.ReferenceName}");
+        try
+        {
+            await LoadGitHistoryPageAsync(tab, operation.Token);
+            AddDiagnostic("Info", $"Loaded history for {branch.ReferenceName}");
+            CompleteOperation(operation, "History ready");
+        }
+        catch (OperationCanceledException)
+        {
+            tab.StatusText = "History load canceled";
+            CompleteOperation(operation, "History canceled");
+        }
+        catch (Exception exception)
+        {
+            tab.StatusText = "History unavailable";
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "History failed");
+        }
+        finally
+        {
+            tab.IsLoading = false;
+        }
+    }
+
+    private async Task OpenPullRequestHistoryTabAsync(GitPullRequestOptionViewModel pullRequest)
+    {
+        var tabId = $"history:{pullRequest.KindText.ToLowerInvariant()}:{pullRequest.Number}";
+        if (SelectWorkspaceTab(tabId))
+        {
+            return;
+        }
+
+        var tab = WorkspaceTabViewModel.CreateHistory(tabId, $"History {pullRequest.NumberText}", pullRequest.Title);
+        AddWorkspaceTab(tab);
+        var operation = BeginOperation($"Loading history for {pullRequest.KindText} {pullRequest.NumberText}");
+        try
+        {
+            tab.IsLoading = true;
+            tab.StatusText = $"Preparing {pullRequest.KindText} head";
+            var headRef = await gitReferenceDiscoveryService.EnsurePullRequestHeadAsync(currentRepositoryPath!, pullRequest.ToPullRequestInfo(), operation.Token);
+            if (string.IsNullOrWhiteSpace(headRef))
+            {
+                tab.StatusText = $"{pullRequest.KindText} history unavailable";
+                CompleteOperation(operation, "History unavailable");
+                return;
+            }
+
+            tab.History = GitHistoryTimelineViewModel.Create(
+                $"{pullRequest.NumberText} {pullRequest.Title}",
+                new GitHistoryRequest(currentRepositoryPath!, headRef, pullRequest.BaseReferenceName, GitHistoryPageSize));
+            await LoadGitHistoryPageAsync(tab, operation.Token);
+            AddDiagnostic("Info", $"Loaded history for {pullRequest.KindText} {pullRequest.NumberText}");
+            CompleteOperation(operation, "History ready");
+        }
+        catch (OperationCanceledException)
+        {
+            tab.StatusText = "History load canceled";
+            CompleteOperation(operation, "History canceled");
+        }
+        catch (Exception exception)
+        {
+            tab.StatusText = "History unavailable";
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "History failed");
+        }
+        finally
+        {
+            tab.IsLoading = false;
+        }
+    }
+
+    public async Task LoadMoreGitHistoryAsync(WorkspaceTabViewModel? tab, GitHistoryItemViewModel? realizedItem)
+    {
+        var history = tab?.History;
+        if (tab is null || history is null || history.IsLoadingMore || !history.HasMore)
+        {
+            return;
+        }
+
+        if (realizedItem is not null)
+        {
+            var realizedIndex = history.Commits.IndexOf(realizedItem);
+            var loadThreshold = Math.Max(0, history.Commits.Count - 32);
+            if (realizedIndex >= 0 && realizedIndex < loadThreshold)
+            {
+                return;
+            }
+        }
+
+        var operation = BeginOperation($"Loading more history for {history.ReferenceText}");
+        try
+        {
+            await LoadGitHistoryPageAsync(tab, operation.Token);
+            CompleteOperation(operation, "History page loaded");
+        }
+        catch (OperationCanceledException)
+        {
+            tab.StatusText = "History load canceled";
+            CompleteOperation(operation, "History canceled");
+        }
+        catch (Exception exception)
+        {
+            tab.StatusText = "History page unavailable";
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "History failed");
+        }
+    }
+
+    private async Task LoadGitHistoryPageAsync(WorkspaceTabViewModel tab, CancellationToken cancellationToken)
+    {
+        var history = tab.History;
+        if (history is null || history.IsLoadingMore || !history.HasMore)
+        {
+            return;
+        }
+
+        history.IsLoadingMore = true;
+        tab.IsLoading = history.LoadedCount == 0;
+        tab.StatusText = history.LoadedCount == 0 ? "Loading Git history" : $"Loading more commits from {history.ReferenceText}";
+        try
+        {
+            var snapshot = await gitHistoryService.GetHistoryAsync(history.NextPageRequest, cancellationToken);
+            history.AppendSnapshot(snapshot);
+            tab.StatusText = history.CountText;
+        }
+        finally
+        {
+            history.IsLoadingMore = false;
+            tab.IsLoading = false;
+        }
+    }
+
+    private static ImmutableArray<TOption> FilterReferenceOptions<TOption>(
+        ImmutableArray<TOption> options,
+        string query,
+        Func<TOption, string> getSearchText)
+    {
+        var trimmedQuery = query.Trim();
+        return string.IsNullOrWhiteSpace(trimmedQuery)
+            ? options
+            : options.Where(option => getSearchText(option).Contains(trimmedQuery, StringComparison.OrdinalIgnoreCase)).ToImmutableArray();
+    }
+
+    private void BuildGitReferenceTree()
+    {
+        var query = GitReferenceSearchText.Trim();
+        var forceExpanded = !string.IsNullOrWhiteSpace(query);
+        var builder = ImmutableArray.CreateBuilder<GitReferenceTreeItemViewModel>();
+        var localBranches = BranchOptions
+            .Where(branch => !branch.IsRemote)
+            .ToImmutableArray();
+        var remoteBranchGroups = BranchOptions
+            .Where(branch => branch.IsRemote)
+            .GroupBy(branch => string.IsNullOrWhiteSpace(branch.RemoteName) ? "origin" : branch.RemoteName, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var remoteBranchCount = remoteBranchGroups.Sum(group => group.Count());
+
+        AddGroup(
+            builder,
+            GitReferenceTreeItemViewModel.Group("git:branches", "Branches", "Local branches", 0, localBranches.Length, IsGitGroupExpanded("git:branches", forceExpanded)),
+            () =>
+            {
+                foreach (var branch in localBranches.OrderByDescending(branch => branch.IsCurrent).ThenByDescending(branch => branch.IsDefault).ThenBy(branch => branch.ReferenceName, StringComparer.OrdinalIgnoreCase))
+                {
+                    builder.Add(GitReferenceTreeItemViewModel.BranchItem(branch, 1, IsSelectedBranch(branch)));
+                }
+            });
+
+        AddGroup(
+            builder,
+            GitReferenceTreeItemViewModel.Group("git:remotes", "Remotes", "Remote branches", 0, remoteBranchCount, IsGitGroupExpanded("git:remotes", forceExpanded)),
+            () =>
+            {
+                foreach (var remoteGroup in remoteBranchGroups)
+                {
+                    var remoteId = $"remote:{remoteGroup.Key}";
+                    var remoteBranches = remoteGroup.OrderByDescending(branch => branch.IsDefault).ThenBy(branch => branch.ShortBranchName, StringComparer.OrdinalIgnoreCase).ToArray();
+                    AddGroup(
+                        builder,
+                        GitReferenceTreeItemViewModel.Remote(remoteGroup.Key, 1, remoteBranches.Length, IsGitGroupExpanded(remoteId, forceExpanded)),
+                        () =>
+                        {
+                            foreach (var branch in remoteBranches)
+                            {
+                                builder.Add(GitReferenceTreeItemViewModel.BranchItem(branch, 2, IsSelectedBranch(branch)));
+                            }
+                        });
+                }
+            });
+
+        AddGroup(
+            builder,
+            GitReferenceTreeItemViewModel.Group("git:pull-requests", GetReviewRequestGroupTitle(), GetReviewRequestGroupDetail(), 0, PullRequestOptions.Length, IsGitGroupExpanded("git:pull-requests", forceExpanded)),
+            () =>
+            {
+                foreach (var pullRequest in PullRequestOptions)
+                {
+                    builder.Add(GitReferenceTreeItemViewModel.PullRequestItem(pullRequest, 1, IsSelectedPullRequest(pullRequest)));
+                }
+            });
+
+        GitReferenceTreeItems = builder.ToImmutable();
+        var reviewRequestLabel = GetReviewRequestCountLabel(allPullRequestOptions.Length);
+        GitReferenceCountText = string.IsNullOrWhiteSpace(query)
+            ? $"{allBranchOptions.Length:N0} branches | {allPullRequestOptions.Length:N0} {reviewRequestLabel}"
+            : $"{BranchOptions.Length:N0}/{allBranchOptions.Length:N0} branches | {PullRequestOptions.Length:N0}/{allPullRequestOptions.Length:N0} {reviewRequestLabel}";
+    }
+
+    private string GetReviewRequestGroupTitle() =>
+        currentReviewRequestKind == GitReviewRequestKind.MergeRequest ? "Merge Requests" : "Pull Requests";
+
+    private string GetReviewRequestGroupDetail() =>
+        currentReviewRequestKind == GitReviewRequestKind.MergeRequest
+            ? $"{FormatReviewRequestState(appState.ReviewRequestState)} GitLab merge requests"
+            : $"{FormatReviewRequestState(appState.ReviewRequestState)} GitHub pull requests";
+
+    private string GetReviewRequestCountLabel(int count)
+    {
+        var singular = currentReviewRequestKind == GitReviewRequestKind.MergeRequest ? "MR" : "PR";
+        return count == 1 ? singular : $"{singular}s";
+    }
+
+    private void AddGroup(
+        ImmutableArray<GitReferenceTreeItemViewModel>.Builder builder,
+        GitReferenceTreeItemViewModel group,
+        Action addChildren)
+    {
+        builder.Add(group);
+        if (group is { HasChildren: true, IsExpanded: true })
+        {
+            addChildren();
+        }
+    }
+
+    private bool IsGitGroupExpanded(string id, bool forceExpanded) =>
+        forceExpanded || !collapsedGitReferenceNodeIds.Contains(id);
+
+    private bool IsSelectedBranch(GitBranchOptionViewModel branch) =>
+        appState.DiffScope == GitDiffScope.Branch &&
+        appState.SelectedPullRequestNumber is null &&
+        string.Equals(branch.ReferenceName, appState.SelectedBranchRef ?? appState.HeadRef, StringComparison.Ordinal);
+
+    private bool IsSelectedPullRequest(GitPullRequestOptionViewModel pullRequest) =>
+        appState.DiffScope == GitDiffScope.Branch &&
+        appState.SelectedPullRequestNumber == pullRequest.Number;
 
     public async Task SetAutoRefreshAsync(bool isEnabled)
     {
@@ -752,6 +1387,26 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         AddDiagnostic("Info", $"Grouping changed to {FormatGroupingMode(groupingMode)}");
     }
 
+    public async Task SetReviewRequestStateAsync(GitReviewRequestState reviewRequestState)
+    {
+        if (appState.ReviewRequestState == reviewRequestState)
+        {
+            ApplyAppStateToPresentation();
+            return;
+        }
+
+        appState = appState with { ReviewRequestState = reviewRequestState };
+        ApplyAppStateToPresentation();
+        await SaveOptionsAsync(CancellationToken.None);
+        AddDiagnostic("Info", $"Review request list changed to {FormatReviewRequestState(reviewRequestState)}");
+
+        if (!string.IsNullOrWhiteSpace(currentRepositoryPath) && Directory.Exists(currentRepositoryPath))
+        {
+            var requestId = repositoryLoadRequests.BeginRequest();
+            await RefreshRepositoryReferencesAsync(currentRepositoryPath, requestId, CancellationToken.None);
+        }
+    }
+
     public async Task SetVisualizationLayerAsync(string layer, bool isEnabled)
     {
         var visibility = appState.EffectiveAnnotationVisibility;
@@ -761,6 +1416,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             "Semantic" => visibility with { ShowSemantic = isEnabled },
             "Diagnostics" => visibility with { ShowDiagnostics = isEnabled },
             "Review" => visibility with { ShowReview = isEnabled },
+            "ReviewComments" => visibility with { ShowReviewComments = isEnabled },
             "History" => visibility with { ShowHistory = isEnabled },
             "Navigation" => visibility with { ShowNavigation = isEnabled },
             "Context" => visibility with { ShowContext = isEnabled },
@@ -854,6 +1510,185 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         return FocusExplorerItem(item);
     }
 
+    public Task OpenFileDiffTabAsync(FileExplorerNodeViewModel? node, FileDiffDisplayMode displayMode)
+    {
+        if (node is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (!node.IsFile)
+        {
+            ToggleExplorerNode(node);
+            return Task.CompletedTask;
+        }
+
+        return string.IsNullOrWhiteSpace(node.DocumentId)
+            ? OpenFileDiffTabByPathAsync(node.Path, displayMode)
+            : OpenFileDiffTabAsync(node.DocumentId, displayMode);
+    }
+
+    public Task OpenBlameTabAsync(FileExplorerNodeViewModel? node)
+    {
+        if (node is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (!node.IsFile)
+        {
+            ToggleExplorerNode(node);
+            return Task.CompletedTask;
+        }
+
+        return string.IsNullOrWhiteSpace(node.DocumentId)
+            ? OpenBlameTabByPathAsync(node.Path)
+            : OpenBlameTabAsync(node.DocumentId);
+    }
+
+    public async Task OpenFileDiffTabAsync(string documentId, FileDiffDisplayMode displayMode)
+    {
+        if (string.IsNullOrWhiteSpace(documentId))
+        {
+            return;
+        }
+
+        var document = currentDocuments.FirstOrDefault(document => string.Equals(document.Id.Value, documentId, StringComparison.Ordinal));
+        if (document is null)
+        {
+            AddDiagnostic("Warning", $"No document node for {documentId}");
+            return;
+        }
+
+        await OpenFileDiffTabAsync(document, displayMode);
+    }
+
+    public async Task OpenBlameTabAsync(string documentId)
+    {
+        if (string.IsNullOrWhiteSpace(documentId))
+        {
+            return;
+        }
+
+        var document = currentDocuments.FirstOrDefault(document => string.Equals(document.Id.Value, documentId, StringComparison.Ordinal));
+        if (document is null)
+        {
+            AddDiagnostic("Warning", $"No document node for {documentId}");
+            return;
+        }
+
+        await OpenBlameTabAsync(document);
+    }
+
+    private async Task OpenFileDiffTabByPathAsync(string path, FileDiffDisplayMode displayMode)
+    {
+        var normalizedPath = NormalizeRepositoryPath(path);
+        var document = currentDocuments.FirstOrDefault(document =>
+            string.Equals(NormalizeRepositoryPath(document.Metadata.Path), normalizedPath, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(document.Metadata.OldPath) &&
+                string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedPath, StringComparison.OrdinalIgnoreCase)));
+        if (document is null)
+        {
+            AddDiagnostic("Warning", $"No document node for {path}");
+            return;
+        }
+
+        await OpenFileDiffTabAsync(document, displayMode);
+    }
+
+    private async Task OpenBlameTabByPathAsync(string path)
+    {
+        var normalizedPath = NormalizeRepositoryPath(path);
+        var document = currentDocuments.FirstOrDefault(document =>
+            string.Equals(NormalizeRepositoryPath(document.Metadata.Path), normalizedPath, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(document.Metadata.OldPath) &&
+                string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedPath, StringComparison.OrdinalIgnoreCase)));
+        if (document is null)
+        {
+            AddDiagnostic("Warning", $"No document node for {path}");
+            return;
+        }
+
+        await OpenBlameTabAsync(document);
+    }
+
+    private async Task OpenFileDiffTabAsync(DiffDocumentSnapshot document, FileDiffDisplayMode displayMode)
+    {
+        var tabId = $"file:{document.Id.Value}";
+        if (FindWorkspaceTab(tabId) is { FileDiff: not null } existingTab)
+        {
+            existingTab.FileDiff.SetDisplayMode(displayMode);
+            SelectedWorkspaceTab = existingTab;
+            return;
+        }
+
+        var fullText = await LoadFullFileTextAsync(document, CancellationToken.None);
+        var fullFileDocument = await CreateTokenizedFullFileDocumentAsync(document, fullText, CancellationToken.None);
+        var foldRegions = new CodeFoldingService().CreateFoldRegions(fullFileDocument);
+        var fileDiff = FileDiffTabViewModel.FromDocument(document, fullFileDocument, fullText, foldRegions, displayMode);
+        var tab = WorkspaceTabViewModel.CreateFileDiff(tabId, Path.GetFileName(document.Metadata.Path), document.Metadata.Path, fileDiff);
+        AddWorkspaceTab(tab);
+        AddDiagnostic("Info", $"Opened file diff tab for {document.Metadata.Path}");
+    }
+
+    private async Task OpenBlameTabAsync(DiffDocumentSnapshot document)
+    {
+        if (string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            AddDiagnostic("Warning", "Open a repository before loading blame");
+            return;
+        }
+
+        var path = document.Metadata.Path;
+        var tabId = $"blame:{path}";
+        if (SelectWorkspaceTab(tabId))
+        {
+            return;
+        }
+
+        var blameView = BlameTabViewModel.Loading(path, document.Metadata.Language);
+        var tab = WorkspaceTabViewModel.CreateBlame(tabId, $"Blame {Path.GetFileName(path)}", path, blameView);
+        AddWorkspaceTab(tab);
+        tab.IsLoading = true;
+        tab.StatusText = $"Loading blame for {path}";
+        var operation = BeginOperation($"Loading blame for {path}");
+        try
+        {
+            var blameRevision = GetActiveBlameRevision();
+            var blameTask = gitBlameService.GetFileBlameAsync(currentRepositoryPath, path, operation.Token, blameRevision);
+            var historyTask = gitHistoryService.GetHistoryAsync(
+                new GitHistoryRequest(currentRepositoryPath, blameRevision ?? "HEAD", MaxCount: 160, PathFilter: path),
+                operation.Token);
+            await Task.WhenAll(blameTask, historyTask);
+
+            tab.Blame = BlameTabViewModel.FromBlame(path, document.Metadata.Language, await blameTask, (await historyTask).Commits);
+            tab.StatusText = tab.Blame.StatusText;
+            AddDiagnostic("Info", $"Opened blame tab for {path}");
+            CompleteOperation(operation, "Blame ready");
+        }
+        catch (OperationCanceledException)
+        {
+            tab.StatusText = "Blame load canceled";
+            CompleteOperation(operation, "Blame canceled");
+        }
+        catch (Exception exception)
+        {
+            tab.StatusText = "Blame unavailable";
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "Blame failed");
+        }
+        finally
+        {
+            tab.IsLoading = false;
+        }
+    }
+
+    private string? GetActiveBlameRevision()
+    {
+        var headRef = NormalizeRef(currentGitSnapshot?.Request.HeadRef);
+        return IsCurrentHeadReference(headRef) ? null : headRef;
+    }
+
     public void ToggleExplorerNode(FileExplorerNodeViewModel? node)
     {
         if (node is null || !node.HasChildren)
@@ -889,6 +1724,106 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         AddDiagnostic("Info", $"Revealed {item.Path} in the file tree");
     }
 
+    public FocusRequest? FocusReviewThread(ReviewThreadItemViewModel? thread)
+    {
+        if (thread is null)
+        {
+            ReviewPanelStatusText = "Select a review thread";
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(thread.Path))
+        {
+            ReviewPanelStatusText = "Thread has no linked changed file";
+            AddDiagnostic("Warning", ReviewPanelStatusText);
+            return null;
+        }
+
+        var normalizedThreadPath = NormalizeRepositoryPath(thread.Path);
+        var document = currentDocuments.FirstOrDefault(document =>
+            string.Equals(NormalizeRepositoryPath(document.Metadata.Path), normalizedThreadPath, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(document.Metadata.OldPath) &&
+                string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedThreadPath, StringComparison.OrdinalIgnoreCase)));
+        if (document is null)
+        {
+            ReviewPanelStatusText = $"No changed node for {thread.Path}";
+            AddDiagnostic("Warning", ReviewPanelStatusText);
+            return null;
+        }
+
+        var explorerItem = allExplorerItems.FirstOrDefault(item => string.Equals(item.DocumentId, document.Id.Value, StringComparison.Ordinal));
+        if (explorerItem is not null)
+        {
+            SelectExplorerItem(explorerItem);
+        }
+
+        var location = thread.Line is int lineNumber ? $"{thread.Path}:{lineNumber}" : thread.Path;
+        ReviewPanelStatusText = $"Focused {location}";
+        AddDiagnostic("Info", ReviewPanelStatusText);
+        return new FocusRequest(document.Id.Value, thread.Line);
+    }
+
+    public FocusRequest? FocusAnnotation(DiffAnnotation annotation)
+    {
+        if (annotation.ActionKind == DiffAnnotationActionKind.ReviewThread)
+        {
+            return FocusReviewAnnotation(annotation);
+        }
+
+        var document = currentDocuments.FirstOrDefault(document => document.Id == annotation.DocumentId);
+        if (document is null)
+        {
+            AddDiagnostic("Warning", $"No document node for annotation {annotation.Label}");
+            return null;
+        }
+
+        var explorerItem = allExplorerItems.FirstOrDefault(item => string.Equals(item.DocumentId, document.Id.Value, StringComparison.Ordinal));
+        if (explorerItem is not null)
+        {
+            SelectExplorerItem(explorerItem);
+        }
+
+        var line = annotation.DisplayLineNumber;
+        var location = line is int lineNumber ? $"{document.Metadata.Path}:{lineNumber}" : document.Metadata.Path;
+        AddDiagnostic("Info", $"Focused {annotation.Kind} annotation in {location}");
+        return new FocusRequest(document.Id.Value, line);
+    }
+
+    private FocusRequest? FocusReviewAnnotation(DiffAnnotation annotation)
+    {
+        var threadId = annotation.ActionTargetId;
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            ReviewPanelStatusText = "Review annotation has no linked thread";
+            AddDiagnostic("Warning", ReviewPanelStatusText);
+            return FocusAnnotationDocument(annotation);
+        }
+
+        var thread = allReviewThreadItems.FirstOrDefault(item => string.Equals(item.Id, threadId, StringComparison.Ordinal));
+        if (thread is null)
+        {
+            ReviewPanelStatusText = "Review thread is not loaded";
+            AddDiagnostic("Warning", ReviewPanelStatusText);
+            return FocusAnnotationDocument(annotation);
+        }
+
+        if (!ReviewThreadItems.Any(item => string.Equals(item.Id, thread.Id, StringComparison.Ordinal)))
+        {
+            ReviewSearchText = string.Empty;
+            ApplyReviewThreadFilter();
+        }
+
+        SelectedRailTabIndex = 2;
+        SelectedReviewThreadItem = ReviewThreadItems.FirstOrDefault(item => string.Equals(item.Id, thread.Id, StringComparison.Ordinal)) ?? thread;
+        return FocusReviewThread(SelectedReviewThreadItem);
+    }
+
+    private FocusRequest? FocusAnnotationDocument(DiffAnnotation annotation)
+    {
+        var document = currentDocuments.FirstOrDefault(document => document.Id == annotation.DocumentId);
+        return document is null ? null : new FocusRequest(document.Id.Value, annotation.DisplayLineNumber);
+    }
+
     public Task StageSelectedFileAsync() => RunReviewActionAsync(
         "Staging",
         (repositoryPath, path, cancellationToken) => gitReviewService.StageFileAsync(repositoryPath, path, cancellationToken));
@@ -896,6 +1831,161 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     public Task UnstageSelectedFileAsync() => RunReviewActionAsync(
         "Unstaging",
         (repositoryPath, path, cancellationToken) => gitReviewService.UnstageFileAsync(repositoryPath, path, cancellationToken));
+
+    public Task RefreshReviewDiscussionAsync() => RefreshReviewDiscussionAsync(CancellationToken.None);
+
+    public async Task RefreshReviewDiscussionAsync(CancellationToken cancellationToken)
+    {
+        var option = SelectedPullRequestOption;
+        if (option is null || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            ClearReviewDiscussion("Select a PR or MR");
+            return;
+        }
+
+        try
+        {
+            ReviewPanelStatusText = $"Loading {option.KindText} review";
+            currentReviewThreads = [];
+            RefreshSceneAnnotations();
+            var snapshot = await gitReviewDiscussionService.GetDiscussionAsync(currentRepositoryPath, option.ToPullRequestInfo(), cancellationToken);
+            currentReviewThreads = snapshot.Threads;
+            allReviewThreadItems = snapshot.Threads.Select(ReviewThreadItemViewModel.FromThread).ToImmutableArray();
+            ApplyReviewThreadFilter();
+            RefreshSceneAnnotations();
+            ReviewPanelStatusText = snapshot.StatusMessage;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            ReviewPanelStatusText = "Review load canceled";
+        }
+        catch (Exception exception)
+        {
+            ReviewPanelStatusText = "Review unavailable";
+            AddDiagnostic("Warning", $"Review discussion failed: {exception.Message}");
+        }
+    }
+
+    public async Task AddReviewCommentAsync()
+    {
+        var option = SelectedPullRequestOption;
+        if (option is null || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            ReviewPanelStatusText = "Select a PR or MR";
+            return;
+        }
+
+        var body = ReviewCommentText.Trim();
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            ReviewPanelStatusText = "Comment is empty";
+            return;
+        }
+
+        var operation = BeginOperation($"Adding {option.KindText} comment");
+        try
+        {
+            var result = await gitReviewDiscussionService.AddCommentAsync(currentRepositoryPath, option.ToPullRequestInfo(), body, operation.Token);
+            ReviewPanelStatusText = result.Message;
+            AddDiagnostic(result.Succeeded ? "Info" : "Warning", result.Message);
+            CompleteOperation(operation, result.Succeeded ? "Comment added" : "Comment failed");
+            if (result.Succeeded)
+            {
+                ReviewCommentText = string.Empty;
+                await RefreshReviewDiscussionAsync(operation.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            ReviewPanelStatusText = "Comment canceled";
+            CompleteOperation(operation, "Comment canceled");
+        }
+        catch (Exception exception)
+        {
+            ReviewPanelStatusText = "Comment failed";
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "Comment failed");
+        }
+    }
+
+    public async Task ReplyToSelectedReviewThreadAsync()
+    {
+        var option = SelectedPullRequestOption;
+        var thread = SelectedReviewThreadItem;
+        if (option is null || thread is null || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            ReviewPanelStatusText = "Select a review thread";
+            return;
+        }
+
+        var body = ReviewCommentText.Trim();
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            ReviewPanelStatusText = "Reply is empty";
+            return;
+        }
+
+        var operation = BeginOperation($"Replying to {option.KindText} thread");
+        try
+        {
+            var result = await gitReviewDiscussionService.ReplyToThreadAsync(currentRepositoryPath, option.ToPullRequestInfo(), thread.Id, body, operation.Token);
+            ReviewPanelStatusText = result.Message;
+            AddDiagnostic(result.Succeeded ? "Info" : "Warning", result.Message);
+            CompleteOperation(operation, result.Succeeded ? "Reply added" : "Reply failed");
+            if (result.Succeeded)
+            {
+                ReviewCommentText = string.Empty;
+                await RefreshReviewDiscussionAsync(operation.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            ReviewPanelStatusText = "Reply canceled";
+            CompleteOperation(operation, "Reply canceled");
+        }
+        catch (Exception exception)
+        {
+            ReviewPanelStatusText = "Reply failed";
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "Reply failed");
+        }
+    }
+
+    public async Task ToggleSelectedReviewThreadResolvedAsync()
+    {
+        var option = SelectedPullRequestOption;
+        var thread = SelectedReviewThreadItem;
+        if (option is null || thread is null || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            ReviewPanelStatusText = "Select a review thread";
+            return;
+        }
+
+        var shouldResolve = !thread.IsResolved;
+        var operation = BeginOperation(shouldResolve ? "Resolving review thread" : "Reopening review thread");
+        try
+        {
+            var result = await gitReviewDiscussionService.SetThreadResolvedAsync(currentRepositoryPath, option.ToPullRequestInfo(), thread.Id, shouldResolve, operation.Token);
+            ReviewPanelStatusText = result.Message;
+            AddDiagnostic(result.Succeeded ? "Info" : "Warning", result.Message);
+            CompleteOperation(operation, result.Succeeded ? "Thread updated" : "Thread update failed");
+            if (result.Succeeded)
+            {
+                await RefreshReviewDiscussionAsync(operation.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            ReviewPanelStatusText = "Thread update canceled";
+            CompleteOperation(operation, "Thread update canceled");
+        }
+        catch (Exception exception)
+        {
+            ReviewPanelStatusText = "Thread update failed";
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "Thread update failed");
+        }
+    }
 
     public FocusRequest? FocusSemanticItem(SemanticNavigationItemViewModel? item)
     {
@@ -1435,6 +2525,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             SemanticAnalysisMode = appState.SemanticAnalysisMode,
             LayoutMode = appState.LayoutMode,
             GroupingMode = appState.GroupingMode,
+            ReviewRequestState = appState.ReviewRequestState,
             SelectedBranchRef = appState.SelectedBranchRef,
             SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth),
@@ -1461,6 +2552,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             SemanticAnalysisMode = appState.SemanticAnalysisMode,
             LayoutMode = appState.LayoutMode,
             GroupingMode = appState.GroupingMode,
+            ReviewRequestState = appState.ReviewRequestState,
             SelectedBranchRef = appState.SelectedBranchRef,
             SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth)
@@ -1607,6 +2699,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         SelectedLayoutModeOption = LayoutModeOptions.FirstOrDefault(option => option.Mode == appState.LayoutMode) ?? LayoutModeOptions[1];
         GroupingModeText = FormatGroupingMode(appState.GroupingMode);
         SelectedGroupingModeOption = GroupingModeOptions.FirstOrDefault(option => option.Mode == appState.GroupingMode) ?? GroupingModeOptions[1];
+        ReviewRequestStateText = FormatReviewRequestState(appState.ReviewRequestState);
+        SelectedReviewRequestStateOption = ReviewRequestStateOptions.FirstOrDefault(option => option.State == appState.ReviewRequestState) ?? ReviewRequestStateOptions[0];
         IsSemanticWorkspaceModeSelected = appState.SemanticAnalysisMode == SemanticAnalysisMode.WorkspaceThenSyntax;
         IsSemanticFastModeSelected = appState.SemanticAnalysisMode == SemanticAnalysisMode.FastSyntaxOnly;
         ApplyAnnotationVisibilityToPresentation();
@@ -1621,6 +2715,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
             WatchStatusText = "Watch ready";
         }
 
+        BuildGitReferenceTree();
         ApplyReferenceSelectionsToPresentation();
     }
 
@@ -1631,10 +2726,13 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         {
             SelectedPullRequestOption = appState.SelectedPullRequestNumber is null
                 ? null
-                : PullRequestOptions.FirstOrDefault(option => option.Number == appState.SelectedPullRequestNumber.Value);
+                : allPullRequestOptions.FirstOrDefault(option => option.Number == appState.SelectedPullRequestNumber.Value);
             SelectedBranchOption = appState.DiffScope == GitDiffScope.Branch && appState.SelectedPullRequestNumber is null
-                ? BranchOptions.FirstOrDefault(option => string.Equals(option.ReferenceName, appState.SelectedBranchRef ?? appState.HeadRef, StringComparison.Ordinal))
+                ? allBranchOptions.FirstOrDefault(option => string.Equals(option.ReferenceName, appState.SelectedBranchRef ?? appState.HeadRef, StringComparison.Ordinal))
                 : null;
+            SelectedGitReferenceTreeItem = GitReferenceTreeItems.FirstOrDefault(item =>
+                (item.Branch is not null && SelectedBranchOption is not null && string.Equals(item.Branch.ReferenceName, SelectedBranchOption.ReferenceName, StringComparison.Ordinal)) ||
+                (item.PullRequest is not null && SelectedPullRequestOption is not null && item.PullRequest.Number == SelectedPullRequestOption.Number));
         }
         finally
         {
@@ -1657,11 +2755,12 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         IsSemanticVisualizationEnabled = visibility.ShowSemantic;
         IsDiagnosticVisualizationEnabled = visibility.ShowDiagnostics;
         IsReviewVisualizationEnabled = visibility.ShowReview;
+        IsReviewCommentVisualizationEnabled = visibility.ShowReviewComments;
         IsHistoryVisualizationEnabled = visibility.ShowHistory;
         IsNavigationVisualizationEnabled = visibility.ShowNavigation;
         IsContextVisualizationEnabled = visibility.ShowContext;
-        VisualizationButtonText = $"Visuals {visibility.EnabledLayerCount}/7";
-        VisualizationSummaryText = $"Visual layers {visibility.EnabledLayerCount}/7";
+        VisualizationButtonText = $"Visuals {visibility.EnabledLayerCount}/8";
+        VisualizationSummaryText = $"Visual layers {visibility.EnabledLayerCount}/8";
     }
 
     private void SetExplorerItems(ImmutableArray<ExplorerItemViewModel> items)
@@ -1725,6 +2824,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     {
         var index = new SemanticNavigationIndex();
         allSemanticNavigationItems = index.Build(semanticGraph, documents);
+        currentSymbolInsight = new SemanticSymbolInsightIndex().Build(allSemanticNavigationItems);
+        PruneSymbolFilters();
         ApplySemanticNavigationFilter();
     }
 
@@ -1761,7 +2862,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         var analyzer = new SemanticImpactAnalyzer();
         var summary = analyzer.Analyze(documents, semanticGraph);
         var conflictSummary = new DiffConflictAnalyzer().Analyze(documents);
-        ImpactSummaryText = $"Impact {FormatCount(summary.ChangedSymbolCount, "symbol", "symbols")} | {FormatCount(summary.ImpactedEdgeCount, "link", "links")}";
+        ImpactSummaryText = $"Impact {FormatCount(summary.ChangedSymbolCount, "symbol", "symbols")} | {FormatCount(summary.ImpactedEdgeCount, "link", "links")} | {FormatCount(currentSymbolInsight.DocumentCount, "symbol file", "symbol files")}";
         ReviewSignalText = $"Moved {summary.MovedLineCount:N0} | Noise {summary.IgnoredLineCount:N0} | Conflicts {conflictSummary.ConflictRegionCount:N0}";
         return summary;
     }
@@ -1771,24 +2872,353 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnSymbolSearchTextChanged(string value) => ApplySemanticNavigationFilter();
 
+    public void SetSymbolScopeFilter(SymbolScopeFilterViewModel? filter)
+    {
+        selectedSymbolScopeFilter = string.IsNullOrWhiteSpace(filter?.FilterKey)
+            ? SymbolScopeFilterViewModel.AllKey
+            : filter.FilterKey;
+        ApplySemanticNavigationFilter();
+    }
+
+    public void SetSymbolKindFilter(SemanticSymbolKindFacetViewModel? facet)
+    {
+        var nextFilter = string.IsNullOrWhiteSpace(facet?.KindKey)
+            ? SymbolFilterAll
+            : facet.KindKey;
+        selectedSymbolKindFilter = string.Equals(selectedSymbolKindFilter, nextFilter, StringComparison.OrdinalIgnoreCase)
+            ? SymbolFilterAll
+            : nextFilter;
+        ApplySemanticNavigationFilter();
+    }
+
+    public FocusRequest? SetSymbolDocumentFilter(SemanticSymbolDocumentFacetViewModel? facet)
+    {
+        var nextFilter = string.IsNullOrWhiteSpace(facet?.DocumentId)
+            ? SymbolFilterAll
+            : facet.DocumentId;
+        selectedSymbolDocumentFilter = string.Equals(selectedSymbolDocumentFilter, nextFilter, StringComparison.Ordinal)
+            ? SymbolFilterAll
+            : nextFilter;
+        ApplySemanticNavigationFilter();
+        return FocusFirstSemanticResult();
+    }
+
+    public void ClearSymbolFilters()
+    {
+        SymbolSearchText = string.Empty;
+        selectedSymbolScopeFilter = SymbolScopeFilterViewModel.AllKey;
+        selectedSymbolKindFilter = SymbolFilterAll;
+        selectedSymbolDocumentFilter = SymbolFilterAll;
+        ApplySemanticNavigationFilter();
+    }
+
     private void ApplySemanticNavigationFilter()
     {
         var query = SymbolSearchText.Trim();
-        var filtered = string.IsNullOrWhiteSpace(query)
-            ? allSemanticNavigationItems
-            : allSemanticNavigationItems
-                .Where(item => item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase))
-                .ToImmutableArray();
+        var filtered = allSemanticNavigationItems
+            .Where(MatchesSelectedSymbolScope)
+            .Where(MatchesSelectedSymbolKind)
+            .Where(MatchesSelectedSymbolDocument)
+            .Where(item => string.IsNullOrWhiteSpace(query) || item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .ToImmutableArray();
 
         SemanticItems = filtered
             .Select(SemanticNavigationItemViewModel.FromItem)
             .ToImmutableArray();
-        SymbolCountText = string.IsNullOrWhiteSpace(query)
+        SymbolCountText = !HasActiveSymbolFilters(query)
             ? FormatCount(allSemanticNavigationItems.Length, "symbol", "symbols")
             : $"{filtered.Length:N0}/{allSemanticNavigationItems.Length:N0} symbols";
+        SymbolFilterStatusText = BuildSymbolFilterStatus(filtered.Length, query);
+        RefreshSymbolInsightViewModels();
+    }
+
+    private bool MatchesSelectedSymbolScope(SemanticNavigationItem item) => selectedSymbolScopeFilter switch
+    {
+        SymbolScopeFilterViewModel.ChangedKey => item.IsChanged,
+        SymbolScopeFilterViewModel.LinkedKey => item.IsLinked,
+        _ => true
+    };
+
+    private bool MatchesSelectedSymbolKind(SemanticNavigationItem item) =>
+        string.Equals(selectedSymbolKindFilter, SymbolFilterAll, StringComparison.Ordinal) ||
+        string.Equals(item.KindText, selectedSymbolKindFilter, StringComparison.OrdinalIgnoreCase);
+
+    private bool MatchesSelectedSymbolDocument(SemanticNavigationItem item) =>
+        string.Equals(selectedSymbolDocumentFilter, SymbolFilterAll, StringComparison.Ordinal) ||
+        string.Equals(item.DocumentId.Value, selectedSymbolDocumentFilter, StringComparison.Ordinal);
+
+    private FocusRequest? FocusFirstSemanticResult()
+    {
+        var first = SemanticItems.FirstOrDefault();
+        return first is null ? null : FocusSemanticItem(first);
+    }
+
+    private void PruneSymbolFilters()
+    {
+        if (!string.Equals(selectedSymbolKindFilter, SymbolFilterAll, StringComparison.Ordinal) &&
+            !allSemanticNavigationItems.Any(item => string.Equals(item.KindText, selectedSymbolKindFilter, StringComparison.OrdinalIgnoreCase)))
+        {
+            selectedSymbolKindFilter = SymbolFilterAll;
+        }
+
+        if (!string.Equals(selectedSymbolDocumentFilter, SymbolFilterAll, StringComparison.Ordinal) &&
+            !allSemanticNavigationItems.Any(item => string.Equals(item.DocumentId.Value, selectedSymbolDocumentFilter, StringComparison.Ordinal)))
+        {
+            selectedSymbolDocumentFilter = SymbolFilterAll;
+        }
+    }
+
+    private void RefreshSymbolInsightViewModels()
+    {
+        SymbolInsightSummaryText = currentSymbolInsight.TotalSymbolCount == 0
+            ? "No semantic symbols found for this diff"
+            : $"{currentSymbolInsight.TotalSymbolCount:N0} symbols across {currentSymbolInsight.DocumentCount:N0} files | {currentSymbolInsight.ChangedSymbolCount:N0} changed | {currentSymbolInsight.LinkedSymbolCount:N0} linked";
+        SymbolScopeFilters =
+        [
+            new SymbolScopeFilterViewModel(SymbolScopeFilterViewModel.AllKey, "All", currentSymbolInsight.TotalSymbolCount, string.Equals(selectedSymbolScopeFilter, SymbolScopeFilterViewModel.AllKey, StringComparison.Ordinal)),
+            new SymbolScopeFilterViewModel(SymbolScopeFilterViewModel.ChangedKey, "Changed", currentSymbolInsight.ChangedSymbolCount, string.Equals(selectedSymbolScopeFilter, SymbolScopeFilterViewModel.ChangedKey, StringComparison.Ordinal)),
+            new SymbolScopeFilterViewModel(SymbolScopeFilterViewModel.LinkedKey, "Linked", currentSymbolInsight.LinkedSymbolCount, string.Equals(selectedSymbolScopeFilter, SymbolScopeFilterViewModel.LinkedKey, StringComparison.Ordinal))
+        ];
+        SymbolKindFacets = currentSymbolInsight.KindFacets
+            .Select(facet => SemanticSymbolKindFacetViewModel.FromFacet(
+                facet,
+                string.Equals(selectedSymbolKindFilter, facet.KindText, StringComparison.OrdinalIgnoreCase)))
+            .ToImmutableArray();
+        SymbolDocumentFacets = currentSymbolInsight.DocumentFacets
+            .Select(facet => SemanticSymbolDocumentFacetViewModel.FromFacet(
+                facet,
+                string.Equals(selectedSymbolDocumentFilter, facet.DocumentId.Value, StringComparison.Ordinal)))
+            .ToImmutableArray();
+        HotSemanticItems = currentSymbolInsight.HotSymbols
+            .Take(4)
+            .Select(SemanticNavigationItemViewModel.FromItem)
+            .ToImmutableArray();
+    }
+
+    private bool HasActiveSymbolFilters(string query) =>
+        !string.IsNullOrWhiteSpace(query) ||
+        !string.Equals(selectedSymbolScopeFilter, SymbolScopeFilterViewModel.AllKey, StringComparison.Ordinal) ||
+        !string.Equals(selectedSymbolKindFilter, SymbolFilterAll, StringComparison.Ordinal) ||
+        !string.Equals(selectedSymbolDocumentFilter, SymbolFilterAll, StringComparison.Ordinal);
+
+    private string BuildSymbolFilterStatus(int filteredCount, string query)
+    {
+        var parts = new List<string>();
+        if (!string.Equals(selectedSymbolScopeFilter, SymbolScopeFilterViewModel.AllKey, StringComparison.Ordinal))
+        {
+            parts.Add(selectedSymbolScopeFilter);
+        }
+
+        if (!string.Equals(selectedSymbolKindFilter, SymbolFilterAll, StringComparison.Ordinal))
+        {
+            parts.Add(selectedSymbolKindFilter);
+        }
+
+        if (!string.Equals(selectedSymbolDocumentFilter, SymbolFilterAll, StringComparison.Ordinal))
+        {
+            var documentFacet = currentSymbolInsight.DocumentFacets.FirstOrDefault(facet => string.Equals(facet.DocumentId.Value, selectedSymbolDocumentFilter, StringComparison.Ordinal));
+            parts.Add(string.IsNullOrWhiteSpace(documentFacet?.Path) ? selectedSymbolDocumentFilter : ShortenPath(documentFacet.Path));
+        }
+
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            parts.Add($"search \"{query}\"");
+        }
+
+        return parts.Count == 0
+            ? "Showing all semantic symbols"
+            : $"Showing {filteredCount:N0} symbols filtered by {string.Join(", ", parts)}";
     }
 
     private static string FormatCount(int count, string singular, string plural) => $"{count:N0} {(count == 1 ? singular : plural)}";
+
+    private static string FormatThreadCount(int count) => FormatCount(count, "thread", "threads");
+
+    public void SelectGraphWorkspaceTab()
+    {
+        SelectedWorkspaceTab = WorkspaceTabs.FirstOrDefault(tab => tab.Kind == WorkspaceTabKind.Graph) ?? WorkspaceTabs.FirstOrDefault();
+    }
+
+    public void CloseWorkspaceTab(WorkspaceTabViewModel? tab)
+    {
+        if (tab is null || !tab.IsClosable)
+        {
+            return;
+        }
+
+        var selectedIndex = WorkspaceTabs.IndexOf(tab);
+        WorkspaceTabs.Remove(tab);
+        if (ReferenceEquals(SelectedWorkspaceTab, tab))
+        {
+            SelectedWorkspaceTab = WorkspaceTabs.Count == 0
+                ? null
+                : WorkspaceTabs[Math.Clamp(selectedIndex - 1, 0, WorkspaceTabs.Count - 1)];
+        }
+    }
+
+    public void SetFileDiffDisplayMode(WorkspaceTabViewModel? tab, FileDiffDisplayMode displayMode)
+    {
+        tab?.FileDiff?.SetDisplayMode(displayMode);
+    }
+
+    public void ToggleBlameTimeline(WorkspaceTabViewModel? tab)
+    {
+        tab?.Blame?.ToggleTimeline();
+    }
+
+    public void ReportGitHistoryCommitHashCopied(GitHistoryItemViewModel? item)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        AddDiagnostic("Info", $"Copied commit hash {item.ShortId}");
+    }
+
+    public void SetComparisonRangeStart(GitHistoryItemViewModel? item) => SetComparisonRangeEndpoint(item, isStart: true);
+
+    public void SetComparisonRangeEnd(GitHistoryItemViewModel? item) => SetComparisonRangeEndpoint(item, isStart: false);
+
+    private void SetComparisonRangeEndpoint(GitHistoryItemViewModel? item, bool isStart)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        if (isStart)
+        {
+            BaseRefText = item.CommitId;
+        }
+        else
+        {
+            HeadRefText = item.CommitId;
+        }
+
+        DiffScopeText = GitDiffScope.CommitRange.ToString();
+        IsWorktreeScopeSelected = false;
+        IsUnstagedScopeSelected = false;
+        IsStagedScopeSelected = false;
+        IsRangeScopeSelected = true;
+        IsBranchScopeSelected = false;
+        AddDiagnostic("Info", $"Set range {(isStart ? "start" : "end")} to {item.ShortId}; apply refs to compare");
+    }
+
+    private void CaptureGraphWorkspaceState(WorkspaceTabViewModel? tab)
+    {
+        if (tab?.Kind != WorkspaceTabKind.Graph)
+        {
+            return;
+        }
+
+        CaptureLayoutState(Scene);
+        if (currentGitSnapshot?.Request is { } activeRequest)
+        {
+            tab.GraphRequest = activeRequest;
+        }
+
+        tab.GraphBranchReferenceName = SelectedBranchOption?.ReferenceName ?? tab.GraphBranchReferenceName;
+        tab.GraphReviewRequest = SelectedPullRequestOption?.ToPullRequestInfo() ?? tab.GraphReviewRequest;
+        tab.StatusText = StatusText;
+        tab.GraphState = new GraphWorkspaceState(
+            currentRepositoryPath,
+            tab.GraphRequest ?? currentGitSnapshot?.Request,
+            tab.GraphReviewRequest,
+            RepositoryName,
+            RepositoryContextText,
+            StatusText,
+            currentStatusPrefix,
+            currentDocumentsAreRepositoryDocuments,
+            currentDocuments,
+            currentSemanticGraph,
+            currentGitSnapshot,
+            previousLayout,
+            pinnedDocumentIds,
+            Scene,
+            selectedExplorerItem?.DocumentId,
+            allReviewThreadItems,
+            currentReviewThreads,
+            currentReviewRequestKind);
+    }
+
+    private void RestoreGraphWorkspaceState(WorkspaceTabViewModel tab)
+    {
+        if (tab.GraphState is not { } state)
+        {
+            return;
+        }
+
+        currentRepositoryPath = state.RepositoryPath;
+        currentGitSnapshot = state.GitSnapshot;
+        currentStatusPrefix = state.StatusPrefix;
+        currentDocumentsAreRepositoryDocuments = state.DocumentsAreRepositoryDocuments;
+        currentDocuments = state.Documents;
+        currentSemanticGraph = state.SemanticGraph;
+        previousLayout = state.PreviousLayout;
+        pinnedDocumentIds = state.PinnedDocumentIds;
+        allReviewThreadItems = state.ReviewThreadItems;
+        currentReviewThreads = state.ReviewThreads;
+        currentReviewRequestKind = state.ReviewRequestKind;
+
+        ApplyGraphWorkspaceReferenceState(tab, state);
+        Scene = state.Scene.WithAnnotations(CreateAnnotations(state.Documents, state.SemanticGraph), appState.EffectiveAnnotationVisibility);
+        UpdateChangeNavigation(state.Documents);
+        SetExplorerItems(state.Documents.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
+        RestoreSelectedExplorerItem(state.SelectedDocumentId);
+        UpdateSemanticNavigation(state.SemanticGraph, state.Documents);
+        var impactSummary = UpdateImpactSummary(state.Documents, state.SemanticGraph);
+        UpdateWorkspaceSummary(state.RepositoryName, state.ContextText, state.Documents.Length, state.SemanticGraph.Edges.Length);
+        StatusText = string.IsNullOrWhiteSpace(state.StatusText)
+            ? $"{state.StatusPrefix} | {state.Documents.Length} nodes | {state.SemanticGraph.Edges.Length} semantic edges | {FormatImpactStatus(impactSummary)}"
+            : state.StatusText;
+        ApplyReviewThreadFilter();
+        ReviewPanelStatusText = state.ReviewRequest is null
+            ? "Select a PR or MR"
+            : $"{FormatReviewRequestLabel(state.ReviewRequest)} | {FormatThreadCount(allReviewThreadItems.Length)}";
+        UpdateDiffViewCacheText();
+    }
+
+    private void ApplyGraphWorkspaceReferenceState(WorkspaceTabViewModel tab, GraphWorkspaceState state)
+    {
+        var request = tab.GraphRequest ?? state.Request;
+        if (request is null)
+        {
+            return;
+        }
+
+        var reviewRequest = tab.GraphReviewRequest ?? state.ReviewRequest;
+        appState = appState with
+        {
+            DiffScope = request.Scope,
+            BaseRef = NormalizeRef(request.BaseRef),
+            HeadRef = NormalizeRef(request.HeadRef),
+            SelectedBranchRef = reviewRequest is null ? tab.GraphBranchReferenceName : null,
+            SelectedPullRequestNumber = reviewRequest?.Number
+        };
+        ApplyAppStateToPresentation();
+    }
+
+    private void AddWorkspaceTab(WorkspaceTabViewModel tab)
+    {
+        WorkspaceTabs.Add(tab);
+        SelectedWorkspaceTab = tab;
+    }
+
+    private bool SelectWorkspaceTab(string id)
+    {
+        var tab = FindWorkspaceTab(id);
+        if (tab is null)
+        {
+            return false;
+        }
+
+        SelectedWorkspaceTab = tab;
+        return true;
+    }
+
+    private WorkspaceTabViewModel? FindWorkspaceTab(string id) =>
+        WorkspaceTabs.FirstOrDefault(tab => string.Equals(tab.Id, id, StringComparison.Ordinal));
 
     private static string FormatDiffScope(GitDiffScope diffScope) => diffScope switch
     {
@@ -1835,6 +3265,19 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         DiffReviewMode.IgnoreWhitespace => "Noise filter",
         _ => "Precise"
     };
+
+    private static string FormatReviewRequestState(GitReviewRequestState state) => state switch
+    {
+        GitReviewRequestState.Closed => "Closed",
+        GitReviewRequestState.Merged => "Merged",
+        GitReviewRequestState.All => "All",
+        _ => "Open"
+    };
+
+    private static string FormatReviewRequestLabel(GitPullRequestInfo request) =>
+        request.Kind == GitReviewRequestKind.MergeRequest
+            ? $"MR !{request.Number}"
+            : $"PR #{request.Number}";
 
     private static string FormatSemanticAnalysisMode(SemanticAnalysisMode analysisMode) => analysisMode switch
     {
@@ -1892,7 +3335,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            var blame = await gitBlameService.GetFileBlameAsync(currentRepositoryPath, path, blameOperation.Token).ConfigureAwait(false);
+            var blame = await gitBlameService.GetFileBlameAsync(currentRepositoryPath, path, blameOperation.Token, GetActiveBlameRevision()).ConfigureAwait(false);
             PostToCapturedContext(() => ApplyBlameSummary(path, blame));
         }
         catch (OperationCanceledException)
@@ -2123,6 +3566,61 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     private static string ShortenPath(string path) => path.Length <= 72 ? path : $"...{path[^69..]}";
 
+    private static string NormalizeRepositoryPath(string path) => path.Replace('\\', '/').Trim('/');
+
+    private async Task<string> LoadFullFileTextAsync(DiffDocumentSnapshot document, CancellationToken cancellationToken)
+    {
+        if (currentGitSnapshot is null || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            return document.ToSourceText();
+        }
+
+        var fileChange = currentGitSnapshot.Files.FirstOrDefault(file =>
+            string.Equals(NormalizeRepositoryPath(file.Path), NormalizeRepositoryPath(document.Metadata.Path), StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(file.OldPath) &&
+                string.Equals(NormalizeRepositoryPath(file.OldPath), NormalizeRepositoryPath(document.Metadata.Path), StringComparison.OrdinalIgnoreCase)));
+        if (fileChange is null)
+        {
+            return document.ToSourceText();
+        }
+
+        try
+        {
+            var content = await new GitDiffService().GetFileContentAsync(currentGitSnapshot.Request, fileChange, cancellationToken);
+            return string.IsNullOrEmpty(content) ? document.ToSourceText() : content;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            AddDiagnostic("Warning", $"Full file load failed: {exception.Message}");
+            return document.ToSourceText();
+        }
+    }
+
+    private static async Task<DiffDocumentSnapshot> CreateTokenizedFullFileDocumentAsync(
+        DiffDocumentSnapshot sourceDocument,
+        string fullText,
+        CancellationToken cancellationToken)
+    {
+        const int tokenPageSize = 128;
+        var metadata = sourceDocument.Metadata with
+        {
+            AddedLines = 0,
+            DeletedLines = 0
+        };
+        var document = new DiffDocumentFactory().CreateFromText(metadata, fullText, DiffLineKind.Context);
+        var tokenizer = new TextMateDocumentTokenizer(tokenPageSize);
+        var lineBuilder = ImmutableArray.CreateBuilder<DiffLine>(document.LineCount);
+
+        for (var firstLineIndex = 0; firstLineIndex < document.LineCount; firstLineIndex += tokenPageSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var tokenizedLines = await tokenizer.TokenizePageAsync(document, firstLineIndex, tokenPageSize, cancellationToken).ConfigureAwait(false);
+            lineBuilder.AddRange(tokenizedLines);
+        }
+
+        return document with { Lines = lineBuilder.ToImmutable() };
+    }
+
     private DiffCanvasScene CreateScene(ImmutableArray<DiffDocumentSnapshot> documents, SemanticGraph semanticGraph, GraphLayoutResult? layout) =>
         DiffCanvasScene.FromDocuments(
             documents,
@@ -2151,7 +3649,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         }
 
         var context = CreateAnnotationContext();
-        var request = new DiffAnnotationRequest(documents, semanticGraph, context);
+        var request = new DiffAnnotationRequest(documents, semanticGraph, context, currentReviewThreads);
         return annotationProviders
             .SelectMany(provider => provider.CreateAnnotations(request))
             .GroupBy(annotation => annotation.Id, StringComparer.Ordinal)
@@ -2301,6 +3799,19 @@ public sealed record GroupingModeOptionViewModel(GraphGroupingMode Mode, string 
     public override string ToString() => DisplayName;
 }
 
+public sealed record ReviewRequestStateOptionViewModel(GitReviewRequestState State, string DisplayName, string Description)
+{
+    public static ImmutableArray<ReviewRequestStateOptionViewModel> All { get; } =
+    [
+        new(GitReviewRequestState.Open, "Open", "Open PRs/MRs"),
+        new(GitReviewRequestState.Closed, "Closed", "Closed without merge"),
+        new(GitReviewRequestState.Merged, "Merged", "Merged review requests"),
+        new(GitReviewRequestState.All, "All", "Open, closed, and merged")
+    ];
+
+    public override string ToString() => DisplayName;
+}
+
 public sealed record SemanticNavigationItemViewModel(
     string AnchorId,
     string DocumentId,
@@ -2308,11 +3819,23 @@ public sealed record SemanticNavigationItemViewModel(
     string KindText,
     string DisplayName,
     int Line,
-    int IncidentEdgeCount)
+    int IncidentEdgeCount,
+    bool IsChanged,
+    bool IsLinked)
 {
     public string LocationText => $"{Path}:{Line}";
 
     public string EdgeText => IncidentEdgeCount == 1 ? "1 link" : $"{IncidentEdgeCount:N0} links";
+
+    public string SignalText => (IsChanged, IsLinked) switch
+    {
+        (true, true) => "changed + linked",
+        (true, false) => "changed",
+        (false, true) => "linked",
+        _ => string.Empty
+    };
+
+    public Visibility SignalVisibility => string.IsNullOrWhiteSpace(SignalText) ? Visibility.Collapsed : Visibility.Visible;
 
     public static SemanticNavigationItemViewModel FromItem(SemanticNavigationItem item) => new(
         item.AnchorId,
@@ -2321,7 +3844,99 @@ public sealed record SemanticNavigationItemViewModel(
         item.KindText,
         item.DisplayName,
         item.Line,
-        item.IncidentEdgeCount);
+        item.IncidentEdgeCount,
+        item.IsChanged,
+        item.IsLinked);
+}
+
+public sealed record SymbolScopeFilterViewModel(string FilterKey, string DisplayName, int Count, bool IsSelected)
+{
+    public const string AllKey = "All";
+    public const string ChangedKey = "Changed";
+    public const string LinkedKey = "Linked";
+
+    public string DisplayText => $"{DisplayName} {Count:N0}";
+
+    public SolidColorBrush Background => IsSelected ? SymbolInsightBrushes.SelectedBackground : SymbolInsightBrushes.Transparent;
+
+    public SolidColorBrush Border => IsSelected ? SymbolInsightBrushes.Accent : SymbolInsightBrushes.SubtleBorder;
+
+    public SolidColorBrush Foreground => IsSelected ? SymbolInsightBrushes.SelectedForeground : SymbolInsightBrushes.Secondary;
+}
+
+public sealed record SemanticSymbolKindFacetViewModel(
+    string KindKey,
+    string KindText,
+    int Count,
+    int ChangedCount,
+    int LinkedCount,
+    bool IsSelected)
+{
+    public string DisplayText => $"{KindText} {Count:N0}";
+
+    public string DetailText => $"{ChangedCount:N0} changed | {LinkedCount:N0} linked";
+
+    public SolidColorBrush Background => IsSelected ? SymbolInsightBrushes.SelectedBackground : SymbolInsightBrushes.Transparent;
+
+    public SolidColorBrush Border => IsSelected ? SymbolInsightBrushes.Accent : SymbolInsightBrushes.SubtleBorder;
+
+    public SolidColorBrush Foreground => IsSelected ? SymbolInsightBrushes.SelectedForeground : SymbolInsightBrushes.Primary;
+
+    public static SemanticSymbolKindFacetViewModel FromFacet(SemanticSymbolKindFacet facet, bool isSelected) => new(
+        facet.KindText,
+        facet.KindText,
+        facet.Count,
+        facet.ChangedCount,
+        facet.LinkedCount,
+        isSelected);
+}
+
+public sealed record SemanticSymbolDocumentFacetViewModel(
+    string DocumentId,
+    string Path,
+    string FileName,
+    int Count,
+    int ChangedCount,
+    int LinkedCount,
+    bool IsSelected)
+{
+    public string DetailText => $"{Count:N0} symbols | {ChangedCount:N0} changed | {LinkedCount:N0} linked";
+
+    public SolidColorBrush Background => IsSelected ? SymbolInsightBrushes.SelectedBackground : SymbolInsightBrushes.Transparent;
+
+    public SolidColorBrush Border => IsSelected ? SymbolInsightBrushes.Accent : SymbolInsightBrushes.SubtleBorder;
+
+    public SolidColorBrush Foreground => IsSelected ? SymbolInsightBrushes.SelectedForeground : SymbolInsightBrushes.Primary;
+
+    public static SemanticSymbolDocumentFacetViewModel FromFacet(SemanticSymbolDocumentFacet facet, bool isSelected)
+    {
+        var fileName = System.IO.Path.GetFileName(facet.Path);
+        return new SemanticSymbolDocumentFacetViewModel(
+            facet.DocumentId.Value,
+            facet.Path,
+            string.IsNullOrWhiteSpace(fileName) ? facet.Path : fileName,
+            facet.Count,
+            facet.ChangedCount,
+            facet.LinkedCount,
+            isSelected);
+    }
+}
+
+internal static class SymbolInsightBrushes
+{
+    public static SolidColorBrush Transparent { get; } = new(Color.FromArgb(0, 0, 0, 0));
+
+    public static SolidColorBrush SelectedBackground { get; } = new(Color.FromArgb(38, 0, 122, 204));
+
+    public static SolidColorBrush Accent { get; } = new(Color.FromArgb(255, 0, 122, 204));
+
+    public static SolidColorBrush SubtleBorder { get; } = new(Color.FromArgb(255, 154, 166, 180));
+
+    public static SolidColorBrush SelectedForeground { get; } = new(Color.FromArgb(255, 0, 92, 150));
+
+    public static SolidColorBrush Primary { get; } = new(Color.FromArgb(255, 20, 32, 51));
+
+    public static SolidColorBrush Secondary { get; } = new(Color.FromArgb(255, 82, 97, 114));
 }
 
 public sealed record FocusRequest(string DocumentId, int? Line);

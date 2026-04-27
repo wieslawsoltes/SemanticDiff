@@ -2,6 +2,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Input;
 using SemanticDiff.Core;
 using SemanticDiff.Rendering;
 using SkiaSharp;
@@ -18,6 +19,7 @@ public sealed class DiffCanvasControl : Grid
         None,
         Pan,
         DragNode,
+        DragGroup,
         ResizeNode,
         DragScrollbar
     }
@@ -43,10 +45,12 @@ public sealed class DiffCanvasControl : Grid
 
     private readonly SKXamlCanvas canvas;
     private readonly DiffSceneRenderer renderer = new();
+    private readonly InputSystemCursor handCursor = InputSystemCursor.Create(InputSystemCursorShape.Hand);
     private ActiveInteraction activeInteraction;
     private PanPointerButton activePointerButton;
     private uint? activePointerId;
     private DiffNode? activeNode;
+    private GraphGroup? activeGroup;
     private DiffNodeResizeHandle activeResizeHandle;
     private Point2 activeNodePointerOffset;
     private double activeScrollbarThumbOffsetY;
@@ -54,10 +58,13 @@ public sealed class DiffCanvasControl : Grid
     private Size2 lastCanvasSize = Size2.Zero;
     private bool fitSceneWhenSizeAvailable;
     private bool fitPendingRequiresDefaultCamera;
+    private bool renderRequested;
+    private bool renderingFrameSubscribed;
 
     public DiffCanvasControl()
     {
         Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        ManipulationMode = ManipulationModes.None;
         canvas = new SKXamlCanvas
         {
             IsHitTestVisible = false
@@ -71,17 +78,19 @@ public sealed class DiffCanvasControl : Grid
         PointerCanceled += OnPointerReleased;
         PointerCaptureLost += OnPointerReleased;
         PointerWheelChanged += OnPointerWheelChanged;
+        PointerExited += OnPointerExited;
         DoubleTapped += OnDoubleTapped;
         SizeChanged += (_, _) =>
         {
             if (TryFitPendingScene())
             {
-                canvas.Invalidate();
+                RequestRender();
                 return;
             }
 
-            canvas.Invalidate();
+            RequestRender();
         };
+        Unloaded += (_, _) => StopRenderingFrameSubscription();
     }
 
     public DiffCanvasScene? Scene
@@ -98,6 +107,14 @@ public sealed class DiffCanvasControl : Grid
 
     public event EventHandler<DiffCanvasNodeNavigationRequestedEventArgs>? NodeNavigationRequested;
 
+    public event EventHandler<DiffCanvasNodeDiffTabRequestedEventArgs>? NodeDiffTabRequested;
+
+    public event EventHandler<DiffCanvasNodeBlameTabRequestedEventArgs>? NodeBlameTabRequested;
+
+    public event EventHandler<DiffCanvasAnnotationInteractionRequestedEventArgs>? AnnotationInteractionRequested;
+
+    public bool HasSelectedNode => GetSelectedNode() is not null;
+
     public void FitToScene()
     {
         fitPendingRequiresDefaultCamera = false;
@@ -107,7 +124,7 @@ public sealed class DiffCanvasControl : Grid
             fitSceneWhenSizeAvailable = Scene is not null && Scene.Nodes.Count > 0;
         }
 
-        canvas.Invalidate();
+        RequestRender();
     }
 
     public bool FocusDocument(string documentId, int? lineNumber = null)
@@ -135,7 +152,70 @@ public sealed class DiffCanvasControl : Grid
         }
 
         Scene.FitToNode(node, GetCanvasSize());
-        canvas.Invalidate();
+        RequestRender();
+        return true;
+    }
+
+    public bool RevealSelectedNode()
+    {
+        var node = GetSelectedNode();
+        if (node is null)
+        {
+            return false;
+        }
+
+        NodeNavigationRequested?.Invoke(this, new DiffCanvasNodeNavigationRequestedEventArgs(node.Document.Id.Value));
+        return true;
+    }
+
+    public bool OpenSelectedNodeBlameTab()
+    {
+        var node = GetSelectedNode();
+        if (node is null)
+        {
+            return false;
+        }
+
+        NodeBlameTabRequested?.Invoke(this, new DiffCanvasNodeBlameTabRequestedEventArgs(node.Document.Id.Value));
+        return true;
+    }
+
+    public bool FocusSelectedNode()
+    {
+        var node = GetSelectedNode();
+        if (node is null || Scene is null)
+        {
+            return false;
+        }
+
+        Scene.FitToNode(node, GetCanvasSize());
+        RequestRender();
+        return true;
+    }
+
+    public bool ToggleSelectedNodePin()
+    {
+        var node = GetSelectedNode();
+        if (node is null || Scene is null)
+        {
+            return false;
+        }
+
+        Scene.TogglePinned(node);
+        RequestRender();
+        return true;
+    }
+
+    public bool AdjustSelectedNodeFontSize(DiffNodeFontSizeAction action)
+    {
+        var node = GetSelectedNode();
+        if (node is null || Scene is null)
+        {
+            return false;
+        }
+
+        Scene.AdjustNodeFontSize(node, action);
+        RequestRender();
         return true;
     }
 
@@ -144,7 +224,7 @@ public sealed class DiffCanvasControl : Grid
         if (dependencyObject is DiffCanvasControl control)
         {
             control.RequestInitialFit((DiffCanvasScene?)args.NewValue);
-            control.canvas.Invalidate();
+            control.RequestRender();
         }
     }
 
@@ -152,7 +232,7 @@ public sealed class DiffCanvasControl : Grid
     {
         if (dependencyObject is DiffCanvasControl control)
         {
-            control.canvas.Invalidate();
+            control.RequestRender();
         }
     }
 
@@ -166,7 +246,12 @@ public sealed class DiffCanvasControl : Grid
             return;
         }
 
-        renderer.Render(args.Surface.Canvas, args.Info.Size, Scene, IsLightTheme ? DiffCanvasColorTheme.Light : DiffCanvasColorTheme.Dark);
+        renderer.Render(
+            args.Surface.Canvas,
+            args.Info.Size,
+            Scene,
+            IsLightTheme ? DiffCanvasColorTheme.Light : DiffCanvasColorTheme.Dark,
+            ShouldRenderDetailedDocumentBodies() ? DiffSceneRenderMode.Normal : DiffSceneRenderMode.Interactive);
     }
 
     private void OnPointerPressed(object sender, PointerRoutedEventArgs args)
@@ -175,11 +260,21 @@ public sealed class DiffCanvasControl : Grid
 
         if (Scene is not null && pointerPoint.Properties.IsRightButtonPressed)
         {
-            var node = Scene.HitTestNode(ToCanvasPoint(pointerPoint.Position));
+            var rightClickPoint = ToCanvasPoint(pointerPoint.Position);
+            if (Scene.TryHitTestAnnotation(rightClickPoint, out var annotationHit) && annotationHit is not null)
+            {
+                Scene.SelectNode(annotationHit.Node);
+                RequestRender();
+                ShowAnnotationContextMenu(annotationHit, pointerPoint.Position);
+                args.Handled = true;
+                return;
+            }
+
+            var node = Scene.HitTestNode(rightClickPoint);
             if (node is not null)
             {
                 Scene.SelectNode(node);
-                canvas.Invalidate();
+                RequestRender();
                 ShowNodeContextMenu(node, pointerPoint.Position);
                 args.Handled = true;
                 return;
@@ -198,6 +293,7 @@ public sealed class DiffCanvasControl : Grid
 
         if (ShouldPanCanvas(args, pointerButton))
         {
+            ClearAnnotationHover();
             BeginInteraction(args, pointerPoint, ActiveInteraction.Pan, pointerButton);
             return;
         }
@@ -208,13 +304,22 @@ public sealed class DiffCanvasControl : Grid
         }
 
         var screenPoint = ToCanvasPoint(pointerPoint.Position);
+        if (Scene.TryHitTestAnnotation(screenPoint, out var hit) && hit is not null)
+        {
+            Scene.SelectNode(hit.Node);
+            RequestRender();
+            AnnotationInteractionRequested?.Invoke(this, new DiffCanvasAnnotationInteractionRequestedEventArgs(hit.Annotation));
+            args.Handled = true;
+            return;
+        }
+
         if (Scene.TryHitTestResizeHandle(screenPoint, out var resizeNode, out var resizeHandle) && resizeNode is not null)
         {
             Scene.SelectNode(resizeNode);
             activeNode = resizeNode;
             activeResizeHandle = resizeHandle;
             BeginInteraction(args, pointerPoint, ActiveInteraction.ResizeNode, pointerButton);
-            canvas.Invalidate();
+            RequestRender();
             return;
         }
 
@@ -222,7 +327,7 @@ public sealed class DiffCanvasControl : Grid
         {
             Scene.SelectNode(fontNode);
             Scene.AdjustNodeFontSize(fontNode, fontAction);
-            canvas.Invalidate();
+            RequestRender();
             args.Handled = true;
             return;
         }
@@ -233,7 +338,7 @@ public sealed class DiffCanvasControl : Grid
             activeNode = scrollNode;
             activeScrollbarThumbOffsetY = thumbGrabOffsetY;
             BeginInteraction(args, pointerPoint, ActiveInteraction.DragScrollbar, pointerButton);
-            canvas.Invalidate();
+            RequestRender();
             return;
         }
 
@@ -244,7 +349,7 @@ public sealed class DiffCanvasControl : Grid
             activeNode = titleNode;
             activeNodePointerOffset = new Point2(worldPoint.X - titleNode.Bounds.X, worldPoint.Y - titleNode.Bounds.Y);
             BeginInteraction(args, pointerPoint, ActiveInteraction.DragNode, pointerButton);
-            canvas.Invalidate();
+            RequestRender();
             return;
         }
 
@@ -252,8 +357,17 @@ public sealed class DiffCanvasControl : Grid
         if (selectedNode is not null)
         {
             Scene.SelectNode(selectedNode);
-            canvas.Invalidate();
+            RequestRender();
             args.Handled = true;
+            return;
+        }
+
+        if (Scene.TryHitTestGroup(screenPoint, out var group) && group is not null)
+        {
+            Scene.SelectNode(null);
+            activeGroup = group;
+            BeginInteraction(args, pointerPoint, ActiveInteraction.DragGroup, pointerButton);
+            RequestRender();
         }
     }
 
@@ -267,9 +381,11 @@ public sealed class DiffCanvasControl : Grid
         var pointerPoint = args.GetCurrentPoint(this);
         if (activeInteraction == ActiveInteraction.None)
         {
+            UpdateAnnotationHover(pointerPoint.Position);
             var pointerButton = GetPanButton(pointerPoint);
             if (pointerButton != PanPointerButton.None && ShouldPanCanvas(args, pointerButton))
             {
+                ClearAnnotationHover();
                 BeginInteraction(args, pointerPoint, ActiveInteraction.Pan, pointerButton);
             }
 
@@ -301,6 +417,9 @@ public sealed class DiffCanvasControl : Grid
             case ActiveInteraction.DragNode when activeNode is not null:
                 Scene.MoveNodeTo(activeNode, currentWorldPoint.X - activeNodePointerOffset.X, currentWorldPoint.Y - activeNodePointerOffset.Y);
                 break;
+            case ActiveInteraction.DragGroup when activeGroup is not null:
+                activeGroup = Scene.MoveGroup(activeGroup, currentWorldPoint.X - lastWorldPoint.X, currentWorldPoint.Y - lastWorldPoint.Y);
+                break;
             case ActiveInteraction.ResizeNode when activeNode is not null:
                 Scene.ResizeNode(activeNode, activeResizeHandle, currentWorldPoint.X - lastWorldPoint.X, currentWorldPoint.Y - lastWorldPoint.Y);
                 break;
@@ -310,8 +429,13 @@ public sealed class DiffCanvasControl : Grid
         }
 
         lastPointerPosition = currentPosition;
-        canvas.Invalidate();
+        RequestRender();
         args.Handled = true;
+    }
+
+    private void OnPointerExited(object sender, PointerRoutedEventArgs args)
+    {
+        ClearAnnotationHover();
     }
 
     private void OnPointerReleased(object sender, PointerRoutedEventArgs args)
@@ -334,7 +458,7 @@ public sealed class DiffCanvasControl : Grid
         var wheelDelta = pointerPoint.Properties.MouseWheelDelta;
         Scene.HandleWheel(screenPoint, wheelDelta, IsCameraModifierDown(args));
 
-        canvas.Invalidate();
+        RequestRender();
         args.Handled = true;
     }
 
@@ -358,7 +482,7 @@ public sealed class DiffCanvasControl : Grid
             Scene.FitToNode(node, GetCanvasSize());
         }
 
-        canvas.Invalidate();
+        RequestRender();
         args.Handled = true;
     }
 
@@ -370,11 +494,23 @@ public sealed class DiffCanvasControl : Grid
         revealItem.Click += (_, _) => NodeNavigationRequested?.Invoke(this, new DiffCanvasNodeNavigationRequestedEventArgs(node.Document.Id.Value));
         menu.Items.Add(revealItem);
 
+        var openDiffItem = new MenuFlyoutItem { Text = "Open diff tab" };
+        openDiffItem.Click += (_, _) => NodeDiffTabRequested?.Invoke(this, new DiffCanvasNodeDiffTabRequestedEventArgs(node.Document.Id.Value, showFullFile: false));
+        menu.Items.Add(openDiffItem);
+
+        var openFullFileItem = new MenuFlyoutItem { Text = "Open full file tab" };
+        openFullFileItem.Click += (_, _) => NodeDiffTabRequested?.Invoke(this, new DiffCanvasNodeDiffTabRequestedEventArgs(node.Document.Id.Value, showFullFile: true));
+        menu.Items.Add(openFullFileItem);
+
+        var openBlameItem = new MenuFlyoutItem { Text = "Open blame tab" };
+        openBlameItem.Click += (_, _) => NodeBlameTabRequested?.Invoke(this, new DiffCanvasNodeBlameTabRequestedEventArgs(node.Document.Id.Value));
+        menu.Items.Add(openBlameItem);
+
         var fitItem = new MenuFlyoutItem { Text = "Focus node" };
         fitItem.Click += (_, _) =>
         {
             Scene?.FitToNode(node, GetCanvasSize());
-            canvas.Invalidate();
+            RequestRender();
         };
         menu.Items.Add(fitItem);
 
@@ -382,7 +518,7 @@ public sealed class DiffCanvasControl : Grid
         pinItem.Click += (_, _) =>
         {
             Scene?.TogglePinned(node);
-            canvas.Invalidate();
+            RequestRender();
         };
         menu.Items.Add(pinItem);
 
@@ -390,7 +526,7 @@ public sealed class DiffCanvasControl : Grid
         decreaseFontItem.Click += (_, _) =>
         {
             Scene?.AdjustNodeFontSize(node, DiffNodeFontSizeAction.Decrease);
-            canvas.Invalidate();
+            RequestRender();
         };
         menu.Items.Add(decreaseFontItem);
 
@@ -398,12 +534,29 @@ public sealed class DiffCanvasControl : Grid
         increaseFontItem.Click += (_, _) =>
         {
             Scene?.AdjustNodeFontSize(node, DiffNodeFontSizeAction.Increase);
-            canvas.Invalidate();
+            RequestRender();
         };
         menu.Items.Add(increaseFontItem);
 
         menu.ShowAt(this, new FlyoutShowOptions { Position = position });
     }
+
+    private void ShowAnnotationContextMenu(DiffAnnotationHit hit, Point position)
+    {
+        var menu = new MenuFlyout();
+
+        var openItem = new MenuFlyoutItem { Text = ActionText(hit.Annotation) };
+        openItem.Click += (_, _) => AnnotationInteractionRequested?.Invoke(this, new DiffCanvasAnnotationInteractionRequestedEventArgs(hit.Annotation));
+        menu.Items.Add(openItem);
+
+        var revealItem = new MenuFlyoutItem { Text = "Reveal file in tree" };
+        revealItem.Click += (_, _) => NodeNavigationRequested?.Invoke(this, new DiffCanvasNodeNavigationRequestedEventArgs(hit.Node.Document.Id.Value));
+        menu.Items.Add(revealItem);
+
+        menu.ShowAt(this, new FlyoutShowOptions { Position = position });
+    }
+
+    private DiffNode? GetSelectedNode() => Scene?.Nodes.FirstOrDefault(node => node.IsSelected);
 
     private void ShowCanvasContextMenu(Point position)
     {
@@ -413,6 +566,59 @@ public sealed class DiffCanvasControl : Grid
         menu.Items.Add(fitGraphItem);
         menu.ShowAt(this, new FlyoutShowOptions { Position = position });
     }
+
+    private void UpdateAnnotationHover(Point position)
+    {
+        if (Scene is null)
+        {
+            return;
+        }
+
+        var hit = Scene.TryHitTestAnnotation(ToCanvasPoint(position), out var annotationHit)
+            ? annotationHit
+            : null;
+        if (Scene.SetHoveredAnnotation(hit?.Annotation))
+        {
+            RequestRender();
+        }
+
+        if (hit is null)
+        {
+            ProtectedCursor = null;
+            ToolTipService.SetToolTip(this, null);
+            return;
+        }
+
+        ProtectedCursor = handCursor;
+        ToolTipService.SetToolTip(this, BuildAnnotationToolTip(hit.Annotation));
+    }
+
+    private void ClearAnnotationHover()
+    {
+        if (Scene?.SetHoveredAnnotation(null) == true)
+        {
+            RequestRender();
+        }
+
+        ProtectedCursor = null;
+        ToolTipService.SetToolTip(this, null);
+    }
+
+    private static string BuildAnnotationToolTip(DiffAnnotation annotation)
+    {
+        var line = annotation.DisplayLineNumber is int lineNumber ? $" line {lineNumber}" : string.Empty;
+        return $"{annotation.Label}{line}\n{annotation.Detail}\n{ActionText(annotation)}";
+    }
+
+    private static string ActionText(DiffAnnotation annotation) => annotation.ActionKind switch
+    {
+        _ when annotation.Kind == DiffAnnotationKind.HistoryBlame => "Open blame tab",
+        DiffAnnotationActionKind.ReviewThread => "Open review thread",
+        DiffAnnotationActionKind.ChangeNavigation => "Open change target",
+        DiffAnnotationActionKind.FocusLine => "Focus annotated line",
+        DiffAnnotationActionKind.FocusDocument => "Focus annotated file",
+        _ => "Open annotation"
+    };
 
     private Point2 ToCanvasPoint(Point point)
     {
@@ -492,6 +698,7 @@ public sealed class DiffCanvasControl : Grid
         activePointerButton = pointerButton;
         activePointerId = args.Pointer.PointerId;
         lastPointerPosition = pointerPoint.Position;
+        StartInteractiveRenderLoop();
         CapturePointer(args.Pointer);
         args.Handled = true;
     }
@@ -502,12 +709,76 @@ public sealed class DiffCanvasControl : Grid
         activePointerButton = PanPointerButton.None;
         activePointerId = null;
         activeNode = null;
+        activeGroup = null;
         activeResizeHandle = DiffNodeResizeHandle.None;
         activeNodePointerOffset = Point2.Zero;
         activeScrollbarThumbOffsetY = 0;
+        StopInteractiveRenderLoop();
         ReleasePointerCaptures();
         args.Handled = true;
     }
+
+    private void RequestRender()
+    {
+        if (activeInteraction == ActiveInteraction.None)
+        {
+            renderRequested = false;
+            canvas.Invalidate();
+            return;
+        }
+
+        if (renderRequested)
+        {
+            return;
+        }
+
+        renderRequested = true;
+        StartInteractiveRenderLoop();
+    }
+
+    private void StartInteractiveRenderLoop()
+    {
+        if (!renderingFrameSubscribed)
+        {
+            CompositionTarget.Rendering += OnCompositionTargetRendering;
+            renderingFrameSubscribed = true;
+        }
+    }
+
+    private void StopInteractiveRenderLoop()
+    {
+        StopRenderingFrameSubscription();
+        renderRequested = false;
+        canvas.Invalidate();
+    }
+
+    private void StopRenderingFrameSubscription()
+    {
+        if (!renderingFrameSubscribed)
+        {
+            return;
+        }
+
+        CompositionTarget.Rendering -= OnCompositionTargetRendering;
+        renderingFrameSubscribed = false;
+    }
+
+    private void OnCompositionTargetRendering(object? sender, object args)
+    {
+        if (renderRequested)
+        {
+            renderRequested = false;
+            canvas.Invalidate();
+        }
+
+        if (activeInteraction == ActiveInteraction.None && !renderRequested)
+        {
+            StopRenderingFrameSubscription();
+        }
+    }
+
+    private bool ShouldRenderDetailedDocumentBodies() =>
+        activeInteraction is ActiveInteraction.None or ActiveInteraction.DragScrollbar;
 
     private static PanPointerButton GetPanButton(Microsoft.UI.Input.PointerPoint pointerPoint)
     {
@@ -537,4 +808,37 @@ public sealed class DiffCanvasNodeNavigationRequestedEventArgs : EventArgs
     }
 
     public string DocumentId { get; }
+}
+
+public sealed class DiffCanvasNodeDiffTabRequestedEventArgs : EventArgs
+{
+    public DiffCanvasNodeDiffTabRequestedEventArgs(string documentId, bool showFullFile)
+    {
+        DocumentId = documentId;
+        ShowFullFile = showFullFile;
+    }
+
+    public string DocumentId { get; }
+
+    public bool ShowFullFile { get; }
+}
+
+public sealed class DiffCanvasNodeBlameTabRequestedEventArgs : EventArgs
+{
+    public DiffCanvasNodeBlameTabRequestedEventArgs(string documentId)
+    {
+        DocumentId = documentId;
+    }
+
+    public string DocumentId { get; }
+}
+
+public sealed class DiffCanvasAnnotationInteractionRequestedEventArgs : EventArgs
+{
+    public DiffCanvasAnnotationInteractionRequestedEventArgs(DiffAnnotation annotation)
+    {
+        Annotation = annotation;
+    }
+
+    public DiffAnnotation Annotation { get; }
 }

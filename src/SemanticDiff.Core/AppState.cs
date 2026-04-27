@@ -20,6 +20,7 @@ public sealed record SemanticDiffAppState(
     SemanticAnalysisMode SemanticAnalysisMode = SemanticAnalysisMode.WorkspaceThenSyntax,
     GraphLayoutMode LayoutMode = GraphLayoutMode.Layered,
     GraphGroupingMode GroupingMode = GraphGroupingMode.Folder,
+    GitReviewRequestState ReviewRequestState = GitReviewRequestState.Open,
     string? SelectedBranchRef = null,
     int? SelectedPullRequestNumber = null,
     double LeftPaneWidth = 260)

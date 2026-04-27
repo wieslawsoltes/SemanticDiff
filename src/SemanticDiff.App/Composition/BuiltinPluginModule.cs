@@ -18,7 +18,9 @@ public sealed class BuiltinPluginModule : IPluginModule
         registry.Add<IGitRepositoryDiscovery>(new GitRepositoryDiscovery());
         registry.Add<IGitDiffService>(new GitDiffService());
         registry.Add<IGitDiffDocumentService>(new GitDiffDocumentService());
+        registry.Add<IGitHistoryService>(new GitHistoryService());
         registry.Add<IGitReviewService>(new GitReviewService());
+        registry.Add<IGitReviewDiscussionService>(new GitReviewDiscussionService());
         registry.Add<IGitBlameService>(new GitBlameService());
         registry.Add<ISemanticProvider>(new CSharpSemanticProvider());
         registry.Add<ISemanticProvider>(new XamlSemanticProvider());

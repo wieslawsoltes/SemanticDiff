@@ -21,6 +21,7 @@
           <SolidColorBrush x:Key="AccentMutedBrush" Color="#183142" />
           <SolidColorBrush x:Key="PositiveBrush" Color="#55B886" />
           <SolidColorBrush x:Key="WarningBrush" Color="#D7B46A" />
+          <SolidColorBrush x:Key="WarningMutedBrush" Color="#352B16" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Light">
           <SolidColorBrush x:Key="AppBackgroundBrush" Color="#F4F6F9" />
@@ -37,6 +38,7 @@
           <SolidColorBrush x:Key="AccentMutedBrush" Color="#DDEFF8" />
           <SolidColorBrush x:Key="PositiveBrush" Color="#187A54" />
           <SolidColorBrush x:Key="WarningBrush" Color="#9A6D16" />
+          <SolidColorBrush x:Key="WarningMutedBrush" Color="#F6E9C8" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
 
@@ -69,6 +71,22 @@
       <Setter Property="Padding" Value="0" />
       <Setter Property="Margin" Value="0,1" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    </Style>
+
+    <Style x:Key="WorkspaceTabListViewItemStyle" TargetType="ListViewItem">
+      <Setter Property="MinHeight" Value="32" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Margin" Value="0,0,4,0" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="VerticalContentAlignment" Value="Stretch" />
+    </Style>
+
+    <Style x:Key="GitHistoryListViewItemStyle" TargetType="ListViewItem">
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="VerticalContentAlignment" Value="Stretch" />
     </Style>
 
     <Style x:Key="CompactTextBoxStyle" TargetType="TextBox">
@@ -108,50 +126,606 @@
       <Setter Property="Foreground" Value="{ThemeResource TertiaryTextBrush}" />
     </Style>
 
-    <DataTemplate x:Key="ExplorerTreeItemTemplate">
-      <Grid MinHeight="30"
-            Padding="0,1"
+    <Style x:Key="WorkspaceTabCloseButtonStyle" TargetType="Button">
+      <Setter Property="Width" Value="20" />
+      <Setter Property="Height" Value="20" />
+      <Setter Property="MinWidth" Value="0" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Foreground" Value="{ThemeResource TertiaryTextBrush}" />
+    </Style>
+
+    <DataTemplate x:Key="WorkspaceTabHeaderTemplate">
+      <Grid MinHeight="30" MinWidth="104" Padding="10,0" Tag="{Binding}">
+        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="6" VerticalAlignment="Center">
+          <TextBlock Text="{Binding IconGlyph}"
+                     FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                     Foreground="{ThemeResource AccentBrush}"
+                     FontSize="13"
+                     VerticalAlignment="Center"
+                     Visibility="{Binding IconVisibility}" />
+          <TextBlock Grid.Column="1"
+                     Text="{Binding Header}"
+                     Foreground="{ThemeResource PrimaryTextBrush}"
+                     FontSize="12"
+                     FontWeight="SemiBold"
+                     TextTrimming="CharacterEllipsis"
+                     VerticalAlignment="Center" />
+          <Button Grid.Column="2"
+                  Content="x"
+                  Tag="{Binding}"
+                  Width="20"
+                  Height="20"
+                  Padding="0"
+                  Style="{StaticResource WorkspaceTabCloseButtonStyle}"
+                  Visibility="{Binding CloseButtonVisibility}"
+                  Click="OnWorkspaceTabCloseClicked" />
+        </Grid>
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate x:Key="GitHistoryRefBadgeTemplate">
+      <Border Padding="5,1"
+              Margin="0,0,4,0"
+              CornerRadius="4"
+              BorderThickness="1"
+              Background="{Binding Background}"
+              BorderBrush="{Binding Border}">
+        <TextBlock Text="{Binding Text}"
+                   Foreground="{Binding Foreground}"
+                   FontSize="9"
+                   FontWeight="SemiBold"
+                   TextTrimming="CharacterEllipsis" />
+      </Border>
+    </DataTemplate>
+
+    <DataTemplate x:Key="GitHistoryGraphPathTemplate">
+      <Path Data="{Binding Data}"
+            Stroke="{Binding Stroke}"
+            StrokeThickness="{Binding StrokeThickness}"
+            Opacity="{Binding Opacity}"
+            IsHitTestVisible="False" />
+    </DataTemplate>
+
+    <DataTemplate x:Key="GitHistoryItemTemplate">
+      <Grid MinHeight="{Binding RowMinHeight}"
             Tag="{Binding}"
-            RightTapped="OnExplorerTreeNodeRightTapped">
+            RightTapped="OnGitHistoryItemRightTapped">
+        <Grid ColumnDefinitions="214,78,*,Auto" ColumnSpacing="8" Margin="10,0">
+          <Canvas Width="{Binding GraphWidth}"
+                  Height="{Binding RowHeight}"
+                  HorizontalAlignment="Left"
+                  VerticalAlignment="Top"
+                  IsHitTestVisible="False">
+            <ItemsControl ItemsSource="{Binding GraphPaths}"
+                          ItemTemplate="{StaticResource GitHistoryGraphPathTemplate}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <Canvas />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+            </ItemsControl>
+            <Ellipse Canvas.Left="{Binding DotLeft}"
+                     Canvas.Top="{Binding DotTop}"
+                     Width="{Binding DotSize}"
+                     Height="{Binding DotSize}"
+                     Fill="{Binding DotBrush}"
+                     Stroke="{Binding DotStroke}"
+                     StrokeThickness="2" />
+          </Canvas>
+          <TextBlock Grid.Column="1"
+                     Text="{Binding ShortId}"
+                     Foreground="{ThemeResource AccentBrush}"
+                     FontFamily="Cascadia Mono, Consolas"
+                     FontSize="11"
+                     FontWeight="SemiBold"
+                     VerticalAlignment="Top"
+                     Margin="0,13,0,0" />
+          <Grid Grid.Column="2" RowDefinitions="Auto,Auto,Auto" RowSpacing="4" Margin="0,9,0,0">
+            <TextBlock Text="{Binding Subject}"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       FontSize="12"
+                       FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" />
+            <ItemsControl Grid.Row="1"
+                          ItemsSource="{Binding RefBadges}"
+                          ItemTemplate="{StaticResource GitHistoryRefBadgeTemplate}"
+                          Visibility="{Binding DecorationsVisibility}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <StackPanel Orientation="Horizontal" />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+            </ItemsControl>
+            <TextBlock Grid.Row="2"
+                       Text="{Binding MetaText}"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       FontSize="10"
+                       TextTrimming="CharacterEllipsis" />
+          </Grid>
+          <Border Grid.Column="3"
+                  Padding="6,1"
+                  CornerRadius="4"
+                  Background="{ThemeResource WarningMutedBrush}"
+                  Margin="0,9,0,0"
+                  VerticalAlignment="Top"
+                  Visibility="{Binding MergeVisibility}">
+            <TextBlock Text="{Binding MergeText}" Foreground="{ThemeResource WarningBrush}" FontSize="9" FontWeight="SemiBold" />
+          </Border>
+        </Grid>
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate x:Key="FileDiffLineTemplate">
+      <Grid MinHeight="22" Padding="8,1">
+        <Grid ColumnDefinitions="44,44,26,*" ColumnSpacing="6">
+          <TextBlock Text="{Binding OldLineNumberText}" Foreground="{ThemeResource TertiaryTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="11" HorizontalAlignment="Right" />
+          <TextBlock Grid.Column="1" Text="{Binding NewLineNumberText}" Foreground="{ThemeResource TertiaryTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="11" HorizontalAlignment="Right" />
+          <TextBlock Grid.Column="2" Text="{Binding Marker}" Foreground="{ThemeResource AccentBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Center" />
+          <TextBlock Grid.Column="3" Text="{Binding Text}" Foreground="{ThemeResource PrimaryTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="12" TextTrimming="CharacterEllipsis" />
+        </Grid>
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate x:Key="BlameCommitNodeTemplate">
+      <Grid MinHeight="96" ColumnDefinitions="42,*" Padding="14,4">
+        <Grid>
+          <Border Width="3"
+                  Background="{Binding AccentBrush}"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Stretch"
+                  CornerRadius="2" />
+          <Ellipse Width="15"
+                   Height="15"
+                   Fill="{Binding AccentBrush}"
+                   Stroke="{ThemeResource ChromeBrush}"
+                   StrokeThickness="2"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Top"
+                   Margin="0,12,0,0" />
+        </Grid>
+        <Border Grid.Column="1"
+                Background="{Binding SoftBrush}"
+                BorderBrush="{Binding AccentBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="12,10">
+          <Grid RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="7">
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+              <TextBlock Text="{Binding ShortId}"
+                         Foreground="{ThemeResource AccentBrush}"
+                         FontFamily="Cascadia Mono, Consolas"
+                         FontSize="12"
+                         FontWeight="SemiBold"
+                         VerticalAlignment="Center" />
+              <TextBlock Grid.Column="1"
+                         Text="{Binding Summary}"
+                         Foreground="{ThemeResource PrimaryTextBrush}"
+                         FontSize="13"
+                         FontWeight="SemiBold"
+                         TextTrimming="CharacterEllipsis"
+                         VerticalAlignment="Center" />
+              <Border Grid.Column="2"
+                      Background="{ThemeResource ChromeBrush}"
+                      BorderBrush="{Binding AccentBrush}"
+                      BorderThickness="1"
+                      CornerRadius="10"
+                      Padding="8,2">
+                <TextBlock Text="{Binding LineCountText}"
+                           Foreground="{ThemeResource PrimaryTextBrush}"
+                           FontSize="10"
+                           FontWeight="SemiBold" />
+              </Border>
+            </Grid>
+            <TextBlock Grid.Row="1"
+                       Text="{Binding Author}"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       FontSize="11"
+                       TextTrimming="CharacterEllipsis" />
+            <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="10">
+              <TextBlock Text="{Binding LineRangeText}"
+                         Foreground="{ThemeResource TertiaryTextBrush}"
+                         FontFamily="Cascadia Mono, Consolas"
+                         FontSize="10"
+                         TextTrimming="CharacterEllipsis" />
+              <TextBlock Grid.Column="1"
+                         Text="{Binding TimeText}"
+                         Foreground="{ThemeResource TertiaryTextBrush}"
+                         FontSize="10" />
+            </Grid>
+            <Grid Grid.Row="3" ColumnDefinitions="Auto,*" ColumnSpacing="8">
+              <TextBlock Text="{Binding CoverageText}"
+                         Foreground="{ThemeResource SecondaryTextBrush}"
+                         FontSize="10"
+                         VerticalAlignment="Center" />
+              <Grid Grid.Column="1"
+                    Height="8"
+                    Background="{ThemeResource SubtleBorderBrush}"
+                    VerticalAlignment="Center">
+                <Border Width="{Binding CoverageWidth}"
+                        Background="{Binding AccentBrush}"
+                        HorizontalAlignment="Left"
+                        CornerRadius="4" />
+              </Grid>
+            </Grid>
+          </Grid>
+        </Border>
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate x:Key="BlameTimelineItemTemplate">
+      <Border Width="178"
+              MinHeight="82"
+              Margin="0,0,8,0"
+              Padding="10,8"
+              CornerRadius="7"
+              Background="{Binding SoftBrush}"
+              BorderBrush="{Binding AccentBrush}"
+              BorderThickness="1">
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="4">
+          <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="7">
+            <Border Width="8"
+                    Height="{Binding MarkerHeight}"
+                    Background="{Binding AccentBrush}"
+                    CornerRadius="4"
+                    VerticalAlignment="Top" />
+            <TextBlock Grid.Column="1"
+                       Text="{Binding ShortId}"
+                       Foreground="{ThemeResource AccentBrush}"
+                       FontFamily="Cascadia Mono, Consolas"
+                       FontSize="10"
+                       FontWeight="SemiBold" />
+            <TextBlock Grid.Column="2"
+                       Text="{Binding TimeText}"
+                       Foreground="{ThemeResource TertiaryTextBrush}"
+                       FontSize="9" />
+          </Grid>
+          <TextBlock Grid.Row="1"
+                     Text="{Binding Subject}"
+                     Foreground="{ThemeResource PrimaryTextBrush}"
+                     FontSize="11"
+                     FontWeight="SemiBold"
+                     TextTrimming="CharacterEllipsis" />
+          <TextBlock Grid.Row="2"
+                     Text="{Binding Author}"
+                     Foreground="{ThemeResource SecondaryTextBrush}"
+                     FontSize="10"
+                     TextTrimming="CharacterEllipsis" />
+          <TextBlock Grid.Row="3"
+                     Text="{Binding BlamedLineText}"
+                     Foreground="{ThemeResource WarningBrush}"
+                     FontSize="9"
+                     FontWeight="SemiBold"
+                     Visibility="{Binding BlamedLineVisibility}" />
+        </Grid>
+      </Border>
+    </DataTemplate>
+
+    <DataTemplate x:Key="WorkspaceTabContentTemplate">
+      <Grid Background="{ThemeResource CanvasBrush}">
+        <Grid Visibility="{Binding HistoryVisibility}" RowDefinitions="Auto,*">
+          <Border Background="{ThemeResource ChromeBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="0,0,0,1" Padding="16,12">
+            <Grid RowDefinitions="Auto,Auto" RowSpacing="5">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <TextBlock Text="{Binding History.Title}" Foreground="{ThemeResource PrimaryTextBrush}" FontSize="16" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="1" Text="{Binding History.CountText}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="12" VerticalAlignment="Center" />
+              </Grid>
+              <TextBlock Grid.Row="1" Text="{Binding History.RangeText}" Foreground="{ThemeResource TertiaryTextBrush}" FontFamily="Cascadia Mono, Consolas" FontSize="11" TextTrimming="CharacterEllipsis" />
+            </Grid>
+          </Border>
+          <Grid Grid.Row="1" RowDefinitions="*,Auto">
+            <TextBlock Text="{Binding StatusText}" Foreground="{ThemeResource SecondaryTextBrush}" Margin="18,14" Visibility="{Binding LoadingVisibility}" />
+            <ListView ItemsSource="{Binding History.Commits}"
+                      ItemTemplate="{StaticResource GitHistoryItemTemplate}"
+                      ItemContainerStyle="{StaticResource GitHistoryListViewItemStyle}"
+                      Background="Transparent"
+                      BorderThickness="0"
+                      Padding="0"
+                      SelectionMode="None"
+                      ContainerContentChanging="OnGitHistoryContainerContentChanging" />
+            <Border Grid.Row="1"
+                    Background="{ThemeResource ChromeBrush}"
+                    BorderBrush="{ThemeResource BorderBrush}"
+                    BorderThickness="0,1,0,0"
+                    Padding="16,7"
+                    Visibility="{Binding History.FooterVisibility}">
+              <TextBlock Text="{Binding History.FooterText}"
+                         Foreground="{ThemeResource SecondaryTextBrush}"
+                         FontSize="11" />
+            </Border>
+          </Grid>
+        </Grid>
+
+        <Grid Visibility="{Binding FileDiffVisibility}" RowDefinitions="Auto,*">
+          <Border Background="{ThemeResource ChromeBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="0,0,0,1" Padding="16,10">
+            <Grid RowDefinitions="Auto,Auto" RowSpacing="7">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{Binding FileDiff.Path}" Foreground="{ThemeResource PrimaryTextBrush}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding FileDiff.SummaryText}" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+                <Grid Grid.Column="1" ColumnDefinitions="Auto,Auto" ColumnSpacing="6" VerticalAlignment="Center">
+                  <ToggleButton Content="Diff only" Tag="DiffOnly" IsChecked="{Binding FileDiff.IsDiffOnlyMode, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnFileDiffModeClicked" />
+                  <ToggleButton Grid.Column="1" Content="Full file" Tag="FullFile" IsChecked="{Binding FileDiff.IsFullFileMode, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnFileDiffModeClicked" />
+                </Grid>
+              </Grid>
+            </Grid>
+          </Border>
+          <Grid Grid.Row="1">
+            <views:CodeFileViewerControl Visibility="{Binding FileDiff.DiffOnlyVisibility}"
+                                         Lines="{Binding FileDiff.DiffOnlyLines}"
+                                         IsDiffMode="True"
+                                         RefreshKey="{Binding FileDiff.DisplayMode}" />
+            <Grid Visibility="{Binding FileDiff.FullFileVisibility}" RowDefinitions="Auto,*" Padding="14">
+              <TextBlock Text="{Binding FileDiff.FullFileHeader}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" Margin="0,0,0,8" />
+              <views:CodeFileViewerControl Grid.Row="1"
+                                           Lines="{Binding FileDiff.FullFileLines}"
+                                           FoldRegions="{Binding FileDiff.FoldRegions}"
+                                           RefreshKey="{Binding FileDiff.DisplayMode}" />
+            </Grid>
+          </Grid>
+        </Grid>
+
+        <Grid Visibility="{Binding BlameVisibility}" RowDefinitions="Auto,*,Auto">
+          <Border Background="{ThemeResource ChromeBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="0,0,0,1" Padding="16,10">
+            <Grid RowDefinitions="Auto,Auto" RowSpacing="6">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{Binding Blame.Path}" Foreground="{ThemeResource PrimaryTextBrush}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding Blame.SummaryText}" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Content="{Binding Blame.TimelineToggleText}"
+                        Tag="{Binding}"
+                        Style="{StaticResource ChromeButtonStyle}"
+                        Click="OnBlameTimelineToggleClicked" />
+              </Grid>
+            </Grid>
+          </Border>
+          <Grid Grid.Row="1">
+            <TextBlock Text="{Binding StatusText}" Foreground="{ThemeResource SecondaryTextBrush}" Margin="18,14" Visibility="{Binding LoadingVisibility}" />
+            <TextBlock Text="No blame data available for this file."
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       Margin="18,14"
+                       Visibility="{Binding Blame.EmptyVisibility}" />
+            <ScrollViewer Visibility="{Binding Blame.ContentVisibility}"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+              <ItemsControl ItemsSource="{Binding Blame.CommitNodes}"
+                            ItemTemplate="{StaticResource BlameCommitNodeTemplate}">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate>
+                    <StackPanel />
+                  </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+              </ItemsControl>
+            </ScrollViewer>
+          </Grid>
+          <Border Grid.Row="2"
+                  Background="{ThemeResource ChromeBrush}"
+                  BorderBrush="{ThemeResource BorderBrush}"
+                  BorderThickness="0,1,0,0"
+                  Padding="14,8"
+                  Visibility="{Binding Blame.CollapsedTimelineVisibility}">
+            <Grid RowDefinitions="Auto,Auto" RowSpacing="7">
+              <TextBlock Text="File history timeline"
+                         Foreground="{ThemeResource TertiaryTextBrush}"
+                         FontSize="10"
+                         FontWeight="SemiBold" />
+              <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                <ItemsControl ItemsSource="{Binding Blame.TimelineItems}"
+                              ItemTemplate="{StaticResource BlameTimelineItemTemplate}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <StackPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                </ItemsControl>
+              </ScrollViewer>
+            </Grid>
+          </Border>
+          <Border Grid.Row="2"
+                  Background="{ThemeResource ChromeBrush}"
+                  BorderBrush="{ThemeResource BorderBrush}"
+                  BorderThickness="0,1,0,0"
+                  Padding="14,8"
+                  MaxHeight="242"
+                  Visibility="{Binding Blame.ExpandedTimelineVisibility}">
+            <Grid RowDefinitions="Auto,*" RowSpacing="7">
+              <TextBlock Text="Expanded file history timeline"
+                         Foreground="{ThemeResource TertiaryTextBrush}"
+                         FontSize="10"
+                         FontWeight="SemiBold" />
+              <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                <ItemsControl ItemsSource="{Binding Blame.TimelineItems}"
+                              ItemTemplate="{StaticResource BlameTimelineItemTemplate}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <StackPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                </ItemsControl>
+              </ScrollViewer>
+            </Grid>
+          </Border>
+        </Grid>
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate x:Key="GitReferenceTreeItemTemplate">
+      <Grid MinHeight="30" Padding="0,1" Tag="{Binding}" RightTapped="OnGitReferenceTreeItemRightTapped">
         <Grid Margin="{Binding IndentMargin}" ColumnDefinitions="18,22,*,Auto" ColumnSpacing="7">
           <Button Content="{Binding DisclosureGlyph}"
                   Tag="{Binding}"
                   Style="{StaticResource TreeDisclosureButtonStyle}"
                   IsEnabled="{Binding HasChildren}"
-                  Click="OnExplorerNodeDisclosureClicked" />
-          <Grid Grid.Column="1" Width="21" Height="22" VerticalAlignment="Center">
-            <Border Width="3"
-                    Height="18"
-                    HorizontalAlignment="Left"
-                    CornerRadius="2"
-                    Background="{Binding StatusBrush}" />
-            <Border Width="18"
-                    Height="18"
-                    HorizontalAlignment="Right"
-                    CornerRadius="4"
-                    Background="{Binding StatusSoftBrush}"
-                    BorderBrush="{Binding StatusBrush}"
-                    BorderThickness="1">
-              <Grid>
-                <TextBlock Text="{Binding FallbackIconGlyph}"
-                           FontFamily="{Binding FallbackIconFontFamily}"
-                           Foreground="{Binding StatusBrush}"
-                           FontSize="12"
-                           Opacity="{Binding FallbackIconOpacity}"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"
-                           AutomationProperties.Name="{Binding IconAutomationText}"
-                           ToolTipService.ToolTip="{Binding PlatformIconText}" />
-                <Image Source="{Binding IconSource}"
-                       Width="16"
-                       Height="16"
-                       Stretch="Uniform"
+                  Visibility="{Binding DisclosureVisibility}"
+                  Click="OnGitReferenceNodeDisclosureClicked" />
+          <TextBlock Grid.Column="1"
+                     Text="{Binding IconGlyph}"
+                     FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                     Foreground="{ThemeResource SecondaryTextBrush}"
+                     FontSize="14"
+                     HorizontalAlignment="Center"
+                     VerticalAlignment="Center" />
+          <Grid Grid.Column="2" RowDefinitions="Auto,Auto">
+            <TextBlock Text="{Binding DisplayName}"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       FontSize="12"
+                       FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" />
+            <TextBlock Grid.Row="1"
+                       Text="{Binding DetailText}"
+                       Foreground="{ThemeResource TertiaryTextBrush}"
+                       FontSize="10"
+                       TextTrimming="CharacterEllipsis" />
+          </Grid>
+          <Border Grid.Column="3"
+                  MinWidth="22"
+                  Height="18"
+                  CornerRadius="4"
+                  Background="{ThemeResource AccentMutedBrush}"
+                  BorderBrush="{ThemeResource BorderBrush}"
+                  BorderThickness="1"
+                  Margin="6,1,0,0"
+                  VerticalAlignment="Top"
+                  Visibility="{Binding BadgeVisibility}">
+            <TextBlock Text="{Binding BadgeText}"
+                       Foreground="{ThemeResource AccentBrush}"
+                       FontSize="9"
+                       FontWeight="SemiBold"
                        HorizontalAlignment="Center"
                        VerticalAlignment="Center"
-                       AutomationProperties.Name="{Binding IconAutomationText}"
-                       ToolTipService.ToolTip="{Binding PlatformIconText}" />
-              </Grid>
-            </Border>
+                       Margin="5,0" />
+          </Border>
+        </Grid>
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate x:Key="ReviewThreadItemTemplate">
+      <Grid MinHeight="46" Padding="8,5">
+        <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8">
+          <StackPanel Orientation="Horizontal" Spacing="5">
+            <TextBlock Text="{Binding KindText}"
+                       Foreground="{ThemeResource AccentBrush}"
+                       FontSize="10"
+                       FontWeight="SemiBold" />
+            <TextBlock Text="{Binding Title}"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       FontSize="12"
+                       FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" />
+          </StackPanel>
+          <Border Grid.Column="1"
+                  MinWidth="20"
+                  Height="18"
+                  CornerRadius="4"
+                  Background="{ThemeResource AccentMutedBrush}"
+                  BorderBrush="{ThemeResource BorderBrush}"
+                  BorderThickness="1">
+            <TextBlock Text="{Binding BadgeText}"
+                       Foreground="{ThemeResource AccentBrush}"
+                       FontSize="9"
+                       FontWeight="SemiBold"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Margin="5,0" />
+          </Border>
+          <TextBlock Grid.Row="1"
+                     Grid.ColumnSpan="2"
+                     Text="{Binding DetailText}"
+                     Foreground="{ThemeResource TertiaryTextBrush}"
+                     FontSize="10"
+                     TextTrimming="CharacterEllipsis" />
+          <Grid Grid.Row="2" Grid.ColumnSpan="2" ColumnDefinitions="*,Auto" ColumnSpacing="6">
+            <TextBlock Text="{Binding PreviewText}"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       FontSize="10"
+                       TextTrimming="CharacterEllipsis" />
+            <TextBlock Grid.Column="1"
+                       Text="resolved"
+                       Foreground="{ThemeResource PositiveBrush}"
+                       FontSize="9"
+                       FontWeight="SemiBold"
+                       Visibility="{Binding ResolvedVisibility}" />
+          </Grid>
+        </Grid>
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate x:Key="ReviewCommentItemTemplate">
+      <Border Background="{ThemeResource PanelRaisedBrush}"
+              BorderBrush="{ThemeResource SubtleBorderBrush}"
+              BorderThickness="1"
+              CornerRadius="5"
+              Padding="8,6"
+              Margin="0,0,0,6">
+        <Grid RowDefinitions="Auto,Auto" RowSpacing="4">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+            <TextBlock Text="{Binding HeaderText}"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       FontSize="10"
+                       FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" />
+            <TextBlock Grid.Column="1"
+                       Text="system"
+                       Foreground="{ThemeResource WarningBrush}"
+                       FontSize="9"
+                       Visibility="{Binding SystemVisibility}" />
+          </Grid>
+          <TextBlock Grid.Row="1"
+                     Text="{Binding Body}"
+                     Foreground="{ThemeResource SecondaryTextBrush}"
+                     FontSize="11"
+                     TextWrapping="WrapWholeWords" />
+        </Grid>
+      </Border>
+    </DataTemplate>
+
+    <DataTemplate x:Key="ExplorerTreeItemTemplate">
+      <Grid MinHeight="30"
+            Padding="0,1"
+            Tag="{Binding}"
+            RightTapped="OnExplorerTreeNodeRightTapped">
+        <Grid Margin="{Binding IndentMargin}" ColumnDefinitions="18,Auto,*,Auto" ColumnSpacing="7">
+          <Button Content="{Binding DisclosureGlyph}"
+                  Tag="{Binding}"
+                  Style="{StaticResource TreeDisclosureButtonStyle}"
+                  IsEnabled="{Binding HasChildren}"
+                  Visibility="{Binding DisclosureVisibility}"
+                  Click="OnExplorerNodeDisclosureClicked" />
+          <Grid Grid.Column="1" Width="25" Height="22" ColumnDefinitions="3,18" ColumnSpacing="4" VerticalAlignment="Center">
+            <Border Grid.Column="0"
+                    Width="3"
+                    Height="16"
+                    CornerRadius="2"
+                    VerticalAlignment="Center"
+                    Background="{Binding StatusBrush}" />
+            <Grid Grid.Column="1"
+                  Width="18"
+                  Height="18"
+                  Background="Transparent">
+              <TextBlock Text="{Binding FallbackIconGlyph}"
+                         FontFamily="{Binding FallbackIconFontFamily}"
+                         Foreground="{ThemeResource SecondaryTextBrush}"
+                         FontSize="12"
+                         Visibility="{Binding FallbackIconVisibility}"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center"
+                         AutomationProperties.Name="{Binding IconAutomationText}"
+                         ToolTipService.ToolTip="{Binding PlatformIconText}" />
+              <Image Source="{Binding IconSource}"
+                     Width="16"
+                     Height="16"
+                     Stretch="Uniform"
+                     Visibility="{Binding IconSourceVisibility}"
+                     HorizontalAlignment="Center"
+                     VerticalAlignment="Center"
+                     AutomationProperties.Name="{Binding IconAutomationText}"
+                     ToolTipService.ToolTip="{Binding PlatformIconText}" />
+            </Grid>
           </Grid>
           <Grid Grid.Column="2" RowDefinitions="Auto,Auto">
             <TextBlock Text="{Binding Name}"
@@ -184,6 +758,76 @@
       </Grid>
     </DataTemplate>
 
+    <DataTemplate x:Key="SymbolScopeFilterTemplate">
+      <Button Tag="{Binding}"
+              Click="OnSymbolScopeFilterClicked"
+              MinWidth="0"
+              Height="26"
+              Padding="8,0"
+              Background="{Binding Background}"
+              BorderBrush="{Binding Border}"
+              BorderThickness="1"
+              CornerRadius="13">
+        <TextBlock Text="{Binding DisplayText}"
+                   Foreground="{ThemeResource PrimaryTextBrush}"
+                   FontSize="11"
+                   FontWeight="SemiBold"
+                   TextTrimming="CharacterEllipsis" />
+      </Button>
+    </DataTemplate>
+
+    <DataTemplate x:Key="SymbolKindFacetTemplate">
+      <Button Tag="{Binding}"
+              Click="OnSymbolKindFacetClicked"
+              MinWidth="0"
+              Padding="8,6"
+              HorizontalAlignment="Stretch"
+              HorizontalContentAlignment="Stretch"
+              Background="{Binding Background}"
+              BorderBrush="{Binding Border}"
+              BorderThickness="1"
+              CornerRadius="5">
+        <Grid RowDefinitions="Auto,Auto">
+          <TextBlock Text="{Binding DisplayText}"
+                     Foreground="{ThemeResource PrimaryTextBrush}"
+                     FontSize="11"
+                     FontWeight="SemiBold"
+                     TextTrimming="CharacterEllipsis" />
+          <TextBlock Grid.Row="1"
+                     Text="{Binding DetailText}"
+                     Foreground="{ThemeResource TertiaryTextBrush}"
+                     FontSize="9"
+                     TextTrimming="CharacterEllipsis" />
+        </Grid>
+      </Button>
+    </DataTemplate>
+
+    <DataTemplate x:Key="SymbolDocumentFacetTemplate">
+      <Button Tag="{Binding}"
+              Click="OnSymbolDocumentFacetClicked"
+              MinWidth="0"
+              Padding="8,6"
+              HorizontalAlignment="Stretch"
+              HorizontalContentAlignment="Stretch"
+              Background="{Binding Background}"
+              BorderBrush="{Binding Border}"
+              BorderThickness="1"
+              CornerRadius="5">
+        <Grid RowDefinitions="Auto,Auto">
+          <TextBlock Text="{Binding FileName}"
+                     Foreground="{ThemeResource PrimaryTextBrush}"
+                     FontSize="11"
+                     FontWeight="SemiBold"
+                     TextTrimming="CharacterEllipsis" />
+          <TextBlock Grid.Row="1"
+                     Text="{Binding DetailText}"
+                     Foreground="{ThemeResource TertiaryTextBrush}"
+                     FontSize="9"
+                     TextTrimming="CharacterEllipsis" />
+        </Grid>
+      </Button>
+    </DataTemplate>
+
     <DataTemplate x:Key="SemanticItemTemplate">
       <Grid ColumnDefinitions="42,*,Auto" MinHeight="34" Padding="0,3" ColumnSpacing="8">
         <Border Width="36"
@@ -202,10 +846,23 @@
                      TextTrimming="CharacterEllipsis" />
         </Border>
         <Grid Grid.Column="1" RowDefinitions="Auto,Auto">
-          <TextBlock Text="{Binding DisplayName}"
-                     Foreground="{ThemeResource PrimaryTextBrush}"
-                     FontSize="12"
-                     TextTrimming="CharacterEllipsis" />
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="5">
+            <TextBlock Text="{Binding DisplayName}"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       FontSize="12"
+                       TextTrimming="CharacterEllipsis" />
+            <Border Grid.Column="1"
+                    Visibility="{Binding SignalVisibility}"
+                    Padding="4,0"
+                    CornerRadius="3"
+                    Background="{ThemeResource WarningMutedBrush}"
+                    VerticalAlignment="Center">
+              <TextBlock Text="{Binding SignalText}"
+                         Foreground="{ThemeResource WarningBrush}"
+                         FontSize="8"
+                         FontWeight="SemiBold" />
+            </Border>
+          </Grid>
           <TextBlock Grid.Row="1"
                      Text="{Binding LocationText}"
                      Foreground="{ThemeResource TertiaryTextBrush}"
@@ -317,12 +974,14 @@
                 <TextBlock Text="Changed Files" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
                 <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.ExplorerCountText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="10" />
               </Grid>
-              <TextBox Grid.Row="1"
+              <TextBox x:Name="FileSearchBox"
+                       Grid.Row="1"
                        Text="{x:Bind ViewModel.FileSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                        Style="{StaticResource CompactTextBoxStyle}"
                        PlaceholderText="Find file"
                        Margin="0,0,0,7" />
-              <ListView Grid.Row="2"
+              <ListView x:Name="ExplorerTreeList"
+                        Grid.Row="2"
                         ItemsSource="{x:Bind ViewModel.ExplorerTreeItems, Mode=OneWay}"
                         SelectedItem="{x:Bind ViewModel.SelectedExplorerTreeNode, Mode=TwoWay}"
                         ItemTemplate="{StaticResource ExplorerTreeItemTemplate}"
@@ -331,29 +990,170 @@
                         BorderThickness="0"
                         Padding="0"
                         SelectionMode="Single"
+                        KeyDown="OnExplorerTreeKeyDown"
                         SelectionChanged="OnExplorerTreeSelectionChanged" />
             </Grid>
           </TabViewItem>
 
-          <TabViewItem Header="Symbols" IsClosable="False">
+          <TabViewItem Header="Git" IsClosable="False">
             <Grid RowDefinitions="Auto,Auto,*" Padding="0,8,0,0">
               <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,7">
-                <TextBlock Text="Symbols" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
-                <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.SymbolCountText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="10" />
+                <TextBlock Text="Git References" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.GitReferenceCountText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="10" />
               </Grid>
-              <TextBox Grid.Row="1"
-                       Text="{x:Bind ViewModel.SymbolSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+              <TextBox x:Name="GitReferenceSearchBox"
+                       Grid.Row="1"
+                       Text="{x:Bind ViewModel.GitReferenceSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                        Style="{StaticResource CompactTextBoxStyle}"
-                       PlaceholderText="Find symbol"
+                       PlaceholderText="Filter branches and review requests"
                        Margin="0,0,0,7" />
-              <ListView Grid.Row="2"
-                        ItemsSource="{x:Bind ViewModel.SemanticItems, Mode=OneWay}"
-                        ItemTemplate="{StaticResource SemanticItemTemplate}"
+              <ListView x:Name="GitReferenceTreeList"
+                        Grid.Row="2"
+                        ItemsSource="{x:Bind ViewModel.GitReferenceTreeItems, Mode=OneWay}"
+                        SelectedItem="{x:Bind ViewModel.SelectedGitReferenceTreeItem, Mode=TwoWay}"
+                        ItemTemplate="{StaticResource GitReferenceTreeItemTemplate}"
                         ItemContainerStyle="{StaticResource CompactListViewItemStyle}"
                         Background="Transparent"
                         BorderThickness="0"
                         Padding="0"
                         SelectionMode="Single"
+                        KeyDown="OnGitReferenceTreeKeyDown"
+                        SelectionChanged="OnGitReferenceTreeSelectionChanged" />
+            </Grid>
+          </TabViewItem>
+
+          <TabViewItem Header="Review" IsClosable="False">
+            <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto" Padding="0,8,0,0">
+              <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,7">
+                <TextBlock Text="Review Threads" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.ReviewThreadCountText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="10" />
+              </Grid>
+              <TextBox x:Name="ReviewSearchBox"
+                       Grid.Row="1"
+                       Text="{x:Bind ViewModel.ReviewSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                       Style="{StaticResource CompactTextBoxStyle}"
+                       PlaceholderText="Filter review"
+                       Margin="0,0,0,7" />
+              <ListView x:Name="ReviewThreadList"
+                        Grid.Row="2"
+                        ItemsSource="{x:Bind ViewModel.ReviewThreadItems, Mode=OneWay}"
+                        SelectedItem="{x:Bind ViewModel.SelectedReviewThreadItem, Mode=TwoWay}"
+                        ItemTemplate="{StaticResource ReviewThreadItemTemplate}"
+                        ItemContainerStyle="{StaticResource CompactListViewItemStyle}"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Padding="0"
+                        SelectionMode="Single"
+                        DoubleTapped="OnReviewThreadDoubleTapped"
+                        KeyDown="OnReviewThreadKeyDown" />
+              <TextBlock Grid.Row="3"
+                         Text="{x:Bind ViewModel.ReviewPanelStatusText, Mode=OneWay}"
+                         Foreground="{ThemeResource TertiaryTextBrush}"
+                         FontSize="10"
+                         TextTrimming="CharacterEllipsis"
+                         Margin="0,7,0,5" />
+              <ListView Grid.Row="4"
+                        MaxHeight="170"
+                        ItemsSource="{x:Bind ViewModel.SelectedReviewComments, Mode=OneWay}"
+                        ItemTemplate="{StaticResource ReviewCommentItemTemplate}"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Padding="0"
+                        SelectionMode="None" />
+              <Grid Grid.Row="5" RowDefinitions="Auto,Auto,Auto" RowSpacing="6" Margin="0,5,0,0">
+                <TextBox Text="{x:Bind ViewModel.ReviewCommentText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         Height="82"
+                         TextWrapping="Wrap"
+                         AcceptsReturn="True"
+                         Style="{StaticResource CompactTextBoxStyle}"
+                         PlaceholderText="Write a review comment or reply" />
+                <Grid Grid.Row="1" ColumnDefinitions="*,*,*,*" ColumnSpacing="6">
+                  <Button Content="Open" Style="{StaticResource ChromeButtonStyle}" IsEnabled="{x:Bind ViewModel.CanNavigateToSelectedReviewThread, Mode=OneWay}" Click="OnReviewOpenThreadClicked" />
+                  <Button Grid.Column="1" Content="Reload" Style="{StaticResource ChromeButtonStyle}" Click="OnReviewReloadClicked" />
+                  <Button Grid.Column="2" Content="Comment" Style="{StaticResource ChromeButtonStyle}" Click="OnReviewAddCommentClicked" />
+                  <Button Grid.Column="3" Content="Reply" Style="{StaticResource ChromeButtonStyle}" IsEnabled="{x:Bind ViewModel.CanReplyToSelectedReviewThread, Mode=OneWay}" Click="OnReviewReplyClicked" />
+                </Grid>
+                <Button Grid.Row="2"
+                        Content="{x:Bind ViewModel.ReviewResolveButtonText, Mode=OneWay}"
+                        Style="{StaticResource ChromeButtonStyle}"
+                        IsEnabled="{x:Bind ViewModel.CanResolveSelectedReviewThread, Mode=OneWay}"
+                        Click="OnReviewResolveClicked" />
+              </Grid>
+            </Grid>
+          </TabViewItem>
+
+          <TabViewItem Header="Symbols" IsClosable="False">
+            <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" Padding="0,8,0,0" RowSpacing="7">
+              <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,7">
+                <TextBlock Text="Symbols" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.SymbolCountText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="10" />
+              </Grid>
+              <TextBox x:Name="SymbolSearchBox"
+                       Grid.Row="1"
+                       Text="{x:Bind ViewModel.SymbolSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                       Style="{StaticResource CompactTextBoxStyle}"
+                       PlaceholderText="Find symbol, type, file, changed, linked" />
+              <Grid Grid.Row="2" RowDefinitions="Auto,Auto" RowSpacing="3">
+                <TextBlock Text="{x:Bind ViewModel.SymbolInsightSummaryText, Mode=OneWay}"
+                           Foreground="{ThemeResource SecondaryTextBrush}"
+                           FontSize="10"
+                           TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Row="1"
+                           Text="{x:Bind ViewModel.SymbolFilterStatusText, Mode=OneWay}"
+	                           Foreground="{ThemeResource TertiaryTextBrush}"
+	                           FontSize="9"
+	                           TextTrimming="CharacterEllipsis" />
+	              </Grid>
+	              <Grid Grid.Row="3" RowDefinitions="Auto,Auto" RowSpacing="6">
+	                <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="6">
+	                  <TextBlock Text="Scope" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="9" FontWeight="SemiBold" VerticalAlignment="Center" />
+	                  <ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+	                    <ItemsControl ItemsSource="{x:Bind ViewModel.SymbolScopeFilters, Mode=OneWay}"
+	                                  ItemTemplate="{StaticResource SymbolScopeFilterTemplate}">
+	                      <ItemsControl.ItemsPanel>
+	                        <ItemsPanelTemplate>
+	                          <StackPanel Orientation="Horizontal" Spacing="5" />
+	                        </ItemsPanelTemplate>
+	                      </ItemsControl.ItemsPanel>
+	                    </ItemsControl>
+	                  </ScrollViewer>
+	                  <Button Grid.Column="2" Content="Clear" Style="{StaticResource ChromeButtonStyle}" Click="OnSymbolClearFiltersClicked" Height="24" Padding="8,0" />
+	                </Grid>
+	                <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="6" MaxHeight="126">
+	                  <Grid RowDefinitions="Auto,*" RowSpacing="4">
+	                    <TextBlock Text="Kinds" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="9" FontWeight="SemiBold" />
+	                    <ListView Grid.Row="1"
+	                              ItemsSource="{x:Bind ViewModel.SymbolKindFacets, Mode=OneWay}"
+	                              ItemTemplate="{StaticResource SymbolKindFacetTemplate}"
+	                              ItemContainerStyle="{StaticResource CompactListViewItemStyle}"
+	                              Background="Transparent"
+	                              BorderThickness="0"
+	                              Padding="0"
+	                              SelectionMode="None" />
+	                  </Grid>
+	                  <Grid Grid.Column="1" RowDefinitions="Auto,*" RowSpacing="4">
+	                    <TextBlock Text="Files" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="9" FontWeight="SemiBold" />
+	                    <ListView Grid.Row="1"
+	                              ItemsSource="{x:Bind ViewModel.SymbolDocumentFacets, Mode=OneWay}"
+	                              ItemTemplate="{StaticResource SymbolDocumentFacetTemplate}"
+	                              ItemContainerStyle="{StaticResource CompactListViewItemStyle}"
+	                              Background="Transparent"
+	                              BorderThickness="0"
+	                              Padding="0"
+	                              SelectionMode="None" />
+	                  </Grid>
+	                </Grid>
+	              </Grid>
+	              <ListView x:Name="SemanticItemsList"
+	                        Grid.Row="4"
+	                        ItemsSource="{x:Bind ViewModel.SemanticItems, Mode=OneWay}"
+	                        ItemTemplate="{StaticResource SemanticItemTemplate}"
+	                        ItemContainerStyle="{StaticResource CompactListViewItemStyle}"
+	                        Background="Transparent"
+                        BorderThickness="0"
+                        Padding="0"
+                        SelectionMode="Single"
+                        KeyDown="OnSemanticItemsKeyDown"
                         SelectionChanged="OnSemanticSelectionChanged" />
             </Grid>
           </TabViewItem>
@@ -372,31 +1172,18 @@
                     <ToggleButton Grid.Row="1" Content="Staged" IsChecked="{x:Bind ViewModel.IsStagedScopeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnStagedScopeClicked" />
                     <ToggleButton Grid.Row="1" Grid.Column="1" Content="Branch" IsChecked="{x:Bind ViewModel.IsBranchScopeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnBranchScopeClicked" />
                     <ToggleButton Grid.Row="2" Grid.ColumnSpan="2" Content="Range" IsChecked="{x:Bind ViewModel.IsRangeScopeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnRangeScopeClicked" />
-                    <TextBox Grid.Row="3"
+                    <TextBox x:Name="BaseRefTextBox"
+                             Grid.Row="3"
                              Text="{x:Bind ViewModel.BaseRefText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                              Style="{StaticResource CompactTextBoxStyle}"
-                             PlaceholderText="Base ref" />
-                    <TextBox Grid.Row="3"
+                             PlaceholderText="Start/base ref" />
+                    <TextBox x:Name="HeadRefTextBox"
+                             Grid.Row="3"
                              Grid.Column="1"
                              Text="{x:Bind ViewModel.HeadRefText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                              Style="{StaticResource CompactTextBoxStyle}"
-                             PlaceholderText="Head ref" />
+                             PlaceholderText="End/head ref" />
                   </Grid>
-                  <ComboBox ItemsSource="{x:Bind ViewModel.BranchOptions, Mode=OneWay}"
-                            SelectedItem="{x:Bind ViewModel.SelectedBranchOption, Mode=TwoWay}"
-                            DisplayMemberPath="DisplayName"
-                            IsEnabled="{x:Bind ViewModel.HasBranchOptions, Mode=OneWay}"
-                            PlaceholderText="Choose branch"
-                            Style="{StaticResource CompactComboBoxStyle}"
-                            SelectionChanged="OnBranchSelectionChanged" />
-                  <ComboBox ItemsSource="{x:Bind ViewModel.PullRequestOptions, Mode=OneWay}"
-                            SelectedItem="{x:Bind ViewModel.SelectedPullRequestOption, Mode=TwoWay}"
-                            DisplayMemberPath="DisplayName"
-                            IsEnabled="{x:Bind ViewModel.HasPullRequestOptions, Mode=OneWay}"
-                            Visibility="{x:Bind ViewModel.PullRequestSelectorVisibility, Mode=OneWay}"
-                            PlaceholderText="Choose GitHub PR"
-                            Style="{StaticResource CompactComboBoxStyle}"
-                            SelectionChanged="OnPullRequestSelectionChanged" />
                   <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                     <TextBlock Text="{x:Bind ViewModel.ReferenceSelectorStatusText, Mode=OneWay}" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                     <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.DiffViewCacheText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="10" VerticalAlignment="Center" />
@@ -459,7 +1246,15 @@
                 </StackPanel>
 
                 <StackPanel Spacing="8">
-                  <TextBlock Text="Review" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Text="Review" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.ReviewRequestStateText, Mode=OneWay}" Foreground="{ThemeResource AccentBrush}" FontSize="10" />
+                  </Grid>
+                  <ComboBox ItemsSource="{x:Bind ViewModel.ReviewRequestStateOptions, Mode=OneWay}"
+                            SelectedItem="{x:Bind ViewModel.SelectedReviewRequestStateOption, Mode=TwoWay}"
+                            DisplayMemberPath="DisplayName"
+                            Style="{StaticResource CompactComboBoxStyle}"
+                            SelectionChanged="OnReviewRequestStateSelectionChanged" />
                   <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                     <ToggleButton Content="Noise filter" IsChecked="{x:Bind ViewModel.IsNoiseFilterEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnNoiseFilterClicked" />
                     <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.ReviewModeText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="10" VerticalAlignment="Center" />
@@ -498,7 +1293,8 @@
                     <ToggleButton Grid.Row="1" Grid.Column="1" Content="Review" Tag="Review" IsChecked="{x:Bind ViewModel.IsReviewVisualizationEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnVisualizationToggleClicked" />
                     <ToggleButton Grid.Row="2" Content="History" Tag="History" IsChecked="{x:Bind ViewModel.IsHistoryVisualizationEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnVisualizationToggleClicked" />
                     <ToggleButton Grid.Row="2" Grid.Column="1" Content="Navigation" Tag="Navigation" IsChecked="{x:Bind ViewModel.IsNavigationVisualizationEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnVisualizationToggleClicked" />
-                    <ToggleButton Grid.Row="3" Grid.ColumnSpan="2" Content="Context folds" Tag="Context" IsChecked="{x:Bind ViewModel.IsContextVisualizationEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnVisualizationToggleClicked" />
+                    <ToggleButton Grid.Row="3" Content="Context folds" Tag="Context" IsChecked="{x:Bind ViewModel.IsContextVisualizationEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnVisualizationToggleClicked" />
+                    <ToggleButton Grid.Row="3" Grid.Column="1" Content="Comments" Tag="ReviewComments" IsChecked="{x:Bind ViewModel.IsReviewCommentVisualizationEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnVisualizationToggleClicked" />
                   </Grid>
                 </StackPanel>
               </StackPanel>
@@ -526,25 +1322,61 @@
               Background="{ThemeResource BorderBrush}" />
     </views:ResizeCursorGrid>
 
-    <Grid Grid.Row="1" Grid.Column="2" Background="{ThemeResource CanvasBrush}">
-      <views:DiffCanvasControl x:Name="DiffCanvas" Scene="{x:Bind ViewModel.Scene, Mode=OneWay}" IsLightTheme="{x:Bind ViewModel.IsLightThemeEnabled, Mode=OneWay}" />
-      <Border HorizontalAlignment="Left"
-              VerticalAlignment="Top"
-              Margin="12"
-              Background="{ThemeResource ChromeBrush}"
+    <Grid Grid.Row="1" Grid.Column="2" RowDefinitions="38,*" Background="{ThemeResource CanvasBrush}">
+      <Border Background="{ThemeResource ChromeBrush}"
               BorderBrush="{ThemeResource BorderBrush}"
-              BorderThickness="1"
-              CornerRadius="5"
-              Padding="10,7">
-        <StackPanel Orientation="Horizontal" Spacing="12">
-          <TextBlock Text="{x:Bind ViewModel.DocumentCountText, Mode=OneWay}" Foreground="{ThemeResource PrimaryTextBrush}" FontSize="11" FontWeight="SemiBold" />
-          <TextBlock Text="{x:Bind ViewModel.SemanticEdgeCountText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" />
-          <TextBlock Text="{x:Bind ViewModel.ImpactSummaryText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" />
-          <TextBlock Text="{x:Bind ViewModel.ReviewSignalText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" />
-          <TextBlock Text="{x:Bind ViewModel.ChangeNavigationText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" />
-          <TextBlock Text="{x:Bind ViewModel.VisualizationSummaryText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" />
-        </StackPanel>
+              BorderThickness="0,0,0,1">
+        <ListView x:Name="WorkspaceTabList"
+                  ItemsSource="{x:Bind ViewModel.WorkspaceTabs, Mode=OneWay}"
+                  SelectedItem="{x:Bind ViewModel.SelectedWorkspaceTab, Mode=TwoWay}"
+                  ItemTemplate="{StaticResource WorkspaceTabHeaderTemplate}"
+                  ItemContainerStyle="{StaticResource WorkspaceTabListViewItemStyle}"
+                  Background="Transparent"
+                  BorderThickness="0"
+                  Padding="4,3"
+                  SelectionMode="Single"
+                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                  ScrollViewer.VerticalScrollBarVisibility="Disabled">
+          <ListView.Resources>
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="Transparent" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="Transparent" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundPressed" Color="Transparent" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver" Color="Transparent" />
+          </ListView.Resources>
+          <ListView.ItemsPanel>
+            <ItemsPanelTemplate>
+              <StackPanel Orientation="Horizontal" />
+            </ItemsPanelTemplate>
+          </ListView.ItemsPanel>
+        </ListView>
       </Border>
+
+      <Grid Grid.Row="1">
+        <Grid Visibility="{x:Bind ViewModel.GraphWorkspaceVisibility, Mode=OneWay}">
+          <views:DiffCanvasControl x:Name="DiffCanvas" Scene="{x:Bind ViewModel.Scene, Mode=OneWay}" IsLightTheme="{x:Bind ViewModel.IsLightThemeEnabled, Mode=OneWay}" />
+          <Border HorizontalAlignment="Left"
+                  VerticalAlignment="Top"
+                  Margin="12"
+                  Background="{ThemeResource ChromeBrush}"
+                  BorderBrush="{ThemeResource BorderBrush}"
+                  BorderThickness="1"
+                  CornerRadius="5"
+                  Padding="10,7">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+              <TextBlock Text="{x:Bind ViewModel.DocumentCountText, Mode=OneWay}" Foreground="{ThemeResource PrimaryTextBrush}" FontSize="11" FontWeight="SemiBold" />
+              <TextBlock Text="{x:Bind ViewModel.SemanticEdgeCountText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" />
+              <TextBlock Text="{x:Bind ViewModel.ImpactSummaryText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" />
+              <TextBlock Text="{x:Bind ViewModel.ReviewSignalText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" />
+              <TextBlock Text="{x:Bind ViewModel.ChangeNavigationText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" />
+              <TextBlock Text="{x:Bind ViewModel.VisualizationSummaryText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="11" />
+            </StackPanel>
+          </Border>
+        </Grid>
+
+        <ContentControl Visibility="{x:Bind ViewModel.AuxiliaryWorkspaceVisibility, Mode=OneWay}"
+                        Content="{x:Bind ViewModel.SelectedWorkspaceTab, Mode=OneWay}"
+                        ContentTemplate="{StaticResource WorkspaceTabContentTemplate}" />
+      </Grid>
     </Grid>
 
     <Border Grid.Row="2"

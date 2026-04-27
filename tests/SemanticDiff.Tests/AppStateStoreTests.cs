@@ -11,6 +11,7 @@ public sealed class AppStateStoreTests
 
         Assert.Equal(GraphLayoutMode.Layered, state.LayoutMode);
         Assert.Equal(GraphGroupingMode.Folder, state.GroupingMode);
+        Assert.Equal(GitReviewRequestState.Open, state.ReviewRequestState);
     }
 
     [Fact]
@@ -39,10 +40,12 @@ public sealed class AppStateStoreTests
                 ShowReview: false,
                 ShowHistory: true,
                 ShowNavigation: false,
-                ShowContext: true),
+                ShowContext: true,
+                ShowReviewComments: false),
             SemanticAnalysisMode: SemanticAnalysisMode.FastSyntaxOnly,
             LayoutMode: GraphLayoutMode.StatusLanes,
             GroupingMode: GraphGroupingMode.Semantic,
+            ReviewRequestState: GitReviewRequestState.Merged,
             SelectedBranchRef: "origin/feature/work",
             SelectedPullRequestNumber: 42,
             LeftPaneWidth: 344);
@@ -65,10 +68,12 @@ public sealed class AppStateStoreTests
             Assert.False(loaded.ShowSemanticEdges);
             Assert.False(loaded.EffectiveAnnotationVisibility.ShowSemantic);
             Assert.False(loaded.EffectiveAnnotationVisibility.ShowReview);
+            Assert.False(loaded.EffectiveAnnotationVisibility.ShowReviewComments);
             Assert.False(loaded.EffectiveAnnotationVisibility.ShowNavigation);
             Assert.Equal(SemanticAnalysisMode.FastSyntaxOnly, loaded.SemanticAnalysisMode);
             Assert.Equal(GraphLayoutMode.StatusLanes, loaded.LayoutMode);
             Assert.Equal(GraphGroupingMode.Semantic, loaded.GroupingMode);
+            Assert.Equal(GitReviewRequestState.Merged, loaded.ReviewRequestState);
             Assert.Equal("origin/feature/work", loaded.SelectedBranchRef);
             Assert.Equal(42, loaded.SelectedPullRequestNumber);
             Assert.Equal(344, loaded.LeftPaneWidth);

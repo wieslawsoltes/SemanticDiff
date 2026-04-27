@@ -32,13 +32,17 @@ public sealed record FileExplorerNodeViewModel(
 
     public string DisclosureGlyph => HasChildren ? IsExpanded ? "\uE70D" : "\uE76C" : string.Empty;
 
+    public Visibility DisclosureVisibility => HasChildren ? Visibility.Visible : Visibility.Collapsed;
+
     public ImageSource? IconSource => SystemFileIconProvider.Current.GetIcon(RepositoryRoot, Path, Kind, IconKind).Source;
+
+    public Visibility IconSourceVisibility => IconSource is null ? Visibility.Collapsed : Visibility.Visible;
 
     public string FallbackIconGlyph => SystemFileIconProvider.Current.GetIcon(RepositoryRoot, Path, Kind, IconKind).FallbackGlyph;
 
     public FontFamily FallbackIconFontFamily => SystemFileIconProvider.Current.FallbackFontFamily;
 
-    public double FallbackIconOpacity => IconSource is null ? 1d : 0d;
+    public Visibility FallbackIconVisibility => IconSource is null ? Visibility.Visible : Visibility.Collapsed;
 
     public string IconAutomationText => SystemFileIconProvider.Current.GetIcon(RepositoryRoot, Path, Kind, IconKind).AutomationText;
 
