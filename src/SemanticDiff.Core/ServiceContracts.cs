@@ -111,7 +111,8 @@ public sealed record GitBlameLine(
     string CommitId,
     string Author,
     DateTimeOffset? AuthorTime,
-    string Summary);
+    string Summary,
+    string Text = "");
 
 public interface IRepositoryFileWatcher : IAsyncDisposable
 {

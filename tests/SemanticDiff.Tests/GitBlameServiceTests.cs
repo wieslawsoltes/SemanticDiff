@@ -16,8 +16,10 @@ public sealed class GitBlameServiceTests
         Assert.Equal(2, blame.Lines.Length);
         Assert.Equal("Ada Lovelace", blame.Lines[0].Author);
         Assert.Equal("Initial semantic graph", blame.Lines[0].Summary);
+        Assert.Equal("public sealed class App", blame.Lines[0].Text);
         Assert.Equal(2, blame.Lines[1].LineNumber);
         Assert.Equal("Grace Hopper", blame.Lines[1].Author);
+        Assert.Equal("{", blame.Lines[1].Text);
     }
 
     [Fact]

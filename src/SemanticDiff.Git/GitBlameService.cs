@@ -69,7 +69,8 @@ public sealed class GitBlameService : IGitBlameService
                     commitId,
                     string.IsNullOrWhiteSpace(author) ? "Unknown" : author,
                     authorTime,
-                    summary));
+                    summary,
+                    rawLine[1..]));
                 continue;
             }
 
