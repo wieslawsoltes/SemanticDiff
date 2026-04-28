@@ -35,6 +35,25 @@ public sealed class DiffCanvasSceneWheelTests
     }
 
     [Fact]
+    public void HandleWheel_UsesWheelDeltaMagnitudeForSmoothZoom()
+    {
+        var smallDeltaScene = CreateScrollableScene();
+        var fullDeltaScene = CreateScrollableScene();
+        var smallDeltaNode = smallDeltaScene.Nodes[0];
+        var fullDeltaNode = fullDeltaScene.Nodes[0];
+        var smallDeltaScreenPoint = smallDeltaScene.Camera.WorldToScreen(new Point2(smallDeltaNode.BodyBounds.X + 24, smallDeltaNode.BodyBounds.Y + 24));
+        var fullDeltaScreenPoint = fullDeltaScene.Camera.WorldToScreen(new Point2(fullDeltaNode.BodyBounds.X + 24, fullDeltaNode.BodyBounds.Y + 24));
+        var initialScale = smallDeltaScene.Camera.Scale;
+
+        smallDeltaScene.HandleWheel(smallDeltaScreenPoint, 60, zoomCanvas: true);
+        fullDeltaScene.HandleWheel(fullDeltaScreenPoint, 120, zoomCanvas: true);
+
+        Assert.True(smallDeltaScene.Camera.Scale > initialScale);
+        Assert.True(smallDeltaScene.Camera.Scale < fullDeltaScene.Camera.Scale);
+        Assert.InRange(fullDeltaScene.Camera.Scale / initialScale, 1.24, 1.26);
+    }
+
+    [Fact]
     public void HandleWheel_DoesNothingWithoutModifierWhenPointerIsOutsideNodeBody()
     {
         var scene = CreateScrollableScene();

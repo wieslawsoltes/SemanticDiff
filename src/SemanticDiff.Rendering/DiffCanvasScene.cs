@@ -216,6 +216,7 @@ public sealed record EdgeProjectionOptions(
 public sealed class DiffCanvasScene
 {
     public const double ResizeHandleScreenSize = 10;
+    private const double WheelZoomFactorPerNotch = 1.25;
 
     private readonly List<DiffNode> nodes;
     private readonly List<GraphEdge> edges;
@@ -273,7 +274,8 @@ public sealed class DiffCanvasScene
             return;
         }
 
-        var zoomFactor = wheelDelta > 0 ? 1.12 : 0.89;
+        var wheelNotches = Math.Clamp(wheelDelta / 120.0, -6.0, 6.0);
+        var zoomFactor = Math.Pow(WheelZoomFactorPerNotch, wheelNotches);
         ZoomAt(screenPoint, zoomFactor);
     }
 
