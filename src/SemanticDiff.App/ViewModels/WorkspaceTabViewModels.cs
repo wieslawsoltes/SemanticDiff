@@ -1,10 +1,13 @@
 using System.Collections.ObjectModel;
-using System.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using SemanticDiff.Core;
 using SemanticDiff.Rendering;
 using SemanticDiff.Semantics;
+using SemanticDiff.Workbench.Blame;
+using SemanticDiff.Workbench.FileDiff;
+using SemanticDiff.Workbench.History;
+using SemanticDiff.Workbench.Symbols;
 using Windows.Foundation;
 using Windows.UI;
 
@@ -35,12 +38,6 @@ public enum BlameDisplayMode
 {
     CommitTimeline,
     ChangeGraph
-}
-
-public enum SymbolGraphViewMode
-{
-    SymbolsOnly,
-    FilesAndSymbols
 }
 
 public sealed partial class WorkspaceTabViewModel : ObservableObject
@@ -389,7 +386,14 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
                 .ToImmutableArray();
 
             FilteredSymbolCount = filtered.Length;
-            var sceneResult = BuildScene(selected);
+            var sceneResult = new SymbolGraphSceneBuilder().Build(new SymbolGraphSceneBuildRequest(
+                selected,
+                sourceGraph,
+                sourceDocuments,
+                SelectedLayoutOption.Mode,
+                SelectedGroupingOption.Mode,
+                SelectedViewModeOption.Mode,
+                SelectedEdgeKindOption.Kind));
             Scene = sceneResult.Scene;
             RenderedSymbolCount = selected.Length;
             RenderedFileCount = sceneResult.FileCount;
@@ -402,364 +406,6 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
         {
             isRefreshing = false;
         }
-    }
-
-    private SymbolGraphSceneResult BuildScene(ImmutableArray<SemanticNavigationItem> items) =>
-        SelectedViewModeOption.Mode == SymbolGraphViewMode.FilesAndSymbols
-            ? BuildFileSymbolScene(items)
-            : BuildSymbolOnlyScene(items);
-
-    private SymbolGraphSceneResult BuildSymbolOnlyScene(ImmutableArray<SemanticNavigationItem> items)
-    {
-        if (items.IsDefaultOrEmpty)
-        {
-            return new SymbolGraphSceneResult(DiffCanvasScene.FromDocuments([]), 0);
-        }
-
-        var sourceDocumentsById = sourceDocuments.ToDictionary(document => document.Id.Value, StringComparer.Ordinal);
-        var selectedAnchorIds = items.Select(item => item.AnchorId).ToHashSet(StringComparer.Ordinal);
-        var documentIdsByAnchorId = new Dictionary<string, DiffDocumentId>(StringComparer.Ordinal);
-        var documents = ImmutableArray.CreateBuilder<DiffDocumentSnapshot>(items.Length);
-        var anchors = ImmutableArray.CreateBuilder<SemanticAnchor>(items.Length);
-
-        for (var index = 0; index < items.Length; index++)
-        {
-            var item = items[index];
-            sourceDocumentsById.TryGetValue(item.DocumentId.Value, out var sourceDocument);
-            var documentId = SymbolGraphDocumentIds.Create(item.DocumentId, item.AnchorId);
-            documentIdsByAnchorId[item.AnchorId] = documentId;
-            documents.Add(CreateSymbolDocument(documentId, item, sourceDocument, index));
-            anchors.Add(new SemanticAnchor(item.AnchorId, documentId, new TextRange(0, 1, Math.Max(1, item.Line), 1), item.Kind, item.DisplayName));
-        }
-
-        var selectedEdgeKind = SelectedEdgeKindOption.Kind;
-        var edges = sourceGraph.Edges
-            .Where(edge => selectedAnchorIds.Contains(edge.SourceAnchorId) && selectedAnchorIds.Contains(edge.TargetAnchorId))
-            .Where(edge => selectedEdgeKind is null || edge.Kind == selectedEdgeKind)
-            .ToImmutableArray();
-        var symbolGraph = new SemanticGraph(anchors.ToImmutable(), edges);
-        var layout = CreateLayout(documents.ToImmutable(), items, edges, SelectedLayoutOption.Mode);
-        var scene = DiffCanvasScene.FromDocuments(
-            documents.ToImmutable(),
-            symbolGraph,
-            layout,
-            new EdgeProjectionOptions(MinimumConfidence: 0, MaxEdgesPerDocumentPair: 4),
-            groupingMode: SelectedGroupingOption.Mode);
-        return new SymbolGraphSceneResult(scene, 0);
-    }
-
-    private SymbolGraphSceneResult BuildFileSymbolScene(ImmutableArray<SemanticNavigationItem> items)
-    {
-        if (items.IsDefaultOrEmpty)
-        {
-            return new SymbolGraphSceneResult(DiffCanvasScene.FromDocuments([]), 0);
-        }
-
-        var sourceDocumentsById = sourceDocuments.ToDictionary(document => document.Id.Value, StringComparer.Ordinal);
-        var selectedAnchorIds = items.Select(item => item.AnchorId).ToHashSet(StringComparer.Ordinal);
-        var selectedDocuments = items
-            .Select(item => item.DocumentId.Value)
-            .Distinct(StringComparer.Ordinal)
-            .Select(documentId => sourceDocumentsById.TryGetValue(documentId, out var document) ? document : null)
-            .OfType<DiffDocumentSnapshot>()
-            .OrderBy(document => document.Metadata.Path, StringComparer.OrdinalIgnoreCase)
-            .ToImmutableArray();
-        var documents = ImmutableArray.CreateBuilder<DiffDocumentSnapshot>(selectedDocuments.Length + items.Length);
-        documents.AddRange(selectedDocuments);
-
-        var anchors = ImmutableArray.CreateBuilder<SemanticAnchor>(selectedDocuments.Length + items.Length);
-        var fileAnchorIdsByDocumentId = new Dictionary<DiffDocumentId, string>();
-        foreach (var document in selectedDocuments)
-        {
-            var anchorId = SymbolGraphDocumentIds.CreateFileAnchorId(document.Id);
-            fileAnchorIdsByDocumentId[document.Id] = anchorId;
-            anchors.Add(new SemanticAnchor(
-                anchorId,
-                document.Id,
-                new TextRange(0, 1, 1, 1),
-                SemanticAnchorKind.File,
-                Path.GetFileName(document.Metadata.Path)));
-        }
-
-        var symbolDocumentIdsByAnchorId = new Dictionary<string, DiffDocumentId>(StringComparer.Ordinal);
-        for (var index = 0; index < items.Length; index++)
-        {
-            var item = items[index];
-            sourceDocumentsById.TryGetValue(item.DocumentId.Value, out var sourceDocument);
-            var documentId = SymbolGraphDocumentIds.Create(item.DocumentId, item.AnchorId);
-            symbolDocumentIdsByAnchorId[item.AnchorId] = documentId;
-            documents.Add(CreateSymbolDocument(documentId, item, sourceDocument, index));
-            anchors.Add(new SemanticAnchor(item.AnchorId, documentId, new TextRange(0, 1, Math.Max(1, item.Line), 1), item.Kind, item.DisplayName));
-        }
-
-        var selectedEdgeKind = SelectedEdgeKindOption.Kind;
-        var edges = ImmutableArray.CreateBuilder<SemanticEdge>();
-        foreach (var item in items)
-        {
-            if (!fileAnchorIdsByDocumentId.TryGetValue(item.DocumentId, out var fileAnchorId))
-            {
-                continue;
-            }
-
-            edges.Add(new SemanticEdge(
-                $"contains:{fileAnchorId}:{item.AnchorId}",
-                fileAnchorId,
-                item.AnchorId,
-                SemanticEdgeKind.Contains,
-                1,
-                "declares"));
-        }
-
-        if (selectedEdgeKind != SemanticEdgeKind.Contains)
-        {
-            edges.AddRange(sourceGraph.Edges
-                .Where(edge => selectedAnchorIds.Contains(edge.SourceAnchorId) && selectedAnchorIds.Contains(edge.TargetAnchorId))
-                .Where(edge => selectedEdgeKind is null || edge.Kind == selectedEdgeKind));
-        }
-
-        var hybridGraph = new SemanticGraph(anchors.ToImmutable(), edges.ToImmutable());
-        var layout = CreateFileSymbolLayout(selectedDocuments, items, symbolDocumentIdsByAnchorId, SelectedLayoutOption.Mode);
-        var scene = DiffCanvasScene.FromDocuments(
-            documents.ToImmutable(),
-            hybridGraph,
-            layout,
-            new EdgeProjectionOptions(MinimumConfidence: 0, MaxEdgesPerDocumentPair: 6),
-            groupingMode: SelectedGroupingOption.Mode);
-        return new SymbolGraphSceneResult(scene, selectedDocuments.Length);
-    }
-
-    private static DiffDocumentSnapshot CreateSymbolDocument(
-        DiffDocumentId documentId,
-        SemanticNavigationItem item,
-        DiffDocumentSnapshot? sourceDocument,
-        int index)
-    {
-        var sourceLine = sourceDocument?.Lines.FirstOrDefault(line => line.NewLineNumber == item.Line || line.OldLineNumber == item.Line);
-        var sourceText = sourceLine is null ? string.Empty : sourceLine.Text.Trim();
-        var signal = item switch
-        {
-            { IsChanged: true, IsLinked: true } => "changed + linked",
-            { IsChanged: true } => "changed",
-            { IsLinked: true } => "linked",
-            _ => "symbol"
-        };
-        var metadata = new DiffDocumentMetadata(
-            documentId,
-            $"{item.KindText}/{ShortenForPath(item.DisplayName, 56)}",
-            item.Path,
-            item.IsChanged ? DiffFileStatus.Modified : DiffFileStatus.Unchanged,
-            string.IsNullOrWhiteSpace(sourceDocument?.Metadata.Language) ? item.KindText : sourceDocument.Metadata.Language,
-            item.IsChanged ? 1 : 0,
-            0);
-        var lines = ImmutableArray.CreateBuilder<DiffLine>();
-        AddLine(lines, 0, DiffLineKind.Metadata, $"symbol {index + 1}: {item.DisplayName}");
-        AddLine(lines, 1, DiffLineKind.Metadata, $"kind: {item.KindText}");
-        AddLine(lines, 2, DiffLineKind.Context, $"file: {item.Path}:{item.Line}");
-        AddLine(lines, 3, item.IsChanged ? DiffLineKind.Modified : DiffLineKind.Context, $"signal: {signal}");
-        AddLine(lines, 4, item.IsLinked ? DiffLineKind.Modified : DiffLineKind.Context, $"links: {item.IncidentEdgeCount:N0}");
-        if (!string.IsNullOrWhiteSpace(sourceText))
-        {
-            AddLine(lines, 5, DiffLineKind.Context, sourceText);
-        }
-
-        return new DiffDocumentSnapshot(documentId, metadata, lines.ToImmutable());
-    }
-
-    private static void AddLine(ImmutableArray<DiffLine>.Builder lines, int index, DiffLineKind kind, string text) =>
-        lines.Add(new DiffLine(index, index + 1, index + 1, kind, text, ImmutableArray<TokenSpan>.Empty));
-
-    private static GraphLayoutResult CreateLayout(
-        ImmutableArray<DiffDocumentSnapshot> documents,
-        ImmutableArray<SemanticNavigationItem> items,
-        ImmutableArray<SemanticEdge> edges,
-        GraphLayoutMode layoutMode)
-    {
-        var mode = layoutMode == GraphLayoutMode.Auto
-            ? documents.Length > 90 ? GraphLayoutMode.CompactGrid : GraphLayoutMode.Layered
-            : layoutMode;
-        var nodeWidth = mode == GraphLayoutMode.CompactGrid ? 380 : 460;
-        var nodeHeight = mode == GraphLayoutMode.CompactGrid ? 220 : 260;
-        var horizontalGap = mode == GraphLayoutMode.CompactGrid ? 34 : 72;
-        var verticalGap = mode == GraphLayoutMode.CompactGrid ? 34 : 68;
-        var layouts = ImmutableArray.CreateBuilder<DiffNodeLayout>(documents.Length);
-
-        if (mode is GraphLayoutMode.Layered or GraphLayoutMode.StatusLanes)
-        {
-            var laneKeys = mode == GraphLayoutMode.StatusLanes
-                ? items.Select(GetStatusLane).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
-                : items.Select(item => item.KindText).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            Array.Sort(laneKeys, StringComparer.OrdinalIgnoreCase);
-            var laneIndexes = laneKeys.Select((key, index) => (key, index)).ToDictionary(pair => pair.key, pair => pair.index, StringComparer.OrdinalIgnoreCase);
-            var laneCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            for (var index = 0; index < documents.Length; index++)
-            {
-                var lane = mode == GraphLayoutMode.StatusLanes ? GetStatusLane(items[index]) : items[index].KindText;
-                var laneIndex = laneIndexes[lane];
-                laneCounts.TryGetValue(lane, out var row);
-                laneCounts[lane] = row + 1;
-                layouts.Add(new DiffNodeLayout(
-                    documents[index].Id,
-                    new Rect2(laneIndex * (nodeWidth + horizontalGap), row * (nodeHeight + verticalGap), nodeWidth, nodeHeight),
-                    FontSize: 12.5));
-            }
-
-            return new GraphLayoutResult(layouts.ToImmutable());
-        }
-
-        var columns = mode == GraphLayoutMode.Grid
-            ? Math.Max(1, (int)Math.Ceiling(Math.Sqrt(documents.Length)))
-            : Math.Max(1, (int)Math.Ceiling(Math.Sqrt(documents.Length * 1.4)));
-        for (var index = 0; index < documents.Length; index++)
-        {
-            var row = index / columns;
-            var column = index % columns;
-            layouts.Add(new DiffNodeLayout(
-                documents[index].Id,
-                new Rect2(column * (nodeWidth + horizontalGap), row * (nodeHeight + verticalGap), nodeWidth, nodeHeight),
-                FontSize: 12.5));
-        }
-
-        return new GraphLayoutResult(SpreadHighDegreeNodes(layouts.ToImmutable(), items, edges, nodeWidth, nodeHeight, horizontalGap, verticalGap));
-    }
-
-    private static GraphLayoutResult CreateFileSymbolLayout(
-        ImmutableArray<DiffDocumentSnapshot> fileDocuments,
-        ImmutableArray<SemanticNavigationItem> items,
-        IReadOnlyDictionary<string, DiffDocumentId> symbolDocumentIdsByAnchorId,
-        GraphLayoutMode layoutMode)
-    {
-        if (fileDocuments.IsDefaultOrEmpty)
-        {
-            return new GraphLayoutResult([]);
-        }
-
-        var mode = layoutMode == GraphLayoutMode.Auto ? GraphLayoutMode.Layered : layoutMode;
-        if (mode is GraphLayoutMode.Grid or GraphLayoutMode.CompactGrid)
-        {
-            return CreateFileSymbolGridLayout(fileDocuments, items, symbolDocumentIdsByAnchorId, mode);
-        }
-
-        const double fileWidth = 620;
-        const double fileHeight = 420;
-        const double symbolWidth = 380;
-        const double symbolHeight = 190;
-        const double horizontalGap = 84;
-        const double symbolColumnGap = 32;
-        const double symbolGap = 26;
-        const double sectionGap = 88;
-        var layouts = ImmutableArray.CreateBuilder<DiffNodeLayout>(fileDocuments.Length + items.Length);
-        var itemsByDocumentId = items
-            .GroupBy(item => item.DocumentId)
-            .ToDictionary(group => group.Key, group => group.ToArray());
-        var y = 0.0;
-
-        foreach (var fileDocument in fileDocuments)
-        {
-            var fileSymbols = itemsByDocumentId.GetValueOrDefault(fileDocument.Id) ?? [];
-            var symbolColumns = Math.Max(1, Math.Min(3, (int)Math.Ceiling(Math.Sqrt(Math.Max(1, fileSymbols.Length) / 1.7))));
-            var symbolsPerColumn = Math.Max(1, (int)Math.Ceiling(fileSymbols.Length / (double)symbolColumns));
-            var symbolBlockHeight = fileSymbols.Length == 0
-                ? 0
-                : symbolsPerColumn * symbolHeight + Math.Max(0, symbolsPerColumn - 1) * symbolGap;
-            var rowHeight = Math.Max(fileHeight, symbolBlockHeight);
-            var fileY = y + Math.Max(0, rowHeight - fileHeight) * 0.5;
-            layouts.Add(new DiffNodeLayout(fileDocument.Id, new Rect2(0, fileY, fileWidth, fileHeight), FontSize: 12.5));
-
-            for (var index = 0; index < fileSymbols.Length; index++)
-            {
-                var item = fileSymbols[index];
-                if (!symbolDocumentIdsByAnchorId.TryGetValue(item.AnchorId, out var documentId))
-                {
-                    continue;
-                }
-
-                var column = index / symbolsPerColumn;
-                var row = index % symbolsPerColumn;
-                var x = fileWidth + horizontalGap + column * (symbolWidth + symbolColumnGap);
-                var symbolY = y + row * (symbolHeight + symbolGap);
-                layouts.Add(new DiffNodeLayout(documentId, new Rect2(x, symbolY, symbolWidth, symbolHeight), FontSize: 12.5));
-            }
-
-            y += rowHeight + sectionGap;
-        }
-
-        return new GraphLayoutResult(layouts.ToImmutable());
-    }
-
-    private static GraphLayoutResult CreateFileSymbolGridLayout(
-        ImmutableArray<DiffDocumentSnapshot> fileDocuments,
-        ImmutableArray<SemanticNavigationItem> items,
-        IReadOnlyDictionary<string, DiffDocumentId> symbolDocumentIdsByAnchorId,
-        GraphLayoutMode layoutMode)
-    {
-        var documents = ImmutableArray.CreateBuilder<DiffDocumentId>(fileDocuments.Length + items.Length);
-        documents.AddRange(fileDocuments.Select(document => document.Id));
-        foreach (var item in items)
-        {
-            if (symbolDocumentIdsByAnchorId.TryGetValue(item.AnchorId, out var documentId))
-            {
-                documents.Add(documentId);
-            }
-        }
-        var nodeWidth = layoutMode == GraphLayoutMode.CompactGrid ? 360 : 460;
-        var nodeHeight = layoutMode == GraphLayoutMode.CompactGrid ? 190 : 260;
-        var horizontalGap = layoutMode == GraphLayoutMode.CompactGrid ? 34 : 72;
-        var verticalGap = layoutMode == GraphLayoutMode.CompactGrid ? 34 : 68;
-        var columns = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(documents.Count * 1.25)));
-        var layouts = ImmutableArray.CreateBuilder<DiffNodeLayout>(documents.Count);
-        for (var index = 0; index < documents.Count; index++)
-        {
-            var row = index / columns;
-            var column = index % columns;
-            layouts.Add(new DiffNodeLayout(
-                documents[index],
-                new Rect2(column * (nodeWidth + horizontalGap), row * (nodeHeight + verticalGap), nodeWidth, nodeHeight),
-                FontSize: 12.5));
-        }
-
-        return new GraphLayoutResult(layouts.ToImmutable());
-    }
-
-    private static ImmutableArray<DiffNodeLayout> SpreadHighDegreeNodes(
-        ImmutableArray<DiffNodeLayout> layouts,
-        ImmutableArray<SemanticNavigationItem> items,
-        ImmutableArray<SemanticEdge> edges,
-        double nodeWidth,
-        double nodeHeight,
-        double horizontalGap,
-        double verticalGap)
-    {
-        if (layouts.Length < 8 || edges.IsDefaultOrEmpty)
-        {
-            return layouts;
-        }
-
-        var degreeByAnchor = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var edge in edges)
-        {
-            degreeByAnchor[edge.SourceAnchorId] = degreeByAnchor.GetValueOrDefault(edge.SourceAnchorId) + 1;
-            degreeByAnchor[edge.TargetAnchorId] = degreeByAnchor.GetValueOrDefault(edge.TargetAnchorId) + 1;
-        }
-
-        var builder = layouts.ToBuilder();
-        var highDegreeIndexes = items
-            .Select((item, index) => (index, degree: degreeByAnchor.GetValueOrDefault(item.AnchorId)))
-            .Where(pair => pair.degree > 2)
-            .OrderByDescending(pair => pair.degree)
-            .ThenBy(pair => items[pair.index].DisplayName, StringComparer.OrdinalIgnoreCase)
-            .Take(Math.Min(6, items.Length))
-            .Select(pair => pair.index)
-            .ToArray();
-        for (var index = 0; index < highDegreeIndexes.Length; index++)
-        {
-            var layoutIndex = highDegreeIndexes[index];
-            builder[layoutIndex] = builder[layoutIndex] with
-            {
-                Bounds = new Rect2(index * (nodeWidth + horizontalGap), -nodeHeight - verticalGap, nodeWidth, nodeHeight)
-            };
-        }
-
-        return builder.ToImmutable();
     }
 
     private static ImmutableArray<SymbolGraphFilterOptionViewModel> CreateKindOptions(ImmutableArray<SemanticNavigationItem> items) =>
@@ -885,29 +531,10 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
             : filterText;
     }
 
-    private static string GetStatusLane(SemanticNavigationItem item) => item switch
-    {
-        { IsChanged: true, IsLinked: true } => "Changed + linked",
-        { IsChanged: true } => "Changed",
-        { IsLinked: true } => "Linked",
-        _ => "Other"
-    };
-
     private static int ExtractLeadingCount(string text)
     {
         var digits = new string(text.TakeWhile(character => char.IsDigit(character) || character == ',' || character == '.').ToArray());
         return int.TryParse(digits.Replace(",", string.Empty).Replace(".", string.Empty), out var count) ? count : 0;
-    }
-
-    private static string ShortenForPath(string value, int maxLength)
-    {
-        if (string.IsNullOrWhiteSpace(value) || value.Length <= maxLength)
-        {
-            return string.IsNullOrWhiteSpace(value) ? "symbol" : value;
-        }
-
-        var side = Math.Max(4, (maxLength - 3) / 2);
-        return $"{value[..side]}...{value[^side..]}";
     }
 }
 
@@ -930,55 +557,6 @@ public sealed partial record SymbolGraphViewModeOptionViewModel(SymbolGraphViewM
     ];
 
     public override string ToString() => DisplayName;
-}
-
-internal sealed record SymbolGraphSceneResult(DiffCanvasScene Scene, int FileCount);
-
-internal static class SymbolGraphDocumentIds
-{
-    private const string Prefix = "symbol:";
-    private const string FileAnchorPrefix = "file-anchor:";
-
-    public static DiffDocumentId Create(DiffDocumentId sourceDocumentId, string anchorId) =>
-        new($"{Prefix}{Encode(sourceDocumentId.Value)}:{Encode(anchorId)}");
-
-    public static string CreateFileAnchorId(DiffDocumentId sourceDocumentId) =>
-        $"{FileAnchorPrefix}{Encode(sourceDocumentId.Value)}";
-
-    public static string? TryGetSourceDocumentId(string documentId)
-    {
-        if (string.IsNullOrWhiteSpace(documentId) || !documentId.StartsWith(Prefix, StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        var payload = documentId[Prefix.Length..];
-        var separator = payload.IndexOf(':');
-        return separator <= 0 ? null : Decode(payload[..separator]);
-    }
-
-    public static string? TryGetAnchorId(string documentId)
-    {
-        if (string.IsNullOrWhiteSpace(documentId) || !documentId.StartsWith(Prefix, StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        var payload = documentId[Prefix.Length..];
-        var separator = payload.IndexOf(':');
-        return separator <= 0 || separator >= payload.Length - 1 ? null : Decode(payload[(separator + 1)..]);
-    }
-
-    private static string Encode(string value) =>
-        Convert.ToBase64String(Encoding.UTF8.GetBytes(value)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-
-    private static string Decode(string value)
-    {
-        var normalized = value.Replace('-', '+').Replace('_', '/');
-        var padding = (4 - normalized.Length % 4) % 4;
-        normalized = normalized.PadRight(normalized.Length + padding, '=');
-        return Encoding.UTF8.GetString(Convert.FromBase64String(normalized));
-    }
 }
 
 public sealed record GraphWorkspaceState(
@@ -1126,6 +704,13 @@ public sealed partial class BlameTabViewModel : ObservableObject
         }
 
         var timelineItems = BuildTimelineItems(history, lineCountsByCommit);
+        var changeGraph = new BlameChangeGraphBuilder().Build(new BlameChangeGraphBuildRequest(
+            path,
+            language,
+            timelineItems
+                .Select(item => new BlameChangeGraphCommit(item.CommitId, item.ShortId, item.Subject, item.Author, item.TimeText, item.BlamedLineCount))
+                .ToImmutableArray(),
+            groupsByCommit));
         return new BlameTabViewModel(
             path,
             language,
@@ -1133,162 +718,8 @@ public sealed partial class BlameTabViewModel : ObservableObject
             $"{path} | {summary}",
             nodes,
             timelineItems,
-            BuildChangeGraphScene(path, language, timelineItems, groupsByCommit),
-            $"{timelineItems.Length:N0} history nodes | {Math.Max(0, timelineItems.Length - 1):N0} history links | blamed file changes rendered as diff nodes");
-    }
-
-    private static DiffCanvasScene BuildChangeGraphScene(
-        string path,
-        string language,
-        ImmutableArray<BlameTimelineItemViewModel> timelineItems,
-        ImmutableDictionary<string, ImmutableArray<GitBlameLine>> groupsByCommit)
-    {
-        if (timelineItems.IsDefaultOrEmpty)
-        {
-            return DiffCanvasScene.FromDocuments([]);
-        }
-
-        var documents = timelineItems
-            .Select((item, index) =>
-            {
-                groupsByCommit.TryGetValue(item.CommitId, out var lines);
-                return CreateBlameCommitDocument(path, language, item, lines, index);
-            })
-            .ToImmutableArray();
-        var anchors = documents
-            .Select(document => new SemanticAnchor(
-                $"anchor:{document.Id.Value}",
-                document.Id,
-                new TextRange(0, 0, 1, 1),
-                SemanticAnchorKind.File,
-                document.Metadata.Path))
-            .ToImmutableArray();
-        var edges = anchors
-            .Zip(anchors.Skip(1), (source, target) => new SemanticEdge(
-                $"history:{source.DocumentId.Value}->{target.DocumentId.Value}",
-                source.Id,
-                target.Id,
-                SemanticEdgeKind.Contains,
-                1,
-                "previous"))
-            .ToImmutableArray();
-        var layout = new GraphLayoutResult(documents
-            .Select((document, index) =>
-            {
-                const double nodeWidth = 560;
-                const double nodeHeight = 360;
-                var column = index % 3;
-                var row = index / 3;
-                return new DiffNodeLayout(
-                    document.Id,
-                    new Rect2(column * 660, row * 430, nodeWidth, nodeHeight),
-                    IsPinned: true,
-                    FontSize: 12.0);
-            })
-            .ToImmutableArray());
-        return DiffCanvasScene.FromDocuments(
-            documents,
-            new SemanticGraph(anchors, edges),
-            layout,
-            groupingMode: GraphGroupingMode.None);
-    }
-
-    private static DiffDocumentSnapshot CreateBlameCommitDocument(
-        string path,
-        string language,
-        BlameTimelineItemViewModel item,
-        ImmutableArray<GitBlameLine> lines,
-        int index)
-    {
-        var documentId = new DiffDocumentId($"blame:{SanitizeId(path)}:{item.ShortId}:{index}");
-        var metadata = new DiffDocumentMetadata(
-            documentId,
-            $"{System.IO.Path.GetFileName(path)} @ {item.ShortId}",
-            path,
-            DiffFileStatus.Modified,
-            language,
-            item.BlamedLineCount,
-            0);
-        var sourceLines = lines.IsDefault ? ImmutableArray<GitBlameLine>.Empty : lines;
-        var sortedLines = sourceLines
-            .OrderBy(line => line.LineNumber)
-            .ToImmutableArray();
-        var builder = ImmutableArray.CreateBuilder<DiffLine>(sortedLines.Length + 4);
-        AddMetadataLine(builder, $"commit {item.CommitId}");
-        AddMetadataLine(builder, item.Subject);
-        AddMetadataLine(builder, $"{item.Author} | {item.TimeText} | {FormatLineRanges(sortedLines.Select(line => line.LineNumber).ToArray())}");
-        AddMetadataLine(builder, string.Empty);
-
-        if (sortedLines.IsDefaultOrEmpty)
-        {
-            builder.Add(new DiffLine(
-                builder.Count,
-                null,
-                null,
-                DiffLineKind.Ignored,
-                "No current blamed lines retained at the active revision.",
-                ImmutableArray<TokenSpan>.Empty));
-        }
-        else
-        {
-            foreach (var line in sortedLines)
-            {
-                builder.Add(new DiffLine(
-                    builder.Count,
-                    null,
-                    line.LineNumber,
-                    DiffLineKind.Added,
-                    string.IsNullOrEmpty(line.Text) ? " " : line.Text,
-                    ImmutableArray<TokenSpan>.Empty));
-            }
-        }
-
-        return new DiffDocumentSnapshot(documentId, metadata, builder.ToImmutable());
-    }
-
-    private static void AddMetadataLine(ImmutableArray<DiffLine>.Builder builder, string text)
-    {
-        builder.Add(new DiffLine(
-            builder.Count,
-            null,
-            null,
-            DiffLineKind.Metadata,
-            text,
-            ImmutableArray<TokenSpan>.Empty));
-    }
-
-    private static string SanitizeId(string value)
-    {
-        var normalized = value.Replace('\\', '/');
-        var chars = normalized.Select(character => char.IsLetterOrDigit(character) ? character : '-').ToArray();
-        return new string(chars).Trim('-');
-    }
-
-    private static string FormatLineRanges(IReadOnlyList<int> lineNumbers)
-    {
-        if (lineNumbers.Count == 0)
-        {
-            return "no retained blamed lines";
-        }
-
-        var ranges = new List<string>();
-        var start = lineNumbers[0];
-        var previous = start;
-        for (var index = 1; index < lineNumbers.Count; index++)
-        {
-            var line = lineNumbers[index];
-            if (line == previous + 1)
-            {
-                previous = line;
-                continue;
-            }
-
-            ranges.Add(start == previous ? start.ToString() : $"{start}-{previous}");
-            start = previous = line;
-        }
-
-        ranges.Add(start == previous ? start.ToString() : $"{start}-{previous}");
-        return $"lines {string.Join(", ", ranges.Take(6))}{(ranges.Count > 6 ? ", ..." : string.Empty)}";
+            changeGraph.Scene,
+            changeGraph.SummaryText);
     }
 
     private static ImmutableArray<BlameTimelineItemViewModel> BuildTimelineItems(
@@ -1464,7 +895,7 @@ internal static class BlameInsightBrushes
 public sealed partial class GitHistoryTimelineViewModel : ObservableObject
 {
     private readonly HashSet<string> seenCommitIds = new(StringComparer.Ordinal);
-    private readonly GitHistoryGraphLayoutState graphLayout = new();
+    private readonly GitHistoryLaneLayout graphLayout = new();
     private int nextSkip;
 
     public GitHistoryTimelineViewModel(
@@ -1572,7 +1003,7 @@ public sealed record GitHistoryItemViewModel(
 
     public string MetaText => $"{Author} | {AuthorTimeText} | {ParentText}";
 
-    public static GitHistoryItemViewModel FromCommit(GitCommitInfo commit, GitHistoryGraphRowViewModel graph)
+    public static GitHistoryItemViewModel FromCommit(GitCommitInfo commit, GitHistoryLaneRow graph)
     {
         var parentText = commit.ParentIds.Length == 0
             ? "root commit"
@@ -1590,12 +1021,12 @@ public sealed record GitHistoryItemViewModel(
             parentText,
             graph.Width,
             graph.Height,
-            graph.Paths,
+            graph.Paths.Select(GitHistoryGraphPathViewModel.FromPath).ToImmutableArray(),
             graph.DotLeft,
             graph.DotTop,
             graph.DotSize,
-            graph.DotBrush,
-            graph.DotStroke,
+            GitHistoryBrushes.GetLaneBrush(graph.DotColorIndex),
+            GitHistoryBrushes.DotStrokeBrush,
             graph.Height,
             commit.IsMerge ? "merge" : string.Empty);
     }
@@ -1608,193 +1039,42 @@ public sealed record GitHistoryItemViewModel(
     private static string Shorten(string commitId) => commitId.Length <= 12 ? commitId : commitId[..12];
 }
 
-public sealed record GitHistoryGraphRowViewModel(
-    double Width,
-    double Height,
-    ImmutableArray<GitHistoryGraphPathViewModel> Paths,
-    double DotLeft,
-    double DotTop,
-    double DotSize,
-    SolidColorBrush DotBrush,
-    SolidColorBrush DotStroke);
-
-public sealed record GitHistoryGraphPathViewModel(Geometry Data, SolidColorBrush Stroke, double StrokeThickness, double Opacity);
-
-internal sealed class GitHistoryGraphLayoutState
+public sealed record GitHistoryGraphPathViewModel(Geometry Data, SolidColorBrush Stroke, double StrokeThickness, double Opacity)
 {
-    private const double LaneSpacing = 14;
-    private const double GraphLeft = 22;
-    private const double GraphTop = 0;
-    private const double RowHeight = 58;
-    private const double CommitCenterY = 24;
-    private const double CommitDotSize = 10;
-    private const double StrokeThickness = 2.1;
-    private const double GraphWidth = 214;
+    public static GitHistoryGraphPathViewModel FromPath(GitHistoryLanePath path) =>
+        new(CreatePath(path), GitHistoryBrushes.GetLaneBrush(path.ColorIndex), path.StrokeThickness, path.Opacity);
 
-    private readonly List<string> lanes = [];
-    private readonly Dictionary<string, int> colorsByCommit = new(StringComparer.Ordinal);
-    private int nextColor;
-    private int rowIndex;
-
-    public GitHistoryGraphRowViewModel CreateRow(GitCommitInfo commit)
+    private static PathGeometry CreatePath(GitHistoryLanePath path)
     {
-        var paths = ImmutableArray.CreateBuilder<GitHistoryGraphPathViewModel>();
-        var currentLane = lanes.FindIndex(lane => string.Equals(lane, commit.Id, StringComparison.Ordinal));
-        var currentWasActive = currentLane >= 0;
-        if (currentLane < 0)
-        {
-            currentLane = 0;
-            lanes.Insert(0, commit.Id);
-            AssignColor(commit.Id, nextColor++);
-        }
-
-        var currentColor = GetColor(commit.Id);
-        var laneSnapshot = lanes.ToArray();
-        for (var lane = 0; lane < laneSnapshot.Length; lane++)
-        {
-            if (lane == currentLane && !currentWasActive)
-            {
-                continue;
-            }
-
-            var brush = GitHistoryBrushes.GetLaneBrush(GetColor(laneSnapshot[lane]));
-            paths.Add(CreateLine(LaneX(lane), GraphTop, LaneX(lane), CommitCenterY, brush));
-        }
-
-        var nextLanes = lanes.ToList();
-        nextLanes.RemoveAt(currentLane);
-        var parentLanes = ResolveParentLanes(commit, currentLane, nextLanes, currentColor);
-        var parentIds = commit.ParentIds.ToHashSet(StringComparer.Ordinal);
-        for (var lane = 0; lane < laneSnapshot.Length; lane++)
-        {
-            if (lane == currentLane)
-            {
-                continue;
-            }
-
-            var laneCommitId = laneSnapshot[lane];
-            var nextLane = nextLanes.FindIndex(next => string.Equals(next, laneCommitId, StringComparison.Ordinal));
-            if (nextLane < 0)
-            {
-                continue;
-            }
-
-            var sourceX = LaneX(lane);
-            var targetX = LaneX(nextLane);
-            var brush = GitHistoryBrushes.GetLaneBrush(GetColor(laneCommitId));
-            var opacity = parentIds.Contains(laneCommitId) ? 0.58 : 1.0;
-            paths.Add(Math.Abs(sourceX - targetX) < 0.1
-                ? CreateLine(sourceX, CommitCenterY, targetX, RowHeight, brush, opacity)
-                : CreateCurve(sourceX, CommitCenterY, targetX, RowHeight, brush, opacity));
-        }
-
-        foreach (var parent in parentLanes)
-        {
-            var sourceX = LaneX(currentLane);
-            var targetX = LaneX(parent.Lane);
-            var brush = GitHistoryBrushes.GetLaneBrush(parent.Color);
-            paths.Add(Math.Abs(sourceX - targetX) < 0.1
-                ? CreateLine(sourceX, CommitCenterY, targetX, RowHeight, brush)
-                : CreateCurve(sourceX, CommitCenterY, targetX, RowHeight, brush));
-        }
-
-        lanes.Clear();
-        lanes.AddRange(nextLanes);
-        rowIndex++;
-
-        return new GitHistoryGraphRowViewModel(
-            GraphWidth,
-            RowHeight,
-            paths.ToImmutable(),
-            LaneX(currentLane) - CommitDotSize / 2,
-            CommitCenterY - CommitDotSize / 2,
-            CommitDotSize,
-            GitHistoryBrushes.GetLaneBrush(currentColor),
-            GitHistoryBrushes.DotStrokeBrush);
-    }
-
-    private ImmutableArray<(int Lane, int Color)> ResolveParentLanes(GitCommitInfo commit, int currentLane, List<string> nextLanes, int currentColor)
-    {
-        if (commit.ParentIds.Length == 0)
-        {
-            return [];
-        }
-
-        var builder = ImmutableArray.CreateBuilder<(int Lane, int Color)>();
-        var insertOffset = 0;
-        for (var parentIndex = 0; parentIndex < commit.ParentIds.Length; parentIndex++)
-        {
-            var parentId = commit.ParentIds[parentIndex];
-            var parentLane = nextLanes.FindIndex(lane => string.Equals(lane, parentId, StringComparison.Ordinal));
-            if (parentLane < 0)
-            {
-                parentLane = Math.Clamp(currentLane + insertOffset, 0, nextLanes.Count);
-                nextLanes.Insert(parentLane, parentId);
-                insertOffset++;
-            }
-
-            var color = parentIndex == 0
-                ? AssignColor(parentId, currentColor)
-                : AssignColor(parentId, nextColor++);
-            builder.Add((parentLane, color));
-        }
-
-        return builder.ToImmutable();
-    }
-
-    private int AssignColor(string commitId, int color)
-    {
-        if (colorsByCommit.TryGetValue(commitId, out var existing))
-        {
-            return existing;
-        }
-
-        colorsByCommit[commitId] = color;
-        return color;
-    }
-
-    private int GetColor(string commitId)
-    {
-        if (colorsByCommit.TryGetValue(commitId, out var color))
-        {
-            return color;
-        }
-
-        colorsByCommit[commitId] = nextColor;
-        return nextColor++;
-    }
-
-    private static double LaneX(int lane) => GraphLeft + lane * LaneSpacing;
-
-    private static GitHistoryGraphPathViewModel CreateLine(double x1, double y1, double x2, double y2, SolidColorBrush brush, double opacity = 1) =>
-        new(CreatePath(new Point(x1, y1), new LineSegment { Point = new Point(x2, y2) }), brush, StrokeThickness, opacity);
-
-    private static GitHistoryGraphPathViewModel CreateCurve(double x1, double y1, double x2, double y2, SolidColorBrush brush, double opacity = 1)
-    {
-        var verticalDistance = Math.Max(1, y2 - y1);
-        var segment = new BezierSegment
-        {
-            Point1 = new Point(x1, y1 + verticalDistance * 0.58),
-            Point2 = new Point(x2, y2 - verticalDistance * 0.58),
-            Point3 = new Point(x2, y2)
-        };
-        return new GitHistoryGraphPathViewModel(CreatePath(new Point(x1, y1), segment), brush, StrokeThickness, opacity);
-    }
-
-    private static PathGeometry CreatePath(Point startPoint, PathSegment segment)
-    {
+        var points = path.Points.IsDefaultOrEmpty
+            ? ImmutableArray.Create(new Point2(0, 0), new Point2(0, 0))
+            : path.Points;
         var figure = new PathFigure
         {
-            StartPoint = startPoint,
+            StartPoint = ToPoint(points[0]),
             IsClosed = false,
             IsFilled = false
         };
-        figure.Segments.Add(segment);
+        if (path.IsCurve && points.Length >= 4)
+        {
+            figure.Segments.Add(new BezierSegment
+            {
+                Point1 = ToPoint(points[1]),
+                Point2 = ToPoint(points[2]),
+                Point3 = ToPoint(points[3])
+            });
+        }
+        else
+        {
+            figure.Segments.Add(new LineSegment { Point = ToPoint(points[^1]) });
+        }
 
         var geometry = new PathGeometry();
         geometry.Figures.Add(figure);
         return geometry;
     }
+
+    private static Point ToPoint(Point2 point) => new(point.X, point.Y);
 }
 
 public sealed record GitHistoryRefBadgeViewModel(string Text, SolidColorBrush Foreground, SolidColorBrush Background, SolidColorBrush Border)
@@ -2009,134 +1289,23 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         DiffDocumentSnapshot fullFileDocument,
         string fullText,
         ImmutableArray<CodeFoldRegion> foldRegions,
-        FileDiffDisplayMode displayMode) => new(
-        document.Id.Value,
-        document.Metadata.Path,
-        document.Metadata.Language,
-        document.Metadata.Status,
-        document.Lines,
-        CreateFullDiffLines(document, fullFileDocument),
-        document.Lines.Select(FileDiffLineViewModel.FromLine).ToImmutableArray(),
-        fullText,
-        fullFileDocument.Lines,
-        CreateAnnotatedFullFileLines(document, fullFileDocument),
-        foldRegions,
-        displayMode);
-
-    private static ImmutableArray<DiffLine> CreateAnnotatedFullFileLines(DiffDocumentSnapshot diffDocument, DiffDocumentSnapshot fullFileDocument)
+        FileDiffDisplayMode displayMode)
     {
-        if (fullFileDocument.Lines.IsDefaultOrEmpty)
-        {
-            return [];
-        }
-
-        var diffLineByNewNumber = diffDocument.Lines
-            .Where(line => line.NewLineNumber is > 0 && IsVisibleFullFileAnnotationKind(line.Kind))
-            .GroupBy(line => line.NewLineNumber!.Value)
-            .ToDictionary(group => group.Key, group => group.OrderBy(AnnotationPriority).First());
-        return fullFileDocument.Lines
-            .Select((line, index) =>
-            {
-                var lineNumber = line.NewLineNumber ?? index + 1;
-                return diffLineByNewNumber.TryGetValue(lineNumber, out var diffLine)
-                    ? ReindexLine(line with
-                    {
-                        Kind = diffLine.Kind,
-                        InlineSpans = diffLine.InlineSpans
-                    }, index)
-                    : ReindexLine(line with { Kind = DiffLineKind.Context }, index);
-            })
-            .ToImmutableArray();
+        var view = new FileDiffDocumentBuilder().Build(document, fullFileDocument, fullText, foldRegions);
+        return new FileDiffTabViewModel(
+            view.DiffDocument.Id.Value,
+            view.DiffDocument.Metadata.Path,
+            view.DiffDocument.Metadata.Language,
+            view.DiffDocument.Metadata.Status,
+            view.ChangedHunkLines,
+            view.FullDiffLines,
+            view.ChangedHunkLines.Select(FileDiffLineViewModel.FromLine).ToImmutableArray(),
+            view.FullText,
+            view.FullFileDocument.Lines,
+            view.AnnotatedFullFileLines,
+            view.FoldRegions,
+            displayMode);
     }
-
-    private static ImmutableArray<DiffLine> CreateFullDiffLines(DiffDocumentSnapshot diffDocument, DiffDocumentSnapshot fullFileDocument)
-    {
-        if (fullFileDocument.Lines.IsDefaultOrEmpty)
-        {
-            return diffDocument.Lines;
-        }
-
-        var fullLinesByNumber = fullFileDocument.Lines
-            .Select((line, index) => (LineNumber: line.NewLineNumber ?? index + 1, Line: line))
-            .ToDictionary(pair => pair.LineNumber, pair => pair.Line);
-        var builder = ImmutableArray.CreateBuilder<DiffLine>();
-        var nextFullLineNumber = 1;
-
-        foreach (var diffLine in diffDocument.Lines)
-        {
-            if (diffLine.Kind == DiffLineKind.Imaginary)
-            {
-                continue;
-            }
-
-            if (diffLine.Kind == DiffLineKind.Metadata)
-            {
-                builder.Add(ReindexLine(diffLine, builder.Count));
-                continue;
-            }
-
-            if (diffLine.NewLineNumber is { } newLineNumber)
-            {
-                AddFullContextLines(builder, fullLinesByNumber, nextFullLineNumber, newLineNumber - 1);
-                if (fullLinesByNumber.TryGetValue(newLineNumber, out var fullLine))
-                {
-                    builder.Add(ReindexLine(fullLine with
-                    {
-                        Kind = IsVisibleFullFileAnnotationKind(diffLine.Kind) ? diffLine.Kind : DiffLineKind.Context,
-                        OldLineNumber = diffLine.OldLineNumber,
-                        NewLineNumber = diffLine.NewLineNumber,
-                        InlineSpans = diffLine.InlineSpans
-                    }, builder.Count));
-                }
-                else
-                {
-                    builder.Add(ReindexLine(diffLine, builder.Count));
-                }
-
-                nextFullLineNumber = Math.Max(nextFullLineNumber, newLineNumber + 1);
-                continue;
-            }
-
-            if (diffLine.Kind == DiffLineKind.Deleted)
-            {
-                builder.Add(ReindexLine(diffLine, builder.Count));
-            }
-        }
-
-        AddFullContextLines(builder, fullLinesByNumber, nextFullLineNumber, fullLinesByNumber.Count);
-        return builder.ToImmutable();
-    }
-
-    private static void AddFullContextLines(ImmutableArray<DiffLine>.Builder builder, IReadOnlyDictionary<int, DiffLine> linesByNumber, int firstLineNumber, int lastLineNumber)
-    {
-        for (var lineNumber = Math.Max(1, firstLineNumber); lineNumber <= lastLineNumber; lineNumber++)
-        {
-            if (linesByNumber.TryGetValue(lineNumber, out var line))
-            {
-                builder.Add(ReindexLine(line with
-                {
-                    OldLineNumber = lineNumber,
-                    NewLineNumber = lineNumber,
-                    Kind = DiffLineKind.Context
-                }, builder.Count));
-            }
-        }
-    }
-
-    private static DiffLine ReindexLine(DiffLine line, int index) => line with { Index = index };
-
-    private static bool IsVisibleFullFileAnnotationKind(DiffLineKind kind) =>
-        kind is DiffLineKind.Added or DiffLineKind.Modified or DiffLineKind.Moved or DiffLineKind.Conflict or DiffLineKind.Ignored;
-
-    private static int AnnotationPriority(DiffLine line) => line.Kind switch
-    {
-        DiffLineKind.Conflict => 0,
-        DiffLineKind.Modified => 1,
-        DiffLineKind.Moved => 2,
-        DiffLineKind.Added => 3,
-        DiffLineKind.Ignored => 4,
-        _ => 9
-    };
 }
 
 public sealed record FileDiffLineViewModel(
