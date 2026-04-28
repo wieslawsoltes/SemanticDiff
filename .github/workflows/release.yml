@@ -28,6 +28,7 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   SOLUTION_FILE: SemanticDiff.slnx
+  APP_PROJECT: src/SemanticDiff.App/SemanticDiff.App.csproj
   TEST_PROJECT: tests/SemanticDiff.Tests/SemanticDiff.Tests.csproj
   DESKTOP_TARGET_FRAMEWORK: net10.0-desktop
 
@@ -116,10 +117,61 @@ jobs:
         run: dotnet restore "${{ env.SOLUTION_FILE }}"
 
       - name: Build app
-        run: dotnet build src/SemanticDiff.App/SemanticDiff.App.csproj -c Release -f "${{ env.DESKTOP_TARGET_FRAMEWORK }}" -m:1 --no-restore -p:GeneratePackageOnBuild=false -p:Version="${{ needs.version.outputs.version }}"
+        run: dotnet build "${{ env.APP_PROJECT }}" -c Release -f "${{ env.DESKTOP_TARGET_FRAMEWORK }}" -m:1 --no-restore -p:GeneratePackageOnBuild=false -p:Version="${{ needs.version.outputs.version }}"
 
       - name: Build controls sample
         run: dotnet build samples/SemanticDiff.Controls.Uno.Sample/SemanticDiff.Controls.Uno.Sample.csproj -c Release -f "${{ env.DESKTOP_TARGET_FRAMEWORK }}" -m:1 --no-restore -p:GeneratePackageOnBuild=false -p:Version="${{ needs.version.outputs.version }}"
+
+  app-publish:
+    name: App Publish (${{ matrix.target.id }})
+    runs-on: ${{ matrix.target.runner }}
+    needs:
+      - version
+      - build-and-test
+      - desktop-build
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - id: linux-x64
+            runner: ubuntu-latest
+            rid: linux-x64
+            format: folder
+          - id: win-x64
+            runner: windows-latest
+            rid: win-x64
+            format: folder
+          - id: macos-arm64
+            runner: macos-14
+            rid: osx-arm64
+            format: app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish app
+        shell: bash
+        run: |
+          scripts/publish-app.sh \
+            --rid "${{ matrix.target.rid }}" \
+            --format "${{ matrix.target.format }}" \
+            --version "${{ needs.version.outputs.version }}" \
+            --archive-name "SemanticDiff.App-${{ needs.version.outputs.version }}-${{ matrix.target.id }}"
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-app-${{ matrix.target.id }}
+          path: artifacts/publish/app/SemanticDiff.App-${{ needs.version.outputs.version }}-${{ matrix.target.id }}.zip
+          if-no-files-found: error
+          retention-days: 90
 
   pack:
     name: Pack Release
@@ -128,6 +180,7 @@ jobs:
       - version
       - build-and-test
       - desktop-build
+      - app-publish
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -198,6 +251,7 @@ jobs:
       - version
       - pack
       - publish-nuget
+      - app-publish
     permissions:
       contents: write
     steps:
@@ -206,6 +260,13 @@ jobs:
         with:
           name: release-nuget-packages
           path: packages
+
+      - name: Download app packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-app-*
+          path: app-packages
+          merge-multiple: true
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -219,5 +280,6 @@ jobs:
           files: |
             packages/*.nupkg
             packages/*.snupkg
+            app-packages/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
