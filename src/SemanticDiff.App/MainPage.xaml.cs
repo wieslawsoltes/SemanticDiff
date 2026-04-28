@@ -3,9 +3,10 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using SemanticDiff.Controls.Uno;
 using SemanticDiff.Core;
 using SemanticDiff.Rendering;
-using SkiaSharp;
+using SemanticDiff.Rendering.Export;
 using System.Collections.Specialized;
 using System.IO;
 using Windows.ApplicationModel.DataTransfer;
@@ -40,6 +41,7 @@ public sealed partial class MainPage : Page
     private double symbolFacetSplitterStartY;
     private double symbolFacetSplitterStartHeight;
     private ScrollViewer? workspaceTabsScrollViewer;
+    private readonly IDiffSceneExporter workspaceGraphExporter = new DiffSceneExportService();
 
     public ViewModels.MainViewModel ViewModel { get; } = new();
 
@@ -560,7 +562,7 @@ public sealed partial class MainPage : Page
             }
 
             await using var stream = File.Open(file.Path, FileMode.Create, FileAccess.Write, FileShare.None);
-            ExportWorkspaceGraph(scene, stream, format, ViewModel.IsLightThemeEnabled);
+            workspaceGraphExporter.Export(scene, stream, new DiffSceneExportOptions(ToDiffSceneExportFormat(format), ViewModel.IsLightThemeEnabled));
             await stream.FlushAsync();
             ViewModel.ReportInteractionInfo($"Exported workspace graph to {file.Path}");
         }
@@ -613,106 +615,15 @@ public sealed partial class MainPage : Page
         _ => "png"
     };
 
-    private static void ExportWorkspaceGraph(DiffCanvasScene sourceScene, Stream stream, WorkspaceGraphExportFormat format, bool isLightTheme)
+    private static DiffSceneExportFormat ToDiffSceneExportFormat(WorkspaceGraphExportFormat format)
     {
-        var exportScene = CloneSceneForExport(sourceScene);
-        var exportSize = GetExportSize(exportScene.GraphBounds, format);
-        exportScene.FitToGraph(new Size2(exportSize.Width, exportSize.Height));
-
-        switch (format)
+        return format switch
         {
-            case WorkspaceGraphExportFormat.Svg:
-                ExportWorkspaceGraphAsSvg(exportScene, stream, exportSize, isLightTheme);
-                break;
-            case WorkspaceGraphExportFormat.Png:
-                ExportWorkspaceGraphAsPng(exportScene, stream, exportSize, isLightTheme);
-                break;
-            case WorkspaceGraphExportFormat.Pdf:
-                ExportWorkspaceGraphAsPdf(exportScene, stream, exportSize, isLightTheme);
-                break;
-        }
-    }
-
-    private static void ExportWorkspaceGraphAsSvg(DiffCanvasScene scene, Stream stream, SKSizeI exportSize, bool isLightTheme)
-    {
-        using var canvas = SKSvgCanvas.Create(SKRect.Create(exportSize.Width, exportSize.Height), stream);
-        RenderWorkspaceGraph(canvas, scene, exportSize, isLightTheme);
-        canvas.Flush();
-    }
-
-    private static void ExportWorkspaceGraphAsPng(DiffCanvasScene scene, Stream stream, SKSizeI exportSize, bool isLightTheme)
-    {
-        var imageInfo = new SKImageInfo(exportSize.Width, exportSize.Height, SKColorType.Rgba8888, SKAlphaType.Premul);
-        using var surface = SKSurface.Create(imageInfo);
-        RenderWorkspaceGraph(surface.Canvas, scene, exportSize, isLightTheme);
-        using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        data.SaveTo(stream);
-    }
-
-    private static void ExportWorkspaceGraphAsPdf(DiffCanvasScene scene, Stream stream, SKSizeI exportSize, bool isLightTheme)
-    {
-        using var document = SKDocument.CreatePdf(stream);
-        var canvas = document.BeginPage(exportSize.Width, exportSize.Height);
-        RenderWorkspaceGraph(canvas, scene, exportSize, isLightTheme);
-        document.EndPage();
-        document.Close();
-    }
-
-    private static void RenderWorkspaceGraph(SKCanvas canvas, DiffCanvasScene scene, SKSizeI exportSize, bool isLightTheme)
-    {
-        var renderer = new DiffSceneRenderer();
-        renderer.Render(
-            canvas,
-            new SKSize(exportSize.Width, exportSize.Height),
-            scene,
-            isLightTheme ? DiffCanvasColorTheme.Light : DiffCanvasColorTheme.Dark,
-            DiffSceneRenderMode.Normal);
-    }
-
-    private static DiffCanvasScene CloneSceneForExport(DiffCanvasScene sourceScene)
-    {
-        var nodes = sourceScene.Nodes
-            .Select(node =>
-            {
-                var clone = new DiffNode(node.Document, node.Bounds, node.IsPinned, node.FontSize)
-                {
-                    IsSelected = node.IsSelected
-                };
-                clone.RestoreScrollOffset(node.ScrollOffsetY);
-                return clone;
-            })
-            .ToArray();
-
-        return new DiffCanvasScene(
-            nodes,
-            sourceScene.Edges.ToArray(),
-            sourceScene.Groups,
-            sourceScene.Annotations,
-            sourceScene.AnnotationVisibility);
-    }
-
-    private static SKSizeI GetExportSize(Rect2 graphBounds, WorkspaceGraphExportFormat format)
-    {
-        const double margin = 96;
-        const int minimumWidth = 1200;
-        const int minimumHeight = 800;
-        const int maximumVectorEdge = 20000;
-        const int maximumPngEdge = 12000;
-        const double maximumPngPixels = 72_000_000;
-
-        var desiredWidth = Math.Max(minimumWidth, graphBounds.Width + margin * 2);
-        var desiredHeight = Math.Max(minimumHeight, graphBounds.Height + margin * 2);
-        var maximumEdge = format == WorkspaceGraphExportFormat.Png ? maximumPngEdge : maximumVectorEdge;
-        var scale = Math.Min(1, maximumEdge / Math.Max(desiredWidth, desiredHeight));
-        if (format == WorkspaceGraphExportFormat.Png && desiredWidth * desiredHeight * scale * scale > maximumPngPixels)
-        {
-            scale = Math.Sqrt(maximumPngPixels / (desiredWidth * desiredHeight));
-        }
-
-        return new SKSizeI(
-            Math.Max(1, (int)Math.Ceiling(desiredWidth * scale)),
-            Math.Max(1, (int)Math.Ceiling(desiredHeight * scale)));
+            WorkspaceGraphExportFormat.Svg => DiffSceneExportFormat.Svg,
+            WorkspaceGraphExportFormat.Png => DiffSceneExportFormat.Png,
+            WorkspaceGraphExportFormat.Pdf => DiffSceneExportFormat.Pdf,
+            _ => DiffSceneExportFormat.Png
+        };
     }
 
     private async Task RelayoutAndFitAsync()
@@ -1043,7 +954,7 @@ public sealed partial class MainPage : Page
         }
     }
 
-    private void OnFileViewerLineContextRequested(object? sender, Views.CodeFileLineContextRequestedEventArgs args)
+    private void OnFileViewerLineContextRequested(object? sender, CodeFileLineContextRequestedEventArgs args)
     {
         if (sender is not FrameworkElement { DataContext: ViewModels.WorkspaceTabViewModel { FileDiff: { } fileDiff } } element)
         {
@@ -1499,29 +1410,29 @@ public sealed partial class MainPage : Page
         }
     }
 
-    private void OnDiffCanvasNodeNavigationRequested(object? sender, Views.DiffCanvasNodeNavigationRequestedEventArgs args)
+    private void OnDiffCanvasNodeNavigationRequested(object? sender, DiffCanvasNodeNavigationRequestedEventArgs args)
     {
         ViewModel.RevealDocumentInExplorer(args.DocumentId);
     }
 
-    private async void OnDiffCanvasNodeDiffTabRequested(object? sender, Views.DiffCanvasNodeDiffTabRequestedEventArgs args)
+    private async void OnDiffCanvasNodeDiffTabRequested(object? sender, DiffCanvasNodeDiffTabRequestedEventArgs args)
     {
         await ViewModel.OpenFileDiffTabAsync(
             args.DocumentId,
             args.ShowFullFile ? ViewModels.FileDiffDisplayMode.FullFile : ViewModels.FileDiffDisplayMode.DiffOnly);
     }
 
-    private async void OnDiffCanvasNodeBlameTabRequested(object? sender, Views.DiffCanvasNodeBlameTabRequestedEventArgs args)
+    private async void OnDiffCanvasNodeBlameTabRequested(object? sender, DiffCanvasNodeBlameTabRequestedEventArgs args)
     {
         await ViewModel.OpenBlameTabAsync(args.DocumentId);
     }
 
-    private void OnDiffCanvasNodeSymbolGraphRequested(object? sender, Views.DiffCanvasNodeSymbolGraphRequestedEventArgs args)
+    private void OnDiffCanvasNodeSymbolGraphRequested(object? sender, DiffCanvasNodeSymbolGraphRequestedEventArgs args)
     {
         ViewModel.OpenSemanticMapForDocumentId(args.DocumentId);
     }
 
-    private async void OnDiffCanvasAnnotationInteractionRequested(object? sender, Views.DiffCanvasAnnotationInteractionRequestedEventArgs args)
+    private async void OnDiffCanvasAnnotationInteractionRequested(object? sender, DiffCanvasAnnotationInteractionRequestedEventArgs args)
     {
         if (args.Annotation.Kind == DiffAnnotationKind.HistoryBlame)
         {

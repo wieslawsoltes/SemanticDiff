@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -8,7 +9,7 @@ using SkiaSharp.Views.Windows;
 using Windows.Foundation;
 using Windows.System;
 
-namespace SemanticDiff.App.Views;
+namespace SemanticDiff.Controls.Uno;
 
 public sealed class CodeFileViewerControl : Grid
 {
@@ -22,7 +23,6 @@ public sealed class CodeFileViewerControl : Grid
     private const double DefaultCodeFontSize = 15;
     private const double MinimumCodeFontSize = 10;
     private const double MaximumCodeFontSize = 28;
-    private const int TabSize = 4;
     private const double DefaultViewportWidth = 960;
     private const double DefaultViewportHeight = 520;
 
@@ -62,10 +62,11 @@ public sealed class CodeFileViewerControl : Grid
         typeof(CodeFileViewerControl),
         new PropertyMetadata(null, OnContentChanged));
 
+    private static readonly SKTypeface RegularTypeface = SKTypeface.FromFamilyName("Cascadia Mono") ?? SKTypeface.Default;
+    private static readonly SKTypeface BoldTypeface = SKTypeface.FromFamilyName("Cascadia Mono", SKFontStyle.Bold) ?? SKTypeface.Default;
+
     private readonly SKXamlCanvas canvas;
     private readonly HashSet<int> collapsedFoldStarts = [];
-    private readonly SKTypeface typeface = SKTypeface.FromFamilyName("Cascadia Mono") ?? SKTypeface.Default;
-    private readonly SKTypeface boldTypeface = SKTypeface.FromFamilyName("Cascadia Mono", SKFontStyle.Bold) ?? SKTypeface.Default;
     private ImmutableArray<VisibleCodeRow> visibleRows = [];
     private Dictionary<int, CodeFoldRegion> foldRegionsByStart = [];
     private Size2 lastCanvasSize = Size2.Zero;
@@ -107,14 +108,6 @@ public sealed class CodeFileViewerControl : Grid
             RequestRender();
         };
         ActualThemeChanged += (_, _) => RequestRender();
-        Unloaded += (_, _) =>
-        {
-            typeface.Dispose();
-            if (!ReferenceEquals(typeface, boldTypeface))
-            {
-                boldTypeface.Dispose();
-            }
-        };
     }
 
     public object? Lines
@@ -221,7 +214,7 @@ public sealed class CodeFileViewerControl : Grid
         EnsureVisibleRows();
         ClampScrollOffset();
 
-        var palette = ViewerPalette.Create(ActualTheme == ElementTheme.Light);
+        var palette = CodeFileViewerPalette.Create(ActualTheme == ElementTheme.Light);
         var canvasSurface = args.Surface.Canvas;
         canvasSurface.Clear(palette.Background);
 
@@ -235,8 +228,8 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.Save();
         canvasSurface.Scale((float)rasterScale);
 
-        using var font = new SKFont(typeface, EffectiveFontSize);
-        using var boldFont = new SKFont(boldTypeface, EffectiveFontSize);
+        using var font = new SKFont(RegularTypeface, EffectiveFontSize);
+        using var boldFont = new SKFont(BoldTypeface, EffectiveFontSize);
         using var defaultPaint = CreateTextPaint(palette.Text);
         using var mutedPaint = CreateTextPaint(palette.MutedText);
         using var lineNumberPaint = CreateTextPaint(palette.LineNumber);
@@ -424,7 +417,7 @@ public sealed class CodeFileViewerControl : Grid
         }
 
         var lineNumber = line.NewLineNumber ?? line.OldLineNumber ?? line.Index + 1;
-        var symbolText = column >= 0 ? GetSymbolTextAtColumn(line, column) : string.Empty;
+        var symbolText = column >= 0 ? CodeTextLayout.GetSymbolTextAtColumn(line, column) : string.Empty;
         LineContextRequested?.Invoke(
             this,
             new CodeFileLineContextRequestedEventArgs(
@@ -457,7 +450,7 @@ public sealed class CodeFileViewerControl : Grid
         RequestRender();
     }
 
-    private void DrawGutter(SKCanvas canvasSurface, ViewerPalette palette, float gutterWidth, float height)
+    private void DrawGutter(SKCanvas canvasSurface, CodeFileViewerPalette palette, float gutterWidth, float height)
     {
         using var gutterPaint = new SKPaint { Color = palette.GutterBackground, Style = SKPaintStyle.Fill };
         using var borderPaint = new SKPaint { Color = palette.Border, StrokeWidth = 1, Style = SKPaintStyle.Stroke };
@@ -465,7 +458,7 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawLine(gutterWidth - 0.5f, 0, gutterWidth - 0.5f, height, borderPaint);
     }
 
-    private static void DrawLineBackground(SKCanvas canvasSurface, ViewerPalette palette, float gutterWidth, float width, float y, float lineHeight, DiffLineKind kind, bool isCollapsed)
+    private static void DrawLineBackground(SKCanvas canvasSurface, CodeFileViewerPalette palette, float gutterWidth, float width, float y, float lineHeight, DiffLineKind kind, bool isCollapsed)
     {
         var color = kind switch
         {
@@ -488,7 +481,7 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawRect(SKRect.Create(gutterWidth, y, Math.Max(0, width - gutterWidth - ScrollbarWidth - ScrollbarMargin), lineHeight), paint);
     }
 
-    private void DrawSelection(SKCanvas canvasSurface, ViewerPalette palette, int rowIndex, DiffLine line, float textX, float y, float charWidth, float width)
+    private void DrawSelection(SKCanvas canvasSurface, CodeFileViewerPalette palette, int rowIndex, DiffLine line, float textX, float y, float charWidth, float width)
     {
         if (!TryGetSelectionRange(out var start, out var end) ||
             rowIndex < start.RowIndex ||
@@ -502,8 +495,8 @@ public sealed class CodeFileViewerControl : Grid
         startColumn = Math.Clamp(startColumn, 0, line.Text.Length);
         endColumn = Math.Clamp(endColumn, 0, line.Text.Length);
 
-        var startVisualColumn = GetVisualColumn(line.Text, startColumn);
-        var endVisualColumn = GetVisualColumn(line.Text, endColumn);
+        var startVisualColumn = CodeTextLayout.GetVisualColumn(line.Text, startColumn);
+        var endVisualColumn = CodeTextLayout.GetVisualColumn(line.Text, endColumn);
         var selectionLeft = textX + startVisualColumn * charWidth;
         var selectionRight = textX + Math.Max(startVisualColumn, endVisualColumn) * charWidth;
         var maxRight = Math.Max(selectionLeft + 1, width - ScrollbarWidth - ScrollbarMargin);
@@ -530,15 +523,15 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawText(text, gutterWidth - 10 - width, y + baselineOffset, font, paint);
     }
 
-    private static void DrawDiffGutter(SKCanvas canvasSurface, ViewerPalette palette, DiffLine line, bool showDiffAnnotations, float gutterWidth, float y, float lineHeight, float baselineOffset, SKPaint lineNumberPaint, SKFont font)
+    private static void DrawDiffGutter(SKCanvas canvasSurface, CodeFileViewerPalette palette, DiffLine line, bool showDiffAnnotations, float gutterWidth, float y, float lineHeight, float baselineOffset, SKPaint lineNumberPaint, SKFont font)
     {
         var annotationKind = showDiffAnnotations ? line.Kind : DiffLineKind.Context;
-        var markerPaint = CreateTextPaint(LineAccentColor(annotationKind, palette));
+        var markerPaint = CreateTextPaint(CodeTextStyleMap.LineAccentColor(annotationKind, palette));
         try
         {
             var oldText = line.OldLineNumber?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
             var newText = line.NewLineNumber?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
-            var marker = showDiffAnnotations ? MarkerFor(line.Kind) : string.Empty;
+            var marker = showDiffAnnotations ? CodeTextStyleMap.MarkerFor(line.Kind) : string.Empty;
             var oldX = LeftPadding + 34;
             var newX = oldX + 44;
             var markerX = newX + 34;
@@ -550,7 +543,7 @@ public sealed class CodeFileViewerControl : Grid
                 canvasSurface.DrawText(marker, markerX, y + baselineOffset, font, markerPaint);
             }
 
-            using var lanePaint = new SKPaint { Color = LineAccentColor(annotationKind, palette), Style = SKPaintStyle.Fill, IsAntialias = true };
+            using var lanePaint = new SKPaint { Color = CodeTextStyleMap.LineAccentColor(annotationKind, palette), Style = SKPaintStyle.Fill, IsAntialias = true };
             if (showDiffAnnotations && line.Kind is DiffLineKind.Added or DiffLineKind.Deleted or DiffLineKind.Modified or DiffLineKind.Moved or DiffLineKind.Conflict)
             {
                 canvasSurface.DrawRoundRect(SKRect.Create(gutterWidth - 4, y + 2, 3, lineHeight - 4), 1.5f, 1.5f, lanePaint);
@@ -572,7 +565,7 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawText(text, right - font.MeasureText(text, paint), baseline, font, paint);
     }
 
-    private void DrawFoldMarker(SKCanvas canvasSurface, ViewerPalette palette, int lineIndex, CodeFoldRegion? collapsedRegion, float y, float lineHeight)
+    private void DrawFoldMarker(SKCanvas canvasSurface, CodeFileViewerPalette palette, int lineIndex, CodeFoldRegion? collapsedRegion, float y, float lineHeight)
     {
         if (!foldRegionsByStart.TryGetValue(lineIndex, out var region))
         {
@@ -606,7 +599,7 @@ public sealed class CodeFileViewerControl : Grid
         SKFont boldFont,
         SKPaint defaultPaint,
         SKPaint foldPaint,
-        ViewerPalette palette)
+        CodeFileViewerPalette palette)
     {
         DrawTokenizedText(canvasSurface, line.Text, line.Tokens, x, y + baselineOffset, charWidth, font, boldFont, defaultPaint, palette);
         if (collapsedRegion is null)
@@ -614,7 +607,7 @@ public sealed class CodeFileViewerControl : Grid
             return;
         }
 
-        var visualLength = GetVisualColumn(line.Text, line.Text.Length);
+        var visualLength = CodeTextLayout.GetVisualColumn(line.Text, line.Text.Length);
         var placeholder = $"  ... {collapsedRegion.CollapsedLineCount:N0} folded lines ...";
         using var chipPaint = new SKPaint { Color = palette.FoldChipBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
         var chipX = x + visualLength * charWidth + 8;
@@ -634,7 +627,7 @@ public sealed class CodeFileViewerControl : Grid
         SKFont font,
         SKFont boldFont,
         SKPaint defaultPaint,
-        ViewerPalette palette)
+        CodeFileViewerPalette palette)
     {
         if (string.IsNullOrEmpty(text))
         {
@@ -655,8 +648,8 @@ public sealed class CodeFileViewerControl : Grid
 
             if (end > start)
             {
-                using var tokenPaint = CreateTextPaint(TokenColor(token, palette));
-                DrawTextRange(canvasSurface, text, start, end - start, x, baseline, charWidth, IsBoldToken(token) ? boldFont : font, tokenPaint);
+                using var tokenPaint = CreateTextPaint(CodeTextStyleMap.TokenColor(token, palette));
+                DrawTextRange(canvasSurface, text, start, end - start, x, baseline, charWidth, CodeTextStyleMap.IsBoldToken(token) ? boldFont : font, tokenPaint);
             }
 
             cursor = Math.Max(cursor, end);
@@ -675,8 +668,8 @@ public sealed class CodeFileViewerControl : Grid
             return;
         }
 
-        var visualColumn = GetVisualColumn(text, start);
-        var value = text.Substring(start, length).Replace("\t", new string(' ', TabSize), StringComparison.Ordinal);
+        var visualColumn = CodeTextLayout.GetVisualColumn(text, start);
+        var value = text.Substring(start, length).Replace("\t", new string(' ', CodeTextLayout.TabSize), StringComparison.Ordinal);
         canvasSurface.DrawText(value, x + visualColumn * charWidth, baseline, font, paint);
     }
 
@@ -687,7 +680,7 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawText(text, Math.Max(16, (width - textWidth) / 2), Math.Max(32, height / 2), font, paint);
     }
 
-    private void DrawScrollbar(SKCanvas canvasSurface, ViewerPalette palette, float width, float height)
+    private void DrawScrollbar(SKCanvas canvasSurface, CodeFileViewerPalette palette, float width, float height)
     {
         var contentHeight = GetContentHeight();
         if (contentHeight <= height)
@@ -752,7 +745,7 @@ public sealed class CodeFileViewerControl : Grid
             return false;
         }
 
-        using var font = new SKFont(typeface, EffectiveFontSize);
+        using var font = new SKFont(RegularTypeface, EffectiveFontSize);
         using var paint = CreateTextPaint(SKColors.Black);
         var charWidth = Math.Max(1, font.MeasureText("M", paint));
         var gutterWidth = CalculateGutterWidth(charWidth, lines);
@@ -766,7 +759,7 @@ public sealed class CodeFileViewerControl : Grid
         }
 
         var line = lines[row.LineIndex];
-        var column = GetSourceColumnFromVisualOffset(line.Text, (float)(point.X - gutterWidth - TextPadding), charWidth);
+        var column = CodeTextLayout.GetSourceColumnFromVisualOffset(line.Text, (float)(point.X - gutterWidth - TextPadding), charWidth);
         position = new CodeTextPosition(rowIndex, column);
         return true;
     }
@@ -795,15 +788,15 @@ public sealed class CodeFileViewerControl : Grid
             return false;
         }
 
-        using var font = new SKFont(typeface, EffectiveFontSize);
+        using var font = new SKFont(RegularTypeface, EffectiveFontSize);
         using var paint = CreateTextPaint(SKColors.Black);
         var charWidth = Math.Max(1, font.MeasureText("M", paint));
         var gutterWidth = CalculateGutterWidth(charWidth, lines);
         line = lines[row.LineIndex];
         var textOffset = (float)(point.X - gutterWidth - TextPadding);
-        var lineTextWidth = GetVisualColumn(line.Text, line.Text.Length) * charWidth;
+        var lineTextWidth = CodeTextLayout.GetVisualColumn(line.Text, line.Text.Length) * charWidth;
         column = textOffset >= 0 && textOffset <= lineTextWidth
-            ? GetSourceColumnFromVisualOffset(line.Text, textOffset, charWidth)
+            ? CodeTextLayout.GetSourceColumnFromVisualOffset(line.Text, textOffset, charWidth)
             : -1;
         return true;
     }
@@ -839,30 +832,10 @@ public sealed class CodeFileViewerControl : Grid
             return;
         }
 
-        var lines = GetLines();
-        var regions = GetFoldRegions()
-            .Where(region => region.StartLineIndex >= 0 && region.EndLineIndex > region.StartLineIndex && region.StartLineIndex < lines.Count)
-            .GroupBy(region => region.StartLineIndex)
-            .Select(group => group.OrderByDescending(region => region.EndLineIndex).First())
-            .ToArray();
-        foldRegionsByStart = regions.ToDictionary(region => region.StartLineIndex);
+        var layout = CodeTextLayout.BuildVisibleRows(GetLines(), GetFoldRegions(), collapsedFoldStarts);
+        foldRegionsByStart = layout.FoldRegionsByStart;
         collapsedFoldStarts.RemoveWhere(start => !foldRegionsByStart.ContainsKey(start));
-
-        var rows = ImmutableArray.CreateBuilder<VisibleCodeRow>(lines.Count);
-        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
-        {
-            if (foldRegionsByStart.TryGetValue(lineIndex, out var region) && collapsedFoldStarts.Contains(lineIndex))
-            {
-                rows.Add(new VisibleCodeRow(lineIndex, region));
-                lineIndex = Math.Min(lines.Count - 1, region.EndLineIndex);
-            }
-            else
-            {
-                rows.Add(new VisibleCodeRow(lineIndex, null));
-            }
-        }
-
-        visibleRows = rows.ToImmutable();
+        visibleRows = layout.VisibleRows;
         visibleRowsDirty = false;
     }
 
@@ -967,276 +940,11 @@ public sealed class CodeFileViewerControl : Grid
         _ = DispatcherQueue?.TryEnqueue(RequestRender);
     }
 
-    private static int GetVisualColumn(string text, int column)
-    {
-        var visualColumn = 0;
-        var count = Math.Clamp(column, 0, text.Length);
-        for (var index = 0; index < count; index++)
-        {
-            visualColumn += text[index] == '\t' ? TabSize : 1;
-        }
-
-        return visualColumn;
-    }
-
-    private static int GetSourceColumnFromVisualOffset(string text, float visualOffset, float charWidth)
-    {
-        if (string.IsNullOrEmpty(text) || visualOffset <= 0)
-        {
-            return 0;
-        }
-
-        var targetVisualColumn = visualOffset / Math.Max(1, charWidth);
-        var visualColumn = 0;
-        for (var index = 0; index < text.Length; index++)
-        {
-            var nextVisualColumn = visualColumn + (text[index] == '\t' ? TabSize : 1);
-            if (targetVisualColumn < nextVisualColumn)
-            {
-                var midpoint = visualColumn + (nextVisualColumn - visualColumn) / 2.0;
-                return targetVisualColumn < midpoint ? index : index + 1;
-            }
-
-            visualColumn = nextVisualColumn;
-        }
-
-        return text.Length;
-    }
-
-    private static string GetSymbolTextAtColumn(DiffLine line, int column)
-    {
-        var text = line.Text;
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return string.Empty;
-        }
-
-        if (!line.Tokens.IsDefaultOrEmpty)
-        {
-            var token = line.Tokens
-                .OrderBy(token => token.StartColumn)
-                .LastOrDefault(token => column >= token.StartColumn && column < token.StartColumn + token.Length);
-            if (token is { Length: > 0 })
-            {
-                var start = Math.Clamp(token.StartColumn, 0, text.Length);
-                var end = Math.Clamp(token.StartColumn + token.Length, start, text.Length);
-                var tokenText = TrimSymbolText(text[start..end]);
-                if (!string.IsNullOrWhiteSpace(tokenText))
-                {
-                    return tokenText;
-                }
-            }
-        }
-
-        var boundedColumn = Math.Clamp(column, 0, text.Length);
-        var startIndex = boundedColumn;
-        while (startIndex > 0 && IsSymbolTextCharacter(text[startIndex - 1]))
-        {
-            startIndex--;
-        }
-
-        var endIndex = boundedColumn;
-        while (endIndex < text.Length && IsSymbolTextCharacter(text[endIndex]))
-        {
-            endIndex++;
-        }
-
-        return startIndex >= endIndex ? string.Empty : TrimSymbolText(text[startIndex..endIndex]);
-    }
-
-    private static bool IsSymbolTextCharacter(char character) =>
-        char.IsLetterOrDigit(character) || character is '_' or '.' or ':' or '<' or '>';
-
-    private static string TrimSymbolText(string value) =>
-        value.Trim().Trim('.', ':', ';', ',', '(', ')', '[', ']', '{', '}', '<', '>', '"', '\'', '/', '\\');
-
     private static SKPaint CreateTextPaint(SKColor color) => new()
     {
         Color = color,
         IsAntialias = true
     };
-
-    private static bool IsBoldToken(TokenSpan token) =>
-        token.TokenType is "keyword" or "class" or "interface" or "enum" or "struct" or "function" or "method" ||
-        (!token.Modifiers.IsDefaultOrEmpty &&
-            token.Modifiers.Any(modifier => string.Equals(modifier, "declaration", StringComparison.OrdinalIgnoreCase)));
-
-    private static SKColor TokenColor(TokenSpan token, ViewerPalette palette)
-    {
-        var style = string.IsNullOrWhiteSpace(token.StyleId) || token.StyleId == "text"
-            ? token.TokenType
-            : token.StyleId;
-
-        return style switch
-        {
-            "keyword" or "operator" => palette.Keyword,
-            "type" or "namespace" or "class" or "interface" or "enum" or "struct" or "typeParameter" => palette.Type,
-            "string" or "regexp" => palette.String,
-            "comment" => palette.Comment,
-            "number" => palette.Number,
-            "function" or "method" => palette.Function,
-            "property" or "enumMember" or "event" => palette.Property,
-            "parameter" => palette.Parameter,
-            "variable" => palette.Text,
-            "tag" or "decorator" or "macro" => palette.Tag,
-            "punctuation" => palette.Punctuation,
-            "invalid" => palette.Invalid,
-            _ => palette.Text
-        };
-    }
-
-    private static string MarkerFor(DiffLineKind kind) => kind switch
-    {
-        DiffLineKind.Added => "+",
-        DiffLineKind.Deleted => "-",
-        DiffLineKind.Modified => "*",
-        DiffLineKind.Ignored => "~",
-        DiffLineKind.Moved => ">",
-        DiffLineKind.Conflict => "!",
-        DiffLineKind.Metadata => "@",
-        DiffLineKind.Imaginary => "...",
-        _ => string.Empty
-    };
-
-    private static SKColor LineAccentColor(DiffLineKind kind, ViewerPalette palette) => kind switch
-    {
-        DiffLineKind.Added => palette.AddedAccent,
-        DiffLineKind.Deleted => palette.DeletedAccent,
-        DiffLineKind.Modified => palette.ModifiedAccent,
-        DiffLineKind.Moved => palette.MovedAccent,
-        DiffLineKind.Conflict => palette.ConflictAccent,
-        DiffLineKind.Metadata => palette.MetadataAccent,
-        DiffLineKind.Imaginary => palette.FoldText,
-        _ => palette.LineNumber
-    };
-
-    private readonly record struct VisibleCodeRow(int LineIndex, CodeFoldRegion? CollapsedRegion);
-
-    private readonly record struct CodeTextPosition(int RowIndex, int Column);
-
-    private sealed record ViewerPalette(
-        SKColor Background,
-        SKColor GutterBackground,
-        SKColor Border,
-        SKColor Text,
-        SKColor MutedText,
-        SKColor LineNumber,
-        SKColor FoldText,
-        SKColor FoldMarker,
-        SKColor FoldBackground,
-        SKColor FoldHoverBackground,
-        SKColor FoldChipBackground,
-        SKColor AddedBackground,
-        SKColor DeletedBackground,
-        SKColor ModifiedBackground,
-        SKColor MovedBackground,
-        SKColor ConflictBackground,
-        SKColor MetadataBackground,
-        SKColor AddedAccent,
-        SKColor DeletedAccent,
-        SKColor ModifiedAccent,
-        SKColor MovedAccent,
-        SKColor ConflictAccent,
-        SKColor MetadataAccent,
-        SKColor Accent,
-        SKColor SelectionBackground,
-        SKColor Keyword,
-        SKColor Type,
-        SKColor String,
-        SKColor Comment,
-        SKColor Number,
-        SKColor Function,
-        SKColor Property,
-        SKColor Parameter,
-        SKColor Tag,
-        SKColor Punctuation,
-        SKColor Invalid,
-        SKColor ScrollbarTrack,
-        SKColor ScrollbarThumb,
-        SKColor ScrollbarThumbActive)
-    {
-        public static ViewerPalette Create(bool isLight) => isLight
-            ? new ViewerPalette(
-                new SKColor(247, 249, 252),
-                new SKColor(238, 242, 246),
-                new SKColor(201, 211, 224),
-                new SKColor(20, 32, 51),
-                new SKColor(82, 97, 114),
-                new SKColor(122, 135, 150),
-                new SKColor(22, 107, 154),
-                new SKColor(122, 135, 150),
-                new SKColor(224, 239, 248),
-                new SKColor(210, 232, 244),
-                new SKColor(221, 239, 248),
-                new SKColor(226, 246, 233),
-                new SKColor(255, 235, 235),
-                new SKColor(255, 248, 219),
-                new SKColor(232, 241, 255),
-                new SKColor(255, 226, 226),
-                new SKColor(235, 242, 250),
-                new SKColor(26, 127, 55),
-                new SKColor(203, 36, 49),
-                new SKColor(154, 103, 0),
-                new SKColor(0, 92, 197),
-                new SKColor(203, 36, 49),
-                new SKColor(22, 107, 154),
-                new SKColor(22, 107, 154),
-                new SKColor(0, 122, 204, 78),
-                new SKColor(0, 92, 197),
-                new SKColor(111, 66, 193),
-                new SKColor(3, 106, 56),
-                new SKColor(106, 115, 125),
-                new SKColor(0, 92, 197),
-                new SKColor(111, 66, 193),
-                new SKColor(149, 56, 0),
-                new SKColor(149, 56, 0),
-                new SKColor(17, 99, 154),
-                new SKColor(82, 97, 114),
-                new SKColor(203, 36, 49),
-                new SKColor(229, 235, 242),
-                new SKColor(150, 164, 181),
-                new SKColor(100, 116, 135))
-            : new ViewerPalette(
-                new SKColor(12, 17, 24),
-                new SKColor(15, 21, 29),
-                new SKColor(38, 49, 64),
-                new SKColor(230, 237, 245),
-                new SKColor(153, 166, 182),
-                new SKColor(111, 123, 139),
-                new SKColor(88, 166, 214),
-                new SKColor(111, 123, 139),
-                new SKColor(24, 49, 66),
-                new SKColor(31, 63, 84),
-                new SKColor(24, 49, 66),
-                new SKColor(12, 45, 28),
-                new SKColor(55, 22, 25),
-                new SKColor(51, 43, 18),
-                new SKColor(18, 39, 64),
-                new SKColor(75, 26, 31),
-                new SKColor(21, 32, 46),
-                new SKColor(86, 211, 100),
-                new SKColor(255, 123, 114),
-                new SKColor(234, 179, 8),
-                new SKColor(121, 192, 255),
-                new SKColor(255, 123, 114),
-                new SKColor(88, 166, 214),
-                new SKColor(88, 166, 214),
-                new SKColor(88, 166, 214, 96),
-                new SKColor(121, 192, 255),
-                new SKColor(210, 168, 255),
-                new SKColor(165, 214, 255),
-                new SKColor(139, 148, 158),
-                new SKColor(121, 192, 255),
-                new SKColor(210, 168, 255),
-                new SKColor(255, 166, 87),
-                new SKColor(255, 166, 87),
-                new SKColor(126, 231, 135),
-                new SKColor(153, 166, 182),
-                new SKColor(255, 123, 114),
-                new SKColor(22, 30, 40),
-                new SKColor(82, 96, 114),
-                new SKColor(122, 140, 162));
-    }
 }
 
 public sealed class CodeFileLineContextRequestedEventArgs : EventArgs

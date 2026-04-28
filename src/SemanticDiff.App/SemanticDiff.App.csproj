@@ -32,6 +32,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\SemanticDiff.Controls.Uno\SemanticDiff.Controls.Uno.csproj" />
     <ProjectReference Include="..\SemanticDiff.Core\SemanticDiff.Core.csproj" />
     <ProjectReference Include="..\SemanticDiff.Diff\SemanticDiff.Diff.csproj" />
     <ProjectReference Include="..\SemanticDiff.Git\SemanticDiff.Git.csproj" />
@@ -40,6 +41,7 @@
     <ProjectReference Include="..\SemanticDiff.Semantics\SemanticDiff.Semantics.csproj" />
     <ProjectReference Include="..\SemanticDiff.Semantics.Roslyn\SemanticDiff.Semantics.Roslyn.csproj" />
     <ProjectReference Include="..\SemanticDiff.Semantics.Xaml\SemanticDiff.Semantics.Xaml.csproj" />
+    <ProjectReference Include="..\SemanticDiff.Workbench\SemanticDiff.Workbench.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,7 +1,7 @@
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml.Controls;
 
-namespace SemanticDiff.App.Views;
+namespace SemanticDiff.Controls.Uno;
 
 public sealed class ResizeCursorGrid : Grid
 {

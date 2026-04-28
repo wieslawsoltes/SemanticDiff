@@ -1,3 +1,4 @@
+using System.Windows.Input;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
@@ -10,7 +11,7 @@ using SkiaSharp.Views.Windows;
 using Windows.Foundation;
 using Windows.System;
 
-namespace SemanticDiff.App.Views;
+namespace SemanticDiff.Controls.Uno;
 
 public sealed class DiffCanvasControl : Grid
 {
@@ -110,6 +111,18 @@ public sealed class DiffCanvasControl : Grid
         set => SetValue(IsLightThemeProperty, value);
     }
 
+    public ICommand? RevealNodeCommand { get; set; }
+
+    public ICommand? OpenDiffCommand { get; set; }
+
+    public ICommand? OpenFullFileCommand { get; set; }
+
+    public ICommand? OpenBlameCommand { get; set; }
+
+    public ICommand? OpenSymbolGraphCommand { get; set; }
+
+    public ICommand? AnnotationCommand { get; set; }
+
     protected override Size MeasureOverride(Size availableSize)
     {
         var measured = base.MeasureOverride(availableSize);
@@ -194,7 +207,7 @@ public sealed class DiffCanvasControl : Grid
             return false;
         }
 
-        NodeNavigationRequested?.Invoke(this, new DiffCanvasNodeNavigationRequestedEventArgs(node.Document.Id.Value));
+        RequestRevealNode(node);
         return true;
     }
 
@@ -206,7 +219,7 @@ public sealed class DiffCanvasControl : Grid
             return false;
         }
 
-        NodeBlameTabRequested?.Invoke(this, new DiffCanvasNodeBlameTabRequestedEventArgs(node.Document.Id.Value));
+        RequestBlameTab(node);
         return true;
     }
 
@@ -218,7 +231,7 @@ public sealed class DiffCanvasControl : Grid
             return false;
         }
 
-        NodeSymbolGraphRequested?.Invoke(this, new DiffCanvasNodeSymbolGraphRequestedEventArgs(node.Document.Id.Value));
+        RequestSymbolGraphTab(node);
         return true;
     }
 
@@ -350,7 +363,7 @@ public sealed class DiffCanvasControl : Grid
         {
             Scene.SelectNode(hit.Node);
             RequestRender();
-            AnnotationInteractionRequested?.Invoke(this, new DiffCanvasAnnotationInteractionRequestedEventArgs(hit.Annotation));
+            RequestAnnotationInteraction(hit.Annotation);
             args.Handled = true;
             return;
         }
@@ -533,23 +546,23 @@ public sealed class DiffCanvasControl : Grid
         var menu = new MenuFlyout();
 
         var revealItem = new MenuFlyoutItem { Text = "Reveal in file tree" };
-        revealItem.Click += (_, _) => NodeNavigationRequested?.Invoke(this, new DiffCanvasNodeNavigationRequestedEventArgs(node.Document.Id.Value));
+        revealItem.Click += (_, _) => RequestRevealNode(node);
         menu.Items.Add(revealItem);
 
         var openDiffItem = new MenuFlyoutItem { Text = "Open diff tab" };
-        openDiffItem.Click += (_, _) => NodeDiffTabRequested?.Invoke(this, new DiffCanvasNodeDiffTabRequestedEventArgs(node.Document.Id.Value, showFullFile: false));
+        openDiffItem.Click += (_, _) => RequestDiffTab(node, showFullFile: false);
         menu.Items.Add(openDiffItem);
 
         var openFullFileItem = new MenuFlyoutItem { Text = "Open full file tab" };
-        openFullFileItem.Click += (_, _) => NodeDiffTabRequested?.Invoke(this, new DiffCanvasNodeDiffTabRequestedEventArgs(node.Document.Id.Value, showFullFile: true));
+        openFullFileItem.Click += (_, _) => RequestDiffTab(node, showFullFile: true);
         menu.Items.Add(openFullFileItem);
 
         var openBlameItem = new MenuFlyoutItem { Text = "Open blame tab" };
-        openBlameItem.Click += (_, _) => NodeBlameTabRequested?.Invoke(this, new DiffCanvasNodeBlameTabRequestedEventArgs(node.Document.Id.Value));
+        openBlameItem.Click += (_, _) => RequestBlameTab(node);
         menu.Items.Add(openBlameItem);
 
         var openSymbolsItem = new MenuFlyoutItem { Text = "Open semantic map" };
-        openSymbolsItem.Click += (_, _) => NodeSymbolGraphRequested?.Invoke(this, new DiffCanvasNodeSymbolGraphRequestedEventArgs(node.Document.Id.Value));
+        openSymbolsItem.Click += (_, _) => RequestSymbolGraphTab(node);
         menu.Items.Add(openSymbolsItem);
 
         var fitItem = new MenuFlyoutItem { Text = "Focus node" };
@@ -592,17 +605,83 @@ public sealed class DiffCanvasControl : Grid
         var menu = new MenuFlyout();
 
         var openItem = new MenuFlyoutItem { Text = ActionText(hit.Annotation) };
-        openItem.Click += (_, _) => AnnotationInteractionRequested?.Invoke(this, new DiffCanvasAnnotationInteractionRequestedEventArgs(hit.Annotation));
+        openItem.Click += (_, _) => RequestAnnotationInteraction(hit.Annotation);
         menu.Items.Add(openItem);
 
         var revealItem = new MenuFlyoutItem { Text = "Reveal file in tree" };
-        revealItem.Click += (_, _) => NodeNavigationRequested?.Invoke(this, new DiffCanvasNodeNavigationRequestedEventArgs(hit.Node.Document.Id.Value));
+        revealItem.Click += (_, _) => RequestRevealNode(hit.Node);
         menu.Items.Add(revealItem);
 
         menu.ShowAt(this, new FlyoutShowOptions { Position = position });
     }
 
     private DiffNode? GetSelectedNode() => Scene?.Nodes.FirstOrDefault(node => node.IsSelected);
+
+    private void RequestRevealNode(DiffNode node)
+    {
+        var documentId = node.Document.Id.Value;
+        if (TryExecuteCommand(RevealNodeCommand, documentId))
+        {
+            return;
+        }
+
+        NodeNavigationRequested?.Invoke(this, new DiffCanvasNodeNavigationRequestedEventArgs(documentId));
+    }
+
+    private void RequestDiffTab(DiffNode node, bool showFullFile)
+    {
+        var request = new DiffCanvasNodeDiffTabRequestedEventArgs(node.Document.Id.Value, showFullFile);
+        var command = showFullFile ? OpenFullFileCommand : OpenDiffCommand;
+        if (TryExecuteCommand(command, request))
+        {
+            return;
+        }
+
+        NodeDiffTabRequested?.Invoke(this, request);
+    }
+
+    private void RequestBlameTab(DiffNode node)
+    {
+        var documentId = node.Document.Id.Value;
+        if (TryExecuteCommand(OpenBlameCommand, documentId))
+        {
+            return;
+        }
+
+        NodeBlameTabRequested?.Invoke(this, new DiffCanvasNodeBlameTabRequestedEventArgs(documentId));
+    }
+
+    private void RequestSymbolGraphTab(DiffNode node)
+    {
+        var documentId = node.Document.Id.Value;
+        if (TryExecuteCommand(OpenSymbolGraphCommand, documentId))
+        {
+            return;
+        }
+
+        NodeSymbolGraphRequested?.Invoke(this, new DiffCanvasNodeSymbolGraphRequestedEventArgs(documentId));
+    }
+
+    private void RequestAnnotationInteraction(DiffAnnotation annotation)
+    {
+        if (TryExecuteCommand(AnnotationCommand, annotation))
+        {
+            return;
+        }
+
+        AnnotationInteractionRequested?.Invoke(this, new DiffCanvasAnnotationInteractionRequestedEventArgs(annotation));
+    }
+
+    private static bool TryExecuteCommand(ICommand? command, object parameter)
+    {
+        if (command is null || !command.CanExecute(parameter))
+        {
+            return false;
+        }
+
+        command.Execute(parameter);
+        return true;
+    }
 
     private void ShowCanvasContextMenu(Point position)
     {
