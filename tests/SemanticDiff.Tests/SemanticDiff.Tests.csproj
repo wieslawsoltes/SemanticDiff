@@ -16,6 +16,7 @@
     <ProjectReference Include="..\..\src\SemanticDiff.Semantics\SemanticDiff.Semantics.csproj" />
     <ProjectReference Include="..\..\src\SemanticDiff.Semantics.Roslyn\SemanticDiff.Semantics.Roslyn.csproj" />
     <ProjectReference Include="..\..\src\SemanticDiff.Semantics.Xaml\SemanticDiff.Semantics.Xaml.csproj" />
+    <ProjectReference Include="..\..\src\SemanticDiff.Workbench\SemanticDiff.Workbench.csproj" />
   </ItemGroup>
 
   <ItemGroup>
