@@ -1,0 +1,7 @@
+articles:
+  - {path: readme.md, title: "Reference"}
+  - {path: ci-and-docs.md, title: "CI and Docs"}
+  - {path: package-api-coverage.md, title: "API Coverage"}
+  - {path: dependency-advisories.md, title: "Dependency Advisories"}
+  - {path: reusable-extraction-plan.md, title: "Reusable Extraction Plan"}
+  - {path: license.md, title: "License"}

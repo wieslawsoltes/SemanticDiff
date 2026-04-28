@@ -1,0 +1,12 @@
+articles:
+  - {path: readme.md, title: "Packages"}
+  - {path: core.md, title: "SemanticDiff.Core"}
+  - {path: diff.md, title: "SemanticDiff.Diff"}
+  - {path: git.md, title: "SemanticDiff.Git"}
+  - {path: layout.md, title: "SemanticDiff.Layout"}
+  - {path: rendering.md, title: "SemanticDiff.Rendering"}
+  - {path: semantics.md, title: "SemanticDiff.Semantics"}
+  - {path: semantics-roslyn.md, title: "SemanticDiff.Semantics.Roslyn"}
+  - {path: semantics-xaml.md, title: "SemanticDiff.Semantics.Xaml"}
+  - {path: workbench.md, title: "SemanticDiff.Workbench"}
+  - {path: controls-uno.md, title: "SemanticDiff.Controls.Uno"}

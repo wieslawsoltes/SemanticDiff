@@ -1,0 +1,9 @@
+articles:
+  - {path: readme.md, title: "Guides"}
+  - {path: git-workflows.md, title: "Git Workflows"}
+  - {path: review-comments.md, title: "Review Comments"}
+  - {path: history-and-blame.md, title: "History and Blame"}
+  - {path: file-tabs.md, title: "File Tabs"}
+  - {path: symbols-and-maps.md, title: "Symbols and Maps"}
+  - {path: exporting.md, title: "Graph Export"}
+  - {path: publishing.md, title: "App Publishing"}

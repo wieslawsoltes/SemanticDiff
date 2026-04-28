@@ -203,6 +203,9 @@ PublishScripts/
 **/[Pp]ackages/*
 # except build/, which is used as an MSBuild target.
 !**/[Pp]ackages/build/
+# except Lunet package documentation pages.
+!site/articles/packages/
+!site/articles/packages/**
 # Uncomment if necessary however generally it will be regenerated when needed
 #!**/[Pp]ackages/repositories.config
 # NuGet v3's project.json files produces more ignorable files
@@ -403,3 +406,7 @@ FodyWeavers.xsd
 /.run
 .vsconfig
 /plan
+
+# Lunet documentation outputs
+site/.lunet/build/
+site/.lunet/cache/

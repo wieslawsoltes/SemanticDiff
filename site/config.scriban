@@ -1,0 +1,102 @@
+# Use the Lunet default templates for docs navigation, layout, and API rendering.
+extend "lunet-io/templates"
+
+template_theme_default_mode = "system"
+
+site_project_baseurl = "https://wieslawsoltes.github.io"
+site_project_basepath = environment == "dev" ? "" : "/SemanticDiff"
+site_project_name = "SemanticDiff"
+site_project_description = "Semantic Git diff workbench with graph visualization, review workflows, history, blame, and reusable diff services."
+site_project_logo_path = "/images/logo.svg"
+site_project_social_banner_path = "/images/social.svg"
+site_project_package_id = "SemanticDiff.Workbench"
+site_project_github_user = "wieslawsoltes"
+site_project_github_repo = "SemanticDiff"
+site_project_owner_name = "Wieslaw Soltes"
+site_project_owner_alias = "wieslawsoltes"
+site_project_owner_url = "https://github.com/wieslawsoltes"
+site_project_twitter_user = "wieslawsoltes"
+
+site_project_init
+
+# macOS 15 + lunet 1.0.10 has a Dart Sass platform detection bug.
+# Keep the precompiled template bundle pattern from the source docs baseline until SCSS processing is fixed upstream.
+with bundle "lite"
+
+    bootstrap = resource "npm:bootstrap" "5.3.8"
+    bootstrap_icons = resource "npm:bootstrap-icons" "1.13.1"
+    tocbot = resource "npm:tocbot" "4.36.4"
+    anchorjs = resource "npm:anchor-js" "5.0.0"
+    prismjs = resource "npm:prismjs" "1.30.0"
+
+    css tocbot "/dist/tocbot.css"
+    css "/css/prism.css"
+    css "/css/template-main.css"
+    css "/css/site-overrides.css"
+
+    js "/modules/menus/lunet-menu-async.js"
+    js "/modules/api/dotnet/lunet-api-dotnet-ui.js"
+    js bootstrap "/dist/js/bootstrap.bundle.min.js"
+    js anchorjs "/anchor.min.js"
+    js tocbot "/dist/tocbot.min.js"
+    js prismjs "/prism.js"
+    js prismjs "/plugins/autoloader/prism-autoloader.min.js"
+    js prismjs "/plugins/toolbar/prism-toolbar.min.js"
+    js prismjs "/plugins/copy-to-clipboard/prism-copy-to-clipboard.min.js"
+    js prismjs "/plugins/show-language/prism-show-language.min.js"
+
+    for path in template_prism_components
+        content prismjs "components/" + path "/js/components/"
+    end
+
+    content bootstrap_icons "/font/fonts/bootstrap-icons.*" "/fonts/"
+
+    concat = true
+    minify = false
+end
+
+with attributes
+    match "/**/*.md" {
+        bundle: "lite"
+    }
+end
+
+with api.dotnet
+    title = "SemanticDiff .NET API Reference"
+    path = "/api"
+    menu_name = "api"
+    menu_title = "API Reference"
+    config = "Release"
+    projects = [
+        { name: "SemanticDiff.Core", path: "../src/SemanticDiff.Core/SemanticDiff.Core.csproj" },
+        { name: "SemanticDiff.Diff", path: "../src/SemanticDiff.Diff/SemanticDiff.Diff.csproj" },
+        { name: "SemanticDiff.Git", path: "../src/SemanticDiff.Git/SemanticDiff.Git.csproj" },
+        { name: "SemanticDiff.Layout", path: "../src/SemanticDiff.Layout/SemanticDiff.Layout.csproj" },
+        { name: "SemanticDiff.Rendering", path: "../src/SemanticDiff.Rendering/SemanticDiff.Rendering.csproj" },
+        { name: "SemanticDiff.Semantics", path: "../src/SemanticDiff.Semantics/SemanticDiff.Semantics.csproj" },
+        { name: "SemanticDiff.Semantics.Roslyn", path: "../src/SemanticDiff.Semantics.Roslyn/SemanticDiff.Semantics.Roslyn.csproj" },
+        { name: "SemanticDiff.Semantics.Xaml", path: "../src/SemanticDiff.Semantics.Xaml/SemanticDiff.Semantics.Xaml.csproj" },
+        { name: "SemanticDiff.Workbench", path: "../src/SemanticDiff.Workbench/SemanticDiff.Workbench.csproj" },
+        {
+            name: "SemanticDiff.Controls.Uno",
+            path: "../src/SemanticDiff.Controls.Uno/SemanticDiff.Controls.Uno.csproj",
+            properties: {
+                TargetFramework: "net10.0-desktop",
+                SemanticDiffDocumentationBuild: "true",
+                DisableDefaultUnoResizetizerItems: "true",
+                UnoResizetizerDisableWindowIconExtensions: "true"
+            }
+        }
+    ]
+    external_apis = [
+        { assembly: "Microsoft.CodeAnalysis", url: "https://learn.microsoft.com/en-us/dotnet/api" },
+        { assembly: "Microsoft.CodeAnalysis.CSharp", url: "https://learn.microsoft.com/en-us/dotnet/api" },
+        { assembly: "Microsoft.CodeAnalysis.Workspaces", url: "https://learn.microsoft.com/en-us/dotnet/api" },
+        { assembly: "Microsoft.Msagl", url: "https://learn.microsoft.com/en-us/dotnet/api" },
+        { assembly: "Microsoft.UI.Xaml", url: "https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt" },
+        { assembly: "SkiaSharp", url: "https://learn.microsoft.com/en-us/dotnet/api" },
+        { assembly: "TextMateSharp", url: "https://github.com/danipen/TextMateSharp" },
+        { assembly: "Uno.UI", url: "https://platform.uno/docs/articles/api/" },
+        { assembly: "Windows.Foundation", url: "https://learn.microsoft.com/en-us/uwp/api" }
+    ]
+end
