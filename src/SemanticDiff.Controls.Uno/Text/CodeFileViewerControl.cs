@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using SemanticDiff.Core;
+using SemanticDiff.Rendering;
 using SkiaSharp;
 using SkiaSharp.Views.Windows;
 using Windows.Foundation;
@@ -75,6 +76,7 @@ public sealed class CodeFileViewerControl : Grid
 
     private static readonly SKTypeface RegularTypeface = SKTypeface.FromFamilyName("Cascadia Mono") ?? SKTypeface.Default;
     private static readonly SKTypeface BoldTypeface = SKTypeface.FromFamilyName("Cascadia Mono", SKFontStyle.Bold) ?? SKTypeface.Default;
+    private static readonly TextMetricsCache TextMetrics = TextMetricsCache.Shared;
 
     private readonly SKXamlCanvas canvas;
     private readonly HashSet<int> collapsedFoldStarts = [];
@@ -167,6 +169,12 @@ public sealed class CodeFileViewerControl : Grid
 
     private float BaselineOffset => MathF.Round(EffectiveFontSize + (LineHeight - EffectiveFontSize) * 0.5f);
 
+    private TextFontDescriptor RegularFontDescriptor => new("Cascadia Mono", EffectiveFontSize);
+
+    private TextFontDescriptor BoldFontDescriptor => new("Cascadia Mono", EffectiveFontSize, Bold: true);
+
+    private float CodeCharacterWidth => TextMetrics.MeasureMonospaceAdvance(RegularFontDescriptor);
+
     protected override Size MeasureOverride(Size availableSize)
     {
         var measured = base.MeasureOverride(availableSize);
@@ -251,7 +259,7 @@ public sealed class CodeFileViewerControl : Grid
         using var mutedPaint = CreateTextPaint(palette.MutedText);
         using var lineNumberPaint = CreateTextPaint(palette.LineNumber);
         using var foldPaint = CreateTextPaint(palette.FoldText);
-        var charWidth = Math.Max(1, font.MeasureText("M", defaultPaint));
+        var charWidth = CodeCharacterWidth;
         var lines = GetLines();
         var gutterWidth = CalculateGutterWidth(charWidth, lines);
         var contentRight = GetContentRight(width, height);
@@ -261,7 +269,7 @@ public sealed class CodeFileViewerControl : Grid
         var lastRow = Math.Min(visibleRows.Length - 1, (int)Math.Ceiling((scrollOffsetY + height) / LineHeight));
         if (visibleRows.Length == 0 || firstRow > lastRow)
         {
-            DrawEmptyState(canvasSurface, width, height, mutedPaint, font);
+            DrawEmptyState(canvasSurface, width, height, mutedPaint, font, RegularFontDescriptor);
             canvasSurface.Restore();
             return;
         }
@@ -281,11 +289,11 @@ public sealed class CodeFileViewerControl : Grid
             DrawLineBackground(canvasSurface, palette, gutterWidth, contentRight, y, LineHeight, annotationKind, row.CollapsedRegion is not null);
             if (IsDiffMode)
             {
-                DrawDiffGutter(canvasSurface, palette, line, ShowDiffAnnotations, gutterWidth, y, LineHeight, BaselineOffset, lineNumberPaint, font);
+                DrawDiffGutter(canvasSurface, palette, line, ShowDiffAnnotations, gutterWidth, y, LineHeight, BaselineOffset, lineNumberPaint, font, RegularFontDescriptor);
             }
             else
             {
-                DrawLineNumber(canvasSurface, line.Index + 1, gutterWidth, y, BaselineOffset, lineNumberPaint, font);
+                DrawLineNumber(canvasSurface, line.Index + 1, gutterWidth, y, BaselineOffset, lineNumberPaint, font, RegularFontDescriptor);
                 DrawFoldMarker(canvasSurface, palette, row.LineIndex, row.CollapsedRegion, y, LineHeight);
             }
 
@@ -293,7 +301,7 @@ public sealed class CodeFileViewerControl : Grid
             {
                 canvasSurface.ClipRect(textClip);
                 DrawSelection(canvasSurface, palette, rowIndex, line, gutterWidth + TextPadding, y, charWidth, contentRight);
-                DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, gutterWidth + TextPadding, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, palette);
+                DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, gutterWidth + TextPadding, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, BoldFontDescriptor, palette);
             }
         }
 
@@ -602,14 +610,25 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawRect(SKRect.Create(selectionLeft, y + 2, Math.Min(selectionRight, maxRight) - selectionLeft, Math.Max(1, LineHeight - 4)), selectionPaint);
     }
 
-    private static void DrawLineNumber(SKCanvas canvasSurface, int lineNumber, float gutterWidth, float y, float baselineOffset, SKPaint paint, SKFont font)
+    private static void DrawLineNumber(SKCanvas canvasSurface, int lineNumber, float gutterWidth, float y, float baselineOffset, SKPaint paint, SKFont font, TextFontDescriptor fontDescriptor)
     {
         var text = lineNumber.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var width = font.MeasureText(text, paint);
+        var width = TextMetrics.MeasureNaturalWidth(text, fontDescriptor);
         canvasSurface.DrawText(text, gutterWidth - 10 - width, y + baselineOffset, font, paint);
     }
 
-    private static void DrawDiffGutter(SKCanvas canvasSurface, CodeFileViewerPalette palette, DiffLine line, bool showDiffAnnotations, float gutterWidth, float y, float lineHeight, float baselineOffset, SKPaint lineNumberPaint, SKFont font)
+    private static void DrawDiffGutter(
+        SKCanvas canvasSurface,
+        CodeFileViewerPalette palette,
+        DiffLine line,
+        bool showDiffAnnotations,
+        float gutterWidth,
+        float y,
+        float lineHeight,
+        float baselineOffset,
+        SKPaint lineNumberPaint,
+        SKFont font,
+        TextFontDescriptor fontDescriptor)
     {
         var annotationKind = showDiffAnnotations ? line.Kind : DiffLineKind.Context;
         var markerPaint = CreateTextPaint(CodeTextStyleMap.LineAccentColor(annotationKind, palette));
@@ -622,8 +641,8 @@ public sealed class CodeFileViewerControl : Grid
             var newX = oldX + 44;
             var markerX = newX + 34;
 
-            DrawRightAlignedText(canvasSurface, oldText, oldX, y + baselineOffset, font, lineNumberPaint);
-            DrawRightAlignedText(canvasSurface, newText, newX, y + baselineOffset, font, lineNumberPaint);
+            DrawRightAlignedText(canvasSurface, oldText, oldX, y + baselineOffset, font, lineNumberPaint, fontDescriptor);
+            DrawRightAlignedText(canvasSurface, newText, newX, y + baselineOffset, font, lineNumberPaint, fontDescriptor);
             if (!string.IsNullOrEmpty(marker))
             {
                 canvasSurface.DrawText(marker, markerX, y + baselineOffset, font, markerPaint);
@@ -641,14 +660,14 @@ public sealed class CodeFileViewerControl : Grid
         }
     }
 
-    private static void DrawRightAlignedText(SKCanvas canvasSurface, string text, float right, float baseline, SKFont font, SKPaint paint)
+    private static void DrawRightAlignedText(SKCanvas canvasSurface, string text, float right, float baseline, SKFont font, SKPaint paint, TextFontDescriptor fontDescriptor)
     {
         if (string.IsNullOrEmpty(text))
         {
             return;
         }
 
-        canvasSurface.DrawText(text, right - font.MeasureText(text, paint), baseline, font, paint);
+        canvasSurface.DrawText(text, right - TextMetrics.MeasureNaturalWidth(text, fontDescriptor), baseline, font, paint);
     }
 
     private void DrawFoldMarker(SKCanvas canvasSurface, CodeFileViewerPalette palette, int lineIndex, CodeFoldRegion? collapsedRegion, float y, float lineHeight)
@@ -685,6 +704,7 @@ public sealed class CodeFileViewerControl : Grid
         SKFont boldFont,
         SKPaint defaultPaint,
         SKPaint foldPaint,
+        TextFontDescriptor boldFontDescriptor,
         CodeFileViewerPalette palette)
     {
         DrawTokenizedText(canvasSurface, line.Text, line.Tokens, x, y + baselineOffset, charWidth, font, boldFont, defaultPaint, palette);
@@ -697,7 +717,7 @@ public sealed class CodeFileViewerControl : Grid
         var placeholder = $"  ... {collapsedRegion.CollapsedLineCount:N0} folded lines ...";
         using var chipPaint = new SKPaint { Color = palette.FoldChipBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
         var chipX = x + visualLength * charWidth + 8;
-        var chipWidth = Math.Max(140, boldFont.MeasureText(placeholder, foldPaint) + 12);
+        var chipWidth = Math.Max(140, TextMetrics.MeasureNaturalWidth(placeholder, boldFontDescriptor) + 12);
         var chipRect = SKRect.Create(chipX, y + 2, chipWidth, lineHeight - 4);
         canvasSurface.DrawRoundRect(chipRect, 4, 4, chipPaint);
         canvasSurface.DrawText(placeholder, chipRect.Left + 6, y + baselineOffset, boldFont, foldPaint);
@@ -759,10 +779,10 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawText(value, x + visualColumn * charWidth, baseline, font, paint);
     }
 
-    private static void DrawEmptyState(SKCanvas canvasSurface, float width, float height, SKPaint paint, SKFont font)
+    private static void DrawEmptyState(SKCanvas canvasSurface, float width, float height, SKPaint paint, SKFont font, TextFontDescriptor fontDescriptor)
     {
         const string text = "Full file content unavailable";
-        var textWidth = font.MeasureText(text, paint);
+        var textWidth = TextMetrics.MeasureNaturalWidth(text, fontDescriptor);
         canvasSurface.DrawText(text, Math.Max(16, (width - textWidth) / 2), Math.Max(32, height / 2), font, paint);
     }
 
@@ -1125,9 +1145,7 @@ public sealed class CodeFileViewerControl : Grid
             return false;
         }
 
-        using var font = new SKFont(RegularTypeface, EffectiveFontSize);
-        using var paint = CreateTextPaint(SKColors.Black);
-        var charWidth = Math.Max(1, font.MeasureText("M", paint));
+        var charWidth = CodeCharacterWidth;
         var gutterWidth = CalculateGutterWidth(charWidth, lines);
         var rowIndex = (int)Math.Floor((scrollOffsetY + point.Y - TopPadding) / LineHeight);
         rowIndex = Math.Clamp(rowIndex, 0, visibleRows.Length - 1);
@@ -1175,9 +1193,7 @@ public sealed class CodeFileViewerControl : Grid
             return false;
         }
 
-        using var font = new SKFont(RegularTypeface, EffectiveFontSize);
-        using var paint = CreateTextPaint(SKColors.Black);
-        var charWidth = Math.Max(1, font.MeasureText("M", paint));
+        var charWidth = CodeCharacterWidth;
         var gutterWidth = CalculateGutterWidth(charWidth, lines);
         line = lines[row.LineIndex];
         var textOffset = (float)(point.X - gutterWidth - TextPadding);
