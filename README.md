@@ -2,6 +2,7 @@
 
 [![Build](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/build.yml/badge.svg)](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/build.yml)
 [![Package Integration](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/integration.yml/badge.svg)](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/integration.yml)
+[![Docs](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/docs.yml/badge.svg)](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/docs.yml)
 [![Release](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/release.yml/badge.svg)](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/release.yml)
 
 [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Workbench.svg)](https://www.nuget.org/packages/SemanticDiff.Workbench/)
@@ -13,6 +14,17 @@
 SemanticDiff is a desktop Git diff explorer that turns repository changes into an interactive, semantic graph. It combines Git-aware diff loading, syntax and semantic analysis, node-based visualization, file/reference navigation, and GitHub/GitLab review workflows in a single Uno Platform app.
 
 The app is designed for code review sessions where a flat patch is not enough: it groups changes by file, folder, language, or semantic structure, highlights syntax and review signals, preserves navigation state, and can load or write remote review discussion data for pull requests and merge requests.
+
+## Documentation
+
+The Lunet documentation site is published from the `docs.yml` workflow to GitHub Pages and can be built locally with:
+
+```bash
+dotnet tool restore
+./build-docs.sh
+```
+
+The site source lives under `site/` and includes guides, package documentation, concepts, reference pages, and generated API documentation for the reusable libraries.
 
 ## NuGet Packages
 
