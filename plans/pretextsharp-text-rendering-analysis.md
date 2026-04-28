@@ -2,101 +2,94 @@
 
 ## Goal
 
-Use PretextSharp's text-preparation model to reduce repeated layout and measurement work in SemanticDiff's node graph, file diff, and full-file text renderers while preserving the current one-source-line-to-one-visual-row interaction model.
+Use the published PretextSharp `0.1.0-preview.5` packages as SemanticDiff's reusable text measurement and layout foundation instead of maintaining an internal Skia-only measurement implementation. Preserve current graph, file, diff, minimap, folding, selection, and annotation behavior while moving hot-path text measurement behind PretextSharp APIs.
 
-## PretextSharp Findings
+## Current SemanticDiff Rendering Path
 
-PretextSharp provides a platform-neutral preparation and line-layout layer with:
+SemanticDiff currently has three major text-heavy surfaces:
 
-- reusable prepared text snapshots for repeated layout at different widths;
-- grapheme-aware wrapping and line-range walking;
-- locale-aware segmentation and bidi-aware measurement paths;
-- a pluggable `IPretextTextMeasurerFactory` backend model;
-- SkiaSharp and Uno companion projects in the local source tree.
+| Surface | Current role | Text work performed |
+| --- | --- | --- |
+| Workspace graph nodes | `DiffSceneRenderer` in `SemanticDiff.Rendering` | Node title trimming, group labels, diff line numbers, code tokens, annotation chips, footer text, scrollbar text. |
+| File/diff tabs | `CodeFileViewerControl` in `SemanticDiff.Controls.Uno` | Line numbers, fold markers, syntax tokens, text selection, diff annotations, minimap rendering, context-menu hit testing. |
+| Shared metrics | `TextMetricsCache` in `SemanticDiff.Rendering` | Natural width cache, monospace advance cache, middle ellipsis, Skia typeface cache for drawing. |
 
-The local source is available at `/Users/wieslawsoltes/GitHub/PretextSharp`. The path originally provided for local code, `/Users/wieslawsoltes/GitHub/PhotosSharp`, is unrelated to PretextSharp.
+Before `0.1.0-preview.5`, SemanticDiff could not reference the full PretextSharp package graph because backend packages referenced by the Pretext packages were not published. The interim implementation therefore added an internal `TextMetricsCache` that cached direct `SKFont.MeasureText` calls and formatted Pretext-compatible font descriptors for later replacement.
 
-NuGet status checked on 2026-04-28:
+## PretextSharp 0.1.0-preview.5 Findings
 
-- `Pretext` is published at `0.1.0-preview.4`.
-- `Pretext.Uno` is published at `0.1.0-preview.4`.
-- Required backend packages referenced by the nuspec, including `Pretext.Contracts`, `Pretext.SkiaSharp`, `Pretext.Layout`, `Pretext.CoreText`, `Pretext.DirectWrite`, and `Pretext.FreeType`, are not available through the NuGet flat-container endpoints.
+The `v0.1.0-preview.5` release publishes the full package set needed by SemanticDiff:
 
-That package graph currently makes a direct package dependency unsafe for SemanticDiff CI and release builds. A sibling project reference would work locally but would make the repo non-reproducible outside this machine.
+| Package | Use in SemanticDiff |
+| --- | --- |
+| `Pretext` | Core `PretextLayout` APIs: `PrepareWithSegments`, `MeasureNaturalWidth`, wrapping and prepared segment model. |
+| `Pretext.SkiaSharp` | Explicit SkiaSharp measurement backend matching SemanticDiff's Skia rendering surfaces. |
+| `Pretext.Uno` | Reusable Uno render-scheduling helper for controls that currently use local deferred invalidation logic. |
+| `Pretext.Contracts` | Transitive backend contracts used by `Pretext` and `Pretext.SkiaSharp`. |
+| `Pretext.Layout` | Available for later wrapped text and obstacle-layout work; not required for this no-behavior-change migration. |
 
-## Current SemanticDiff Bottlenecks
+Relevant PretextSharp APIs:
 
-Node graph rendering in `SemanticDiff.Rendering` currently:
+| API | Integration use |
+| --- | --- |
+| `PretextLayout.SetTextMeasurerFactory(...)` | Select the SkiaSharp backend explicitly for deterministic graph and file viewer measurement. |
+| `PretextLayout.PrepareWithSegments(text, font, options)` | Prepare measured text once per cache miss using the same CSS-like font descriptors already produced by SemanticDiff. |
+| `PretextLayout.MeasureNaturalWidth(prepared)` | Replace SemanticDiff's direct `SKFont.MeasureText` width measurement. |
+| `PrepareOptions(WhiteSpaceMode.PreWrap)` | Preserve spaces and hard breaks when measuring code/file text. SemanticDiff expands tabs to four spaces before measurement to match rendering and hit testing. |
+| `Pretext.Uno.Controls.UiRenderScheduler` | Replace ad-hoc `DispatcherQueue.TryEnqueue` scheduling in the file viewer with the published Uno helper. |
 
-- creates short-lived `SKTypeface`, `SKFont`, and `SKPaint` style objects for every detailed node render;
-- measures repeated strings with `SKFont.MeasureText` in hot paths, including node titles, group labels, footer chips, annotation chips, and code columns;
-- draws the full code line in the default style and then overlays token text, which doubles text work and can produce glyph overdraw;
-- recomputes annotation line groups every node render;
-- uses binary-search middle ellipsis with repeated direct measurements.
+## Design Decisions
 
-File/diff rendering in `SemanticDiff.Controls.Uno` currently:
-
-- measures monospace character advance repeatedly in paint, hit-test, and context-menu paths;
-- measures line numbers and folded-line chips directly on every draw;
-- uses immediate-mode token range drawing, which is correct but should reuse cached text metrics;
-- relies on the same monospaced visual-column model for selection, context menus, minimap, diff gutters, and folding.
-
-## Integration Design
-
-SemanticDiff should keep the current row model stable and add a reusable Pretext-style measurement layer:
-
-1. Add a bounded shared text metrics cache in `SemanticDiff.Rendering`.
-2. Use font descriptors compatible with PretextSharp (`bold 17px "SF Pro Text"`, `15px "Cascadia Mono"`, etc.).
-3. Route text width, monospace advance, and middle ellipsis through the shared cache.
-4. Use the cache from both graph node rendering and Uno file/diff rendering.
-5. Stop drawing tokenized node lines twice; render default gaps and colored token ranges once.
-6. Keep the seam narrow so a future published `Pretext.SkiaSharp` package can replace the Skia-backed local measurer without touching renderers.
-
-## Why Not Full Pretext Line Wrapping Yet
-
-PretextSharp's `PrepareWithSegments`, `LayoutWithLines`, and `WalkLineRanges` are most valuable when a logical line can wrap into multiple visual rows. SemanticDiff's current graph and file views use line index as the interaction primitive for:
-
-- scrollbar math;
-- line hit testing;
-- annotation lookup;
-- review/comment navigation;
-- folded-region mapping;
-- selection coordinates;
-- minimap projection.
-
-Changing this to wrapped visual rows requires a broader model migration. The first high-value step is cached measurement and single-pass token drawing, which improves current rendering without destabilizing navigation semantics.
+| Decision | Rationale |
+| --- | --- |
+| Use `Pretext.SkiaSharp` explicitly instead of backend discovery | SemanticDiff renders with Skia, so Skia measurement best matches the drawn output and avoids ambiguous native backend selection. |
+| Keep `TextMetricsCache` as SemanticDiff's app-level cache | Pretext caches font state and segment measurements internally, but SemanticDiff still needs bounded caching by `(font, text)` and existing middle-ellipsis behavior. |
+| Keep Skia typeface/font creation for drawing | PretextSharp is responsible for preparation and measurement, not drawing. `DiffSceneRenderer` and `CodeFileViewerControl` still draw with Skia. |
+| Keep fixed-row source-line model | Current interactions use source-line indexes for folding, diff annotations, minimap, review comments, and hit testing. Full Pretext wrapping would require a visual-row map and should be a separate feature. |
+| Do not use `Pretext.Layout` in this phase | It is useful for future soft-wrap and obstacle layouts, but it would change current no-wrap file and node rendering behavior. |
 
 ## Implementation Plan
 
-1. Create `TextMetricsCache` in `SemanticDiff.Rendering` with bounded caches for natural width, monospace advance, and middle ellipsis.
-2. Add Pretext-compatible font descriptor helpers and keep the API renderer-neutral.
-3. Wire node graph rendering to use cached metrics for group labels, title ellipsis, font controls, inline highlights, annotation chips, and footer chips.
-4. Change node code rendering to draw non-token and token runs exactly once.
-5. Wire file/diff rendering to use cached monospace advance for paint, hit testing, gutter layout, selection, and context menu line resolution.
-6. Use cached widths for line numbers, folded-region chips, and empty-state positioning.
-7. Add unit tests for metric caching, font descriptors, and middle ellipsis behavior.
-8. Validate with app build and test suite.
+1. Add central package versions for `Pretext`, `Pretext.SkiaSharp`, and `Pretext.Uno` at `0.1.0-preview.5`.
+2. Reference `Pretext` and `Pretext.SkiaSharp` from `SemanticDiff.Rendering`.
+3. Reference `Pretext.Uno` from `SemanticDiff.Controls.Uno`.
+4. Update `TextMetricsCache` so cache misses call:
+   - `PretextLayout.SetTextMeasurerFactory(new SkiaSharpTextMeasurerFactory())` once per process;
+   - four-space tab normalization before measurement;
+   - `PretextLayout.PrepareWithSegments(measuredText, descriptor.ToPretextFontString(), new PrepareOptions(WhiteSpaceMode.PreWrap))`;
+   - `PretextLayout.MeasureNaturalWidth(prepared)`.
+5. Remove cached `SKFont` measurement state from `TextMetricsCache`; keep only the bounded width cache and drawing typeface cache.
+6. Preserve existing `MiddleEllipsize` and monospace advance APIs so renderers do not need behavioral changes.
+7. Improve drawing typeface parity by honoring italic in `GetTypeface`, matching `TextFontDescriptor.ToPretextFontString()`.
+8. Replace the file viewer's local deferred render enqueue helper with `Pretext.Uno.Controls.UiRenderScheduler`.
+9. Add tests proving text metrics are backed by Pretext-compatible behavior and continue to produce stable widths, middle ellipsis, and Pretext font strings.
+10. Run restore, app build, tests, and diff validation.
 
-## Future Work
+## Implemented Scope
 
-When all PretextSharp backend packages are published, replace the internal Skia measurement implementation behind `TextMetricsCache` with `PretextLayout.PrepareWithSegments` and `MeasureNaturalWidth`. After that, introduce a wrapped visual row map for optional soft-wrap mode in file tabs and node bodies.
+- Added `Pretext`, `Pretext.SkiaSharp`, and `Pretext.Uno` `0.1.0-preview.5` dependencies.
+- Replaced direct `SKFont.MeasureText` measurement in `TextMetricsCache` with `PretextLayout.PrepareWithSegments` and `PretextLayout.MeasureNaturalWidth`.
+- Preserved SemanticDiff's four-space code tab model before handing text to PretextSharp measurement.
+- Kept Skia typeface creation only for drawing, not measurement.
+- Updated typeface creation to honor italic style.
+- Replaced `CodeFileViewerControl` deferred render scheduling with `UiRenderScheduler` from `Pretext.Uno`.
 
-## Implemented In This Change
+## Follow-Up Work
 
-- Added `TextMetricsCache` and `TextFontDescriptor` in `SemanticDiff.Rendering`.
-- Reused cached typefaces and font measurements through a shared metrics service.
-- Replaced repeated direct measurements in the graph renderer with cached width and monospace-advance lookups.
-- Switched node token rendering from full-line plus overlay to single-pass default/token run rendering.
-- Reused cached metrics in the Uno file/diff renderer for character advance, line numbers, diff gutter alignment, folded-region chip widths, empty-state positioning, selection, hit testing, and context-menu line resolution.
-- Added unit coverage for stable measurements, middle ellipsis, and Pretext-compatible font descriptor formatting.
+| Follow-up | Why it is separate |
+| --- | --- |
+| Optional soft-wrap in file/diff tabs | Requires mapping source lines to multiple visual rows and adapting selection, minimap, annotation, and fold hit testing. |
+| Wrapped text inside diff nodes | Requires node body height/scroll model changes and line-to-review-comment navigation changes. |
+| Rich inline chips using `PrepareRichInline` | Useful for annotation and review chips, but would change chip layout and hit testing. |
+| `Pretext.Layout` obstacle layouts | Useful for future graph labels around annotations or minimap overlays, but not needed for direct measurement replacement. |
 
-## Additional Large-Graph Optimization Pass
+## Prior Graph Optimizations Preserved
 
-Follow-up profiling showed huge graph slowdown came from detailed body rendering for too many visible nodes, not only raw text measurement. The renderer now also:
+This PretextSharp integration keeps the earlier large-graph rendering optimizations intact:
 
-- keeps a scene render cache for every frame mode, including interactive frames;
-- precomputes per-document line annotations, token/default text runs, and overview buckets;
-- renders unreadable or over-budget node bodies as fast diff heatmap overviews instead of detailed code text;
-- preserves detailed text rendering for readable nodes, selected nodes, and pinned nodes when within the detail budget;
-- reuses frame-local UI/code text style resources instead of allocating Skia fonts and paints per node;
-- keeps interactive drag/pan rendering informative by drawing overview bodies instead of generic placeholders.
+- scene render caches for normal and interactive frame modes;
+- precomputed document line annotations, token/default text runs, and overview buckets;
+- heatmap overview bodies for unreadable or over-budget node bodies;
+- detailed text rendering for readable, selected, and pinned nodes within the detail budget;
+- frame-local UI/code text style reuse instead of per-node Skia font and paint allocation;
+- informative overview rendering during interactive drag, pan, and wheel zoom.

@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Pretext.Uno.Controls;
 using SemanticDiff.Core;
 using SemanticDiff.Rendering;
 using SkiaSharp;
@@ -94,6 +95,7 @@ public sealed class CodeFileViewerControl : Grid
     private bool isDraggingMinimap;
     private bool isSelectingText;
     private double minimapGrabOffsetY;
+    private UiRenderScheduler? deferredRenderScheduler;
 
     public CodeFileViewerControl()
     {
@@ -1390,7 +1392,23 @@ public sealed class CodeFileViewerControl : Grid
     private void RequestDeferredRender()
     {
         RequestRender();
-        _ = DispatcherQueue?.TryEnqueue(RequestRender);
+        GetDeferredRenderScheduler()?.Schedule();
+    }
+
+    private UiRenderScheduler? GetDeferredRenderScheduler()
+    {
+        if (deferredRenderScheduler is not null)
+        {
+            return deferredRenderScheduler;
+        }
+
+        if (DispatcherQueue is null)
+        {
+            return null;
+        }
+
+        deferredRenderScheduler = new UiRenderScheduler(DispatcherQueue, RequestRender);
+        return deferredRenderScheduler;
     }
 
     private static SKPaint CreateTextPaint(SKColor color) => new()

@@ -1,3 +1,4 @@
+using Pretext;
 using SemanticDiff.Rendering;
 
 namespace SemanticDiff.Tests;
@@ -32,6 +33,34 @@ public sealed class TextMetricsCacheTests
         Assert.EndsWith(".xaml", trimmed);
         Assert.True(trimmed.Length < path.Length);
         Assert.True(cache.MeasureNaturalWidth(trimmed, descriptor) <= maxWidth);
+    }
+
+    [Fact]
+    public void MeasureNaturalWidth_MatchesPretextNaturalWidth()
+    {
+        using var cache = new TextMetricsCache(maxEntries: 512);
+        var descriptor = new TextFontDescriptor("Menlo", 15);
+        const string text = "alpha\tbeta\nlonger-gamma";
+
+        var width = cache.MeasureNaturalWidth(text, descriptor);
+        var prepared = PretextLayout.PrepareWithSegments(
+            "alpha    beta\nlonger-gamma",
+            descriptor.ToPretextFontString(),
+            new PrepareOptions(WhiteSpaceMode.PreWrap));
+
+        Assert.Equal((float)PretextLayout.MeasureNaturalWidth(prepared), width);
+    }
+
+    [Fact]
+    public void MeasureNaturalWidth_UsesFourSpaceTabStops()
+    {
+        using var cache = new TextMetricsCache(maxEntries: 512);
+        var descriptor = new TextFontDescriptor("Menlo", 15);
+
+        var tabWidth = cache.MeasureNaturalWidth("alpha\tbeta", descriptor);
+        var expandedWidth = cache.MeasureNaturalWidth("alpha    beta", descriptor);
+
+        Assert.Equal(expandedWidth, tabWidth);
     }
 
     [Fact]

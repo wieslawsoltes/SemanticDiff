@@ -12,6 +12,9 @@
     <PackageVersion Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="5.3.0" />
     <PackageVersion Include="Microsoft.Msagl" Version="1.1.6" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="Pretext" Version="0.1.0-preview.5" />
+    <PackageVersion Include="Pretext.SkiaSharp" Version="0.1.0-preview.5" />
+    <PackageVersion Include="Pretext.Uno" Version="0.1.0-preview.5" />
     <PackageVersion Include="SkiaSharp" Version="3.119.2" />
     <PackageVersion Include="SkiaSharp.Views.Uno.WinUI" Version="3.119.2" />
     <PackageVersion Include="TextMateSharp" Version="2.0.3" />

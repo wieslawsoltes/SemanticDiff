@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using Pretext;
+using Pretext.SkiaSharp;
 using SkiaSharp;
 
 namespace SemanticDiff.Rendering;
@@ -18,16 +20,19 @@ public readonly record struct TextFontDescriptor(string FamilyName, float Size, 
 public sealed class TextMetricsCache : IDisposable
 {
     private const string TextEllipsis = "...";
+    private const string MeasurementTabReplacement = "    ";
+    private static readonly object PretextMeasurementGate = new();
+    private static int pretextBackendInitialized;
     private readonly object gate = new();
     private readonly int maxEntries;
     private readonly Dictionary<TextMeasureKey, float> measuredWidths = [];
     private readonly Queue<TextMeasureKey> measuredWidthOrder = [];
     private readonly ConcurrentDictionary<TypefaceKey, CachedTypeface> typefaces = [];
-    private readonly ConcurrentDictionary<TextFontDescriptor, CachedFont> fonts = [];
 
     public TextMetricsCache(int maxEntries = 16384)
     {
         this.maxEntries = Math.Max(256, maxEntries);
+        EnsurePretextBackend();
     }
 
     public static TextMetricsCache Shared { get; } = new();
@@ -39,7 +44,8 @@ public sealed class TextMetricsCache : IDisposable
             return 0;
         }
 
-        var key = new TextMeasureKey(fontDescriptor, text);
+        var measuredText = NormalizeMeasuredText(text);
+        var key = new TextMeasureKey(fontDescriptor, measuredText);
         lock (gate)
         {
             if (measuredWidths.TryGetValue(key, out var cached))
@@ -48,7 +54,7 @@ public sealed class TextMetricsCache : IDisposable
             }
         }
 
-        var width = MeasureWithSkia(text, fontDescriptor);
+        var width = MeasureWithPretext(measuredText, fontDescriptor);
         lock (gate)
         {
             if (!measuredWidths.ContainsKey(key))
@@ -109,21 +115,41 @@ public sealed class TextMetricsCache : IDisposable
         return best;
     }
 
-    private float MeasureWithSkia(string text, TextFontDescriptor fontDescriptor)
+    private static void EnsurePretextBackend()
     {
-        var font = fonts.GetOrAdd(fontDescriptor, descriptor => new CachedFont(GetTypeface(descriptor), descriptor.Size));
-        lock (font)
+        if (Interlocked.Exchange(ref pretextBackendInitialized, 1) == 1)
         {
-            return font.Font.MeasureText(text);
+            return;
+        }
+
+        PretextLayout.SetTextMeasurerFactory(new SkiaSharpTextMeasurerFactory());
+    }
+
+    private static float MeasureWithPretext(string text, TextFontDescriptor fontDescriptor)
+    {
+        lock (PretextMeasurementGate)
+        {
+            var prepared = PretextLayout.PrepareWithSegments(
+                text,
+                fontDescriptor.ToPretextFontString(),
+                new PrepareOptions(WhiteSpaceMode.PreWrap));
+            return (float)PretextLayout.MeasureNaturalWidth(prepared);
         }
     }
+
+    private static string NormalizeMeasuredText(string text) =>
+        text.Contains('\t', StringComparison.Ordinal)
+            ? text.Replace("\t", MeasurementTabReplacement, StringComparison.Ordinal)
+            : text;
 
     internal SKTypeface GetTypeface(TextFontDescriptor fontDescriptor)
     {
         var key = new TypefaceKey(fontDescriptor.FamilyName, fontDescriptor.Bold, fontDescriptor.Italic);
         return typefaces.GetOrAdd(key, static typefaceKey =>
         {
-            var style = typefaceKey.Bold ? SKFontStyle.Bold : SKFontStyle.Normal;
+            var weight = typefaceKey.Bold ? SKFontStyleWeight.Bold : SKFontStyleWeight.Normal;
+            var slant = typefaceKey.Italic ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright;
+            var style = new SKFontStyle(weight, SKFontStyleWidth.Normal, slant);
             var resolvedTypeface = SKTypeface.FromFamilyName(typefaceKey.FamilyName, style);
             return new CachedTypeface(resolvedTypeface ?? SKTypeface.Default, resolvedTypeface is not null);
         }).Typeface;
@@ -141,12 +167,6 @@ public sealed class TextMetricsCache : IDisposable
     public void Dispose()
     {
         Clear();
-        foreach (var font in fonts.Values)
-        {
-            font.Dispose();
-        }
-
-        fonts.Clear();
         foreach (var typeface in typefaces.Values)
         {
             if (typeface.OwnsTypeface)
@@ -163,21 +183,6 @@ public sealed class TextMetricsCache : IDisposable
         while (measuredWidthOrder.Count > maxEntries)
         {
             measuredWidths.Remove(measuredWidthOrder.Dequeue());
-        }
-    }
-
-    private sealed class CachedFont : IDisposable
-    {
-        public CachedFont(SKTypeface typeface, float size)
-        {
-            Font = new SKFont(typeface, size, 1, 0);
-        }
-
-        public SKFont Font { get; }
-
-        public void Dispose()
-        {
-            Font.Dispose();
         }
     }
 

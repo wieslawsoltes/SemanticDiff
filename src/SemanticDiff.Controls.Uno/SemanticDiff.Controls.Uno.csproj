@@ -21,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Pretext.Uno" />
     <PackageReference Include="SkiaSharp.Views.Uno.WinUI" />
   </ItemGroup>
 
