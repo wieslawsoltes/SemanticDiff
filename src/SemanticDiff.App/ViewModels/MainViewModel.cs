@@ -47,6 +47,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private ImmutableHashSet<string> collapsedExplorerNodePaths = ImmutableHashSet<string>.Empty;
     private ImmutableArray<SemanticNavigationItem> allSemanticNavigationItems => symbolBrowser.AllItems;
     private SemanticSymbolInsightSummary currentSymbolInsight => symbolBrowser.Insight;
+    private ImmutableDictionary<DiffDocumentId, SemanticDocumentInsight> currentSemanticDocumentInsights = ImmutableDictionary<DiffDocumentId, SemanticDocumentInsight>.Empty;
     private ImmutableArray<DiffChangeNavigationItem> changeNavigationItems = [];
     private int currentChangeNavigationIndex = -1;
     private string currentStatusPrefix = "sample fallback";

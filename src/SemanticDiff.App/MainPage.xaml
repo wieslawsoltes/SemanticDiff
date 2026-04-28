@@ -208,6 +208,8 @@
                                            Lines="{Binding FileDiff.CurrentDiffOnlyLines}"
                                            IsDiffMode="True"
                                            ShowDiffAnnotations="{Binding FileDiff.IsDiffAnnotationEnabled}"
+                                           ShowSemanticInsights="{Binding FileDiff.IsDiffAnnotationEnabled}"
+                                           SemanticLineInsights="{Binding FileDiff.SemanticLineInsights}"
                                            CodeFontSize="{Binding FileDiff.CodeFontSize, Mode=TwoWay}"
                                            RefreshKey="{Binding FileDiff.RefreshKey}"
                                            LineContextRequested="OnFileViewerLineContextRequested" />
@@ -218,6 +220,8 @@
                                            Lines="{Binding FileDiff.CurrentFullFileLines}"
                                            FoldRegions="{Binding FileDiff.FoldRegions}"
                                            ShowDiffAnnotations="{Binding FileDiff.IsDiffAnnotationEnabled}"
+                                           ShowSemanticInsights="{Binding FileDiff.IsDiffAnnotationEnabled}"
+                                           SemanticLineInsights="{Binding FileDiff.SemanticLineInsights}"
                                            CodeFontSize="{Binding FileDiff.CodeFontSize, Mode=TwoWay}"
                                            RefreshKey="{Binding FileDiff.RefreshKey}"
                                            LineContextRequested="OnFileViewerLineContextRequested" />

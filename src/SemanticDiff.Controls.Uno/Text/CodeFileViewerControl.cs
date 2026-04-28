@@ -69,6 +69,18 @@ public sealed class CodeFileViewerControl : Grid
         typeof(CodeFileViewerControl),
         new PropertyMetadata(true, OnDiffAnnotationVisibilityChanged));
 
+    public static readonly DependencyProperty ShowSemanticInsightsProperty = DependencyProperty.Register(
+        nameof(ShowSemanticInsights),
+        typeof(bool),
+        typeof(CodeFileViewerControl),
+        new PropertyMetadata(true, OnDiffAnnotationVisibilityChanged));
+
+    public static readonly DependencyProperty SemanticLineInsightsProperty = DependencyProperty.Register(
+        nameof(SemanticLineInsights),
+        typeof(object),
+        typeof(CodeFileViewerControl),
+        new PropertyMetadata(null, OnSemanticLineInsightsChanged));
+
     public static readonly DependencyProperty RefreshKeyProperty = DependencyProperty.Register(
         nameof(RefreshKey),
         typeof(object),
@@ -88,12 +100,14 @@ public sealed class CodeFileViewerControl : Grid
     private uint? activePointerId;
     private double scrollbarGrabOffsetY;
     private int? hoveredFoldStartLine;
+    private int? hoveredSemanticLineNumber;
     private CodeTextPosition? selectionAnchor;
     private CodeTextPosition? selectionActive;
     private bool visibleRowsDirty = true;
     private bool isDraggingScrollbar;
     private bool isDraggingMinimap;
     private bool isSelectingText;
+    private IReadOnlyDictionary<int, SemanticLineInsight> semanticLineInsightsByLine = new Dictionary<int, SemanticLineInsight>();
     private double minimapGrabOffsetY;
     private UiRenderScheduler? deferredRenderScheduler;
 
@@ -157,6 +171,18 @@ public sealed class CodeFileViewerControl : Grid
         set => SetValue(ShowDiffAnnotationsProperty, value);
     }
 
+    public bool ShowSemanticInsights
+    {
+        get => (bool)GetValue(ShowSemanticInsightsProperty);
+        set => SetValue(ShowSemanticInsightsProperty, value);
+    }
+
+    public object? SemanticLineInsights
+    {
+        get => GetValue(SemanticLineInsightsProperty);
+        set => SetValue(SemanticLineInsightsProperty, value);
+    }
+
     public object? RefreshKey
     {
         get => GetValue(RefreshKeyProperty);
@@ -206,6 +232,7 @@ public sealed class CodeFileViewerControl : Grid
         {
             control.visibleRowsDirty = true;
             control.hoveredFoldStartLine = null;
+            control.hoveredSemanticLineNumber = null;
             control.isDraggingScrollbar = false;
             control.isDraggingMinimap = false;
             control.activePointerId = null;
@@ -213,6 +240,7 @@ public sealed class CodeFileViewerControl : Grid
             control.TrimCollapsedFoldState();
             control.ClampScrollOffset();
             control.ReleasePointerCaptures();
+            ToolTipService.SetToolTip(control, null);
             control.RequestDeferredRender();
         }
     }
@@ -232,6 +260,61 @@ public sealed class CodeFileViewerControl : Grid
         {
             control.RequestDeferredRender();
         }
+    }
+
+    private static void OnSemanticLineInsightsChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        if (dependencyObject is CodeFileViewerControl control)
+        {
+            control.semanticLineInsightsByLine = BuildSemanticInsightMap(args.NewValue);
+            control.hoveredSemanticLineNumber = null;
+            ToolTipService.SetToolTip(control, null);
+            control.RequestDeferredRender();
+        }
+    }
+
+    private static IReadOnlyDictionary<int, SemanticLineInsight> BuildSemanticInsightMap(object? source)
+    {
+        var insights = source switch
+        {
+            ImmutableArray<SemanticLineInsight> immutable when !immutable.IsDefaultOrEmpty => immutable,
+            IReadOnlyList<SemanticLineInsight> list => list.ToImmutableArray(),
+            IEnumerable<SemanticLineInsight> enumerable => enumerable.ToImmutableArray(),
+            _ => ImmutableArray<SemanticLineInsight>.Empty
+        };
+
+        if (insights.IsDefaultOrEmpty)
+        {
+            return new Dictionary<int, SemanticLineInsight>();
+        }
+
+        return insights
+            .GroupBy(insight => insight.LineNumber)
+            .ToDictionary(group => group.Key, group => MergeSemanticInsights(group.ToImmutableArray()));
+    }
+
+    private static SemanticLineInsight MergeSemanticInsights(ImmutableArray<SemanticLineInsight> insights)
+    {
+        if (insights.Length == 1)
+        {
+            return insights[0];
+        }
+
+        var dominant = insights
+            .OrderByDescending(insight => insight.IsChanged)
+            .ThenByDescending(insight => insight.IsImpacted)
+            .ThenByDescending(insight => insight.LinkCount)
+            .ThenBy(insight => insight.KindText, StringComparer.OrdinalIgnoreCase)
+            .First();
+        return new SemanticLineInsight(
+            dominant.LineNumber,
+            $"{insights.Length:N0} sem",
+            string.Join(" | ", insights.Select(insight => insight.Detail).Distinct(StringComparer.Ordinal).Take(3)),
+            dominant.Kind,
+            insights.Sum(insight => insight.AnchorCount),
+            insights.Sum(insight => insight.LinkCount),
+            insights.Any(insight => insight.IsChanged),
+            insights.Any(insight => insight.IsImpacted));
     }
 
     private void OnPaintSurface(object? sender, SKPaintSurfaceEventArgs args)
@@ -304,6 +387,11 @@ public sealed class CodeFileViewerControl : Grid
                 canvasSurface.ClipRect(textClip);
                 DrawSelection(canvasSurface, palette, rowIndex, line, gutterWidth + TextPadding, y, charWidth, contentRight);
                 DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, gutterWidth + TextPadding, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, BoldFontDescriptor, palette);
+            }
+
+            if (TryGetSemanticInsight(line, out var semanticInsight))
+            {
+                DrawSemanticInsight(canvasSurface, palette, semanticInsight, gutterWidth, contentRight, y, LineHeight, BaselineOffset, font, BoldFontDescriptor);
             }
         }
 
@@ -412,9 +500,19 @@ public sealed class CodeFileViewerControl : Grid
         }
 
         var nextHoveredFold = TryHitTestFold(point, out var region) ? region.StartLineIndex : (int?)null;
+        var nextHoveredSemanticLine = TryHitTestSemanticMarker(point, out var semanticInsight) && semanticInsight is not null
+            ? semanticInsight.LineNumber
+            : (int?)null;
         if (hoveredFoldStartLine != nextHoveredFold)
         {
             hoveredFoldStartLine = nextHoveredFold;
+            RequestRender();
+        }
+
+        if (hoveredSemanticLineNumber != nextHoveredSemanticLine)
+        {
+            hoveredSemanticLineNumber = nextHoveredSemanticLine;
+            ToolTipService.SetToolTip(this, semanticInsight is null ? null : semanticInsight.Detail);
             RequestRender();
         }
     }
@@ -461,9 +559,11 @@ public sealed class CodeFileViewerControl : Grid
 
     private void OnPointerExited(object sender, PointerRoutedEventArgs args)
     {
-        if (hoveredFoldStartLine is not null)
+        if (hoveredFoldStartLine is not null || hoveredSemanticLineNumber is not null)
         {
             hoveredFoldStartLine = null;
+            hoveredSemanticLineNumber = null;
+            ToolTipService.SetToolTip(this, null);
             RequestRender();
         }
     }
@@ -672,6 +772,45 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawText(text, right - TextMetrics.MeasureNaturalWidth(text, fontDescriptor), baseline, font, paint);
     }
 
+    private void DrawSemanticInsight(
+        SKCanvas canvasSurface,
+        CodeFileViewerPalette palette,
+        SemanticLineInsight insight,
+        float gutterWidth,
+        float contentRight,
+        float y,
+        float lineHeight,
+        float baselineOffset,
+        SKFont font,
+        TextFontDescriptor fontDescriptor)
+    {
+        var isHovered = hoveredSemanticLineNumber == insight.LineNumber;
+        var accent = SemanticInsightColor(insight, palette);
+        var markerSize = isHovered ? 9 : 7;
+        var markerX = gutterWidth - markerSize - 8;
+        var markerY = y + (lineHeight - markerSize) * 0.5f;
+        using var markerPaint = new SKPaint { Color = accent, Style = SKPaintStyle.Fill, IsAntialias = true };
+        using var haloPaint = new SKPaint { Color = WithAlpha(accent, isHovered ? (byte)56 : (byte)28), Style = SKPaintStyle.Fill, IsAntialias = true };
+        canvasSurface.DrawCircle(markerX + markerSize * 0.5f, markerY + markerSize * 0.5f, markerSize * 0.9f, haloPaint);
+        canvasSurface.DrawRoundRect(SKRect.Create(markerX, markerY, markerSize, markerSize), markerSize * 0.5f, markerSize * 0.5f, markerPaint);
+
+        var label = insight.Label.Length <= 10 ? insight.Label : insight.Label[..10];
+        var labelWidth = TextMetrics.MeasureNaturalWidth(label, fontDescriptor) + 10;
+        if (contentRight - gutterWidth < labelWidth + 160)
+        {
+            return;
+        }
+
+        var chipRight = contentRight - 14;
+        var chipRect = SKRect.Create(chipRight - labelWidth, y + 3, labelWidth, Math.Max(1, lineHeight - 6));
+        using var chipPaint = new SKPaint { Color = WithAlpha(accent, isHovered ? (byte)52 : (byte)34), Style = SKPaintStyle.Fill, IsAntialias = true };
+        using var chipBorderPaint = new SKPaint { Color = WithAlpha(accent, isHovered ? (byte)210 : (byte)150), Style = SKPaintStyle.Stroke, StrokeWidth = isHovered ? 1.5f : 1, IsAntialias = true };
+        using var textPaint = CreateTextPaint(accent);
+        canvasSurface.DrawRoundRect(chipRect, 4, 4, chipPaint);
+        canvasSurface.DrawRoundRect(chipRect, 4, 4, chipBorderPaint);
+        canvasSurface.DrawText(label, chipRect.Left + 5, y + baselineOffset, font, textPaint);
+    }
+
     private void DrawFoldMarker(SKCanvas canvasSurface, CodeFileViewerPalette palette, int lineIndex, CodeFoldRegion? collapsedRegion, float y, float lineHeight)
     {
         if (!foldRegionsByStart.TryGetValue(lineIndex, out var region))
@@ -838,6 +977,7 @@ public sealed class CodeFileViewerControl : Grid
                 DrawAggregatedMinimapRows(canvasSurface, palette, lines, inner, minimapPaint);
             }
 
+            DrawMinimapSemanticInsights(canvasSurface, palette, lines, inner, minimapPaint);
             DrawMinimapSelection(canvasSurface, palette, inner, minimapPaint);
         }
 
@@ -1028,6 +1168,40 @@ public sealed class CodeFileViewerControl : Grid
         }
     }
 
+    private void DrawMinimapSemanticInsights(
+        SKCanvas canvasSurface,
+        CodeFileViewerPalette palette,
+        IReadOnlyList<DiffLine> lines,
+        SKRect inner,
+        SKPaint paint)
+    {
+        if (!ShowSemanticInsights || semanticLineInsightsByLine.Count == 0 || visibleRows.Length == 0)
+        {
+            return;
+        }
+
+        var rowScale = inner.Height / Math.Max(1, visibleRows.Length);
+        var rowHeight = Math.Clamp(rowScale, 1, 3);
+        const float markerWidth = 3;
+        for (var rowIndex = 0; rowIndex < visibleRows.Length; rowIndex++)
+        {
+            var row = visibleRows[rowIndex];
+            if (row.LineIndex < 0 || row.LineIndex >= lines.Count)
+            {
+                continue;
+            }
+
+            if (!TryGetSemanticInsight(lines[row.LineIndex], out var insight))
+            {
+                continue;
+            }
+
+            var y = inner.Top + rowIndex * rowScale;
+            paint.Color = WithAlpha(SemanticInsightColor(insight, palette), 220);
+            canvasSurface.DrawRect(SKRect.Create(inner.Right - markerWidth, y, markerWidth, rowHeight), paint);
+        }
+    }
+
     private void DrawMinimapSelection(SKCanvas canvasSurface, CodeFileViewerPalette palette, SKRect inner, SKPaint paint)
     {
         if (!TryGetSelectionRange(out var start, out var end) || visibleRows.Length == 0)
@@ -1054,6 +1228,77 @@ public sealed class CodeFileViewerControl : Grid
         DiffLineKind.Imaginary => WithAlpha(palette.FoldText, 28),
         _ => SKColors.Transparent
     };
+
+    private static SKColor SemanticInsightColor(SemanticLineInsight insight, CodeFileViewerPalette palette)
+    {
+        if (insight.Kind == SemanticAnchorKind.Unknown)
+        {
+            return palette.Invalid;
+        }
+
+        if (insight.IsChanged)
+        {
+            return palette.ModifiedAccent;
+        }
+
+        if (insight.IsImpacted)
+        {
+            return palette.Accent;
+        }
+
+        return insight.Kind switch
+        {
+            SemanticAnchorKind.Type or SemanticAnchorKind.XamlRoot => palette.Type,
+            SemanticAnchorKind.Member => palette.Function,
+            SemanticAnchorKind.Binding or SemanticAnchorKind.Resource => palette.Property,
+            SemanticAnchorKind.XamlName => palette.Tag,
+            SemanticAnchorKind.Namespace or SemanticAnchorKind.Project => palette.Keyword,
+            _ => palette.Accent
+        };
+    }
+
+    private bool TryHitTestSemanticMarker(Point2 point, out SemanticLineInsight? insight)
+    {
+        EnsureVisibleRows();
+        insight = null;
+        if (!ShowSemanticInsights || semanticLineInsightsByLine.Count == 0)
+        {
+            return false;
+        }
+
+        var lines = GetLines();
+        if (visibleRows.Length == 0 || lines.Count == 0)
+        {
+            return false;
+        }
+
+        var charWidth = CodeCharacterWidth;
+        var gutterWidth = CalculateGutterWidth(charWidth, lines);
+        var rowIndex = (int)Math.Floor((scrollOffsetY + point.Y - TopPadding) / LineHeight);
+        if (rowIndex < 0 || rowIndex >= visibleRows.Length)
+        {
+            return false;
+        }
+
+        var row = visibleRows[rowIndex];
+        if (row.LineIndex < 0 || row.LineIndex >= lines.Count)
+        {
+            return false;
+        }
+
+        if (point.X < gutterWidth - 24 || point.X > gutterWidth - 2)
+        {
+            return false;
+        }
+
+        if (TryGetSemanticInsight(lines[row.LineIndex], out var foundInsight))
+        {
+            insight = foundInsight;
+            return true;
+        }
+
+        return false;
+    }
 
     private bool TryHitTestFold(Point2 point, out CodeFoldRegion region)
     {
@@ -1263,6 +1508,23 @@ public sealed class CodeFileViewerControl : Grid
         IEnumerable<DiffLine> enumerable => enumerable.ToArray(),
         _ => Array.Empty<DiffLine>()
     };
+
+    private bool TryGetSemanticInsight(DiffLine line, out SemanticLineInsight insight)
+    {
+        insight = default!;
+        if (!ShowSemanticInsights ||
+            semanticLineInsightsByLine.Count == 0 ||
+            !semanticLineInsightsByLine.TryGetValue(GetSemanticLineNumber(line), out var foundInsight))
+        {
+            return false;
+        }
+
+        insight = foundInsight;
+        return true;
+    }
+
+    private static int GetSemanticLineNumber(DiffLine line) =>
+        line.NewLineNumber ?? line.OldLineNumber ?? line.Index + 1;
 
     private IReadOnlyList<CodeFoldRegion> GetFoldRegions() => IsDiffMode
         ? Array.Empty<CodeFoldRegion>()

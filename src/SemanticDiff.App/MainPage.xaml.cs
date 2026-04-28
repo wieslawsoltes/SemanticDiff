@@ -1,3 +1,6 @@
+using System.Collections.Specialized;
+using System.ComponentModel;
+using System.IO;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -7,12 +10,9 @@ using SemanticDiff.Controls.Uno;
 using SemanticDiff.Core;
 using SemanticDiff.Rendering;
 using SemanticDiff.Rendering.Export;
-using System.Collections.Specialized;
-using System.IO;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage.Pickers;
 using Windows.System;
-using System.ComponentModel;
 
 namespace SemanticDiff.App;
 
@@ -990,6 +990,16 @@ public sealed partial class MainPage : Page
         var graphFileItem = new MenuFlyoutItem { Text = "Open file symbol graph" };
         graphFileItem.Click += (_, _) => ViewModel.OpenSymbolGraphForDocumentId(documentId);
         menu.Items.Add(graphFileItem);
+
+        if (fileDiff.FindSemanticLineInsight(args.LineNumber) is { } insight)
+        {
+            menu.Items.Add(new MenuFlyoutSeparator());
+            menu.Items.Add(new MenuFlyoutItem
+            {
+                Text = $"Semantic: {TrimMenuText(insight.Detail)}",
+                IsEnabled = false
+            });
+        }
 
         if (symbol is not null)
         {

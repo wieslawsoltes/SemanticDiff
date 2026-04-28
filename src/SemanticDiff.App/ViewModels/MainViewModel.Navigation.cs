@@ -90,6 +90,10 @@ public sealed partial class MainViewModel
     {
         var index = new SemanticNavigationIndex();
         symbolBrowser.SetItems(index.Build(semanticGraph, documents));
+        currentSemanticDocumentInsights = new SemanticDocumentInsightIndex()
+            .Build(semanticGraph, documents)
+            .ToImmutableDictionary(insight => insight.DocumentId);
+        RefreshOpenFileDiffSemanticInsights();
         ApplySemanticNavigationFilter();
     }
 

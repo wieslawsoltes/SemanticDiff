@@ -1155,6 +1155,7 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         ImmutableArray<DiffLine> fullFileLines,
         ImmutableArray<DiffLine> annotatedFullFileLines,
         ImmutableArray<CodeFoldRegion> foldRegions,
+        SemanticDocumentInsight semanticInsight,
         FileDiffDisplayMode displayMode)
     {
         DocumentId = documentId;
@@ -1167,6 +1168,7 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         FullFileLines = fullFileLines;
         AnnotatedFullFileLines = annotatedFullFileLines;
         FoldRegions = foldRegions;
+        this.semanticInsight = semanticInsight;
         this.fullText = fullText;
         this.displayMode = displayMode;
     }
@@ -1195,7 +1197,15 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
 
     public ImmutableArray<DiffLine> CurrentFullFileLines => IsDiffAnnotationEnabled ? AnnotatedFullFileLines : FullFileLines;
 
-    public string SummaryText => $"{Status} | {Language} | {CurrentDiffOnlyLines.Length:N0} diff lines";
+    public ImmutableArray<SemanticLineInsight> SemanticLineInsights => SemanticInsight.Lines;
+
+    public bool HasSemanticInsights => SemanticInsight.HasInsights;
+
+    public string SemanticSummaryText => SemanticInsight.SummaryText;
+
+    public string SummaryText => HasSemanticInsights
+        ? $"{Status} | {Language} | {CurrentDiffOnlyLines.Length:N0} diff lines | {SemanticSummaryText}"
+        : $"{Status} | {Language} | {CurrentDiffOnlyLines.Length:N0} diff lines";
 
     public string StatusText => $"{Path} | {SummaryText}";
 
@@ -1213,13 +1223,13 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
 
     public string FullFileHeader => string.IsNullOrWhiteSpace(FullText)
         ? "Full file content unavailable"
-        : $"{Path} | {FullFileLines.Length:N0} lines | {FoldRegions.Length:N0} fold regions | diff annotations {(IsDiffAnnotationEnabled ? "on" : "off")}";
+        : $"{Path} | {FullFileLines.Length:N0} lines | {FoldRegions.Length:N0} fold regions | diff annotations {(IsDiffAnnotationEnabled ? "on" : "off")} | {SemanticSummaryText}";
 
     public string DiffOnlyHeader => DiffScopeMode == FileDiffScopeMode.FullFileDiff
-        ? $"{Path} | full file diff | {CurrentDiffOnlyLines.Length:N0} lines"
-        : $"{Path} | changed hunks | {CurrentDiffOnlyLines.Length:N0} lines";
+        ? $"{Path} | full file diff | {CurrentDiffOnlyLines.Length:N0} lines | {SemanticSummaryText}"
+        : $"{Path} | changed hunks | {CurrentDiffOnlyLines.Length:N0} lines | {SemanticSummaryText}";
 
-    public string RefreshKey => $"{DisplayMode}:{DiffScopeMode}:{IsDiffAnnotationEnabled}:{CodeFontSize:0.##}";
+    public string RefreshKey => $"{DisplayMode}:{DiffScopeMode}:{IsDiffAnnotationEnabled}:{CodeFontSize:0.##}:{SemanticLineInsights.Length}";
 
     public ImmutableArray<double> CodeFontSizeOptions { get; } = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
 
@@ -1258,6 +1268,17 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
     private string fullText;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SemanticLineInsights))]
+    [NotifyPropertyChangedFor(nameof(HasSemanticInsights))]
+    [NotifyPropertyChangedFor(nameof(SemanticSummaryText))]
+    [NotifyPropertyChangedFor(nameof(SummaryText))]
+    [NotifyPropertyChangedFor(nameof(StatusText))]
+    [NotifyPropertyChangedFor(nameof(FullFileHeader))]
+    [NotifyPropertyChangedFor(nameof(DiffOnlyHeader))]
+    [NotifyPropertyChangedFor(nameof(RefreshKey))]
+    private SemanticDocumentInsight semanticInsight;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CodeFontSizeText))]
     [NotifyPropertyChangedFor(nameof(CanDecreaseCodeFontSize))]
     [NotifyPropertyChangedFor(nameof(CanIncreaseCodeFontSize))]
@@ -1269,6 +1290,18 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
     public void SetDiffScopeMode(FileDiffScopeMode mode) => DiffScopeMode = mode;
 
     public void SetDiffAnnotationVisibility(bool isEnabled) => IsDiffAnnotationEnabled = isEnabled;
+
+    public void SetSemanticInsight(SemanticDocumentInsight insight) => SemanticInsight = insight;
+
+    public SemanticLineInsight? FindSemanticLineInsight(int? lineNumber)
+    {
+        if (lineNumber is null || SemanticLineInsights.IsDefaultOrEmpty)
+        {
+            return null;
+        }
+
+        return SemanticLineInsights.FirstOrDefault(insight => insight.LineNumber == lineNumber.Value);
+    }
 
     public void IncreaseCodeFontSize() => SetCodeFontSize(CodeFontSize + 1);
 
@@ -1292,6 +1325,7 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         DiffDocumentSnapshot fullFileDocument,
         string fullText,
         ImmutableArray<CodeFoldRegion> foldRegions,
+        SemanticDocumentInsight semanticInsight,
         FileDiffDisplayMode displayMode)
     {
         var view = new FileDiffDocumentBuilder().Build(document, fullFileDocument, fullText, foldRegions);
@@ -1307,6 +1341,7 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
             view.FullFileDocument.Lines,
             view.AnnotatedFullFileLines,
             view.FoldRegions,
+            semanticInsight,
             displayMode);
     }
 }

@@ -173,10 +173,32 @@ public sealed partial class MainViewModel
         var fullText = await LoadFullFileTextAsync(document, CancellationToken.None);
         var fullFileDocument = await CreateTokenizedFullFileDocumentAsync(document, fullText, CancellationToken.None);
         var foldRegions = new CodeFoldingService().CreateFoldRegions(fullFileDocument);
-        var fileDiff = FileDiffTabViewModel.FromDocument(document, fullFileDocument, fullText, foldRegions, displayMode);
+        var fileDiff = FileDiffTabViewModel.FromDocument(
+            document,
+            fullFileDocument,
+            fullText,
+            foldRegions,
+            GetSemanticDocumentInsight(document.Id),
+            displayMode);
         var tab = WorkspaceTabViewModel.CreateFileDiff(tabId, Path.GetFileName(document.Metadata.Path), document.Metadata.Path, fileDiff);
         AddWorkspaceTab(tab);
         AddDiagnostic("Info", $"Opened file diff tab for {document.Metadata.Path}");
+    }
+
+    private SemanticDocumentInsight GetSemanticDocumentInsight(DiffDocumentId documentId) =>
+        currentSemanticDocumentInsights.TryGetValue(documentId, out var insight)
+            ? insight
+            : SemanticDocumentInsight.Empty(documentId);
+
+    private void RefreshOpenFileDiffSemanticInsights()
+    {
+        foreach (var tab in WorkspaceTabs)
+        {
+            if (tab.FileDiff is { } fileDiff)
+            {
+                fileDiff.SetSemanticInsight(GetSemanticDocumentInsight(new DiffDocumentId(fileDiff.DocumentId)));
+            }
+        }
     }
 
     private async Task OpenBlameTabAsync(DiffDocumentSnapshot document)
