@@ -1,4 +1,5 @@
 using System.Windows.Input;
+using DispatcherQueueTimer = Microsoft.UI.Dispatching.DispatcherQueueTimer;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
@@ -17,6 +18,7 @@ public sealed class DiffCanvasControl : Grid
 {
     private const double DefaultViewportWidth = 960;
     private const double DefaultViewportHeight = 600;
+    private static readonly TimeSpan WheelZoomSettleDelay = TimeSpan.FromMilliseconds(140);
 
     private enum ActiveInteraction
     {
@@ -64,6 +66,8 @@ public sealed class DiffCanvasControl : Grid
     private bool fitPendingRequiresDefaultCamera;
     private bool renderRequested;
     private bool renderingFrameSubscribed;
+    private bool wheelZoomActive;
+    private DispatcherQueueTimer? wheelZoomSettleTimer;
 
     public DiffCanvasControl()
     {
@@ -96,7 +100,7 @@ public sealed class DiffCanvasControl : Grid
 
             RequestRender();
         };
-        Unloaded += (_, _) => StopRenderingFrameSubscription();
+        Unloaded += (_, _) => StopAllRenderScheduling();
     }
 
     public DiffCanvasScene? Scene
@@ -509,9 +513,21 @@ public sealed class DiffCanvasControl : Grid
         }
 
         var pointerPoint = args.GetCurrentPoint(this);
-        var screenPoint = ToCanvasPoint(pointerPoint.Position);
         var wheelDelta = pointerPoint.Properties.MouseWheelDelta;
-        Scene.HandleWheel(screenPoint, wheelDelta, IsCameraModifierDown(args));
+        if (wheelDelta == 0)
+        {
+            return;
+        }
+
+        var screenPoint = ToCanvasPoint(pointerPoint.Position);
+        var zoomCanvas = IsCameraModifierDown(args);
+        if (zoomCanvas)
+        {
+            BeginWheelZoomInteraction();
+            ClearAnnotationHover();
+        }
+
+        Scene.HandleWheel(screenPoint, wheelDelta, zoomCanvas);
 
         RequestRender();
         args.Handled = true;
@@ -845,7 +861,7 @@ public sealed class DiffCanvasControl : Grid
 
     private void RequestRender()
     {
-        if (activeInteraction == ActiveInteraction.None)
+        if (activeInteraction == ActiveInteraction.None && !wheelZoomActive)
         {
             renderRequested = false;
             canvas.Invalidate();
@@ -888,6 +904,14 @@ public sealed class DiffCanvasControl : Grid
         renderingFrameSubscribed = false;
     }
 
+    private void StopAllRenderScheduling()
+    {
+        wheelZoomSettleTimer?.Stop();
+        wheelZoomActive = false;
+        renderRequested = false;
+        StopRenderingFrameSubscription();
+    }
+
     private void OnCompositionTargetRendering(object? sender, object args)
     {
         if (renderRequested)
@@ -896,13 +920,64 @@ public sealed class DiffCanvasControl : Grid
             canvas.Invalidate();
         }
 
-        if (activeInteraction == ActiveInteraction.None && !renderRequested)
+        if (activeInteraction == ActiveInteraction.None && !wheelZoomActive && !renderRequested)
         {
             StopRenderingFrameSubscription();
         }
     }
 
+    private void BeginWheelZoomInteraction()
+    {
+        var timer = GetWheelZoomSettleTimer();
+        if (timer is null)
+        {
+            return;
+        }
+
+        wheelZoomActive = true;
+        StartInteractiveRenderLoop();
+        timer.Stop();
+        timer.Start();
+    }
+
+    private DispatcherQueueTimer? GetWheelZoomSettleTimer()
+    {
+        if (wheelZoomSettleTimer is not null)
+        {
+            return wheelZoomSettleTimer;
+        }
+
+        if (DispatcherQueue is null)
+        {
+            return null;
+        }
+
+        wheelZoomSettleTimer = DispatcherQueue.CreateTimer();
+        wheelZoomSettleTimer.Interval = WheelZoomSettleDelay;
+        wheelZoomSettleTimer.IsRepeating = false;
+        wheelZoomSettleTimer.Tick += (_, _) => EndWheelZoomInteraction();
+        return wheelZoomSettleTimer;
+    }
+
+    private void EndWheelZoomInteraction()
+    {
+        wheelZoomSettleTimer?.Stop();
+        if (!wheelZoomActive)
+        {
+            return;
+        }
+
+        wheelZoomActive = false;
+        renderRequested = false;
+        if (activeInteraction == ActiveInteraction.None)
+        {
+            StopRenderingFrameSubscription();
+            canvas.Invalidate();
+        }
+    }
+
     private bool ShouldRenderDetailedDocumentBodies() =>
+        !wheelZoomActive &&
         activeInteraction is ActiveInteraction.None or ActiveInteraction.DragScrollbar;
 
     private static PanPointerButton GetPanButton(Microsoft.UI.Input.PointerPoint pointerPoint)
