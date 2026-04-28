@@ -1,8 +1,35 @@
 # SemanticDiff
 
+[![Build](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/build.yml/badge.svg)](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/build.yml)
+[![Package Integration](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/integration.yml/badge.svg)](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/integration.yml)
+[![Release](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/release.yml/badge.svg)](https://github.com/wieslawsoltes/SemanticDiff/actions/workflows/release.yml)
+
+[![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Workbench.svg)](https://www.nuget.org/packages/SemanticDiff.Workbench/)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Workbench.svg)](https://www.nuget.org/packages/SemanticDiff.Workbench/)
+[![GitHub release](https://img.shields.io/github/v/release/wieslawsoltes/SemanticDiff.svg?include_prereleases)](https://github.com/wieslawsoltes/SemanticDiff/releases)
+[![GitHub downloads](https://img.shields.io/github/downloads/wieslawsoltes/SemanticDiff/total.svg)](https://github.com/wieslawsoltes/SemanticDiff/releases)
+[![License](https://img.shields.io/github/license/wieslawsoltes/SemanticDiff.svg)](LICENSE)
+
 SemanticDiff is a desktop Git diff explorer that turns repository changes into an interactive, semantic graph. It combines Git-aware diff loading, syntax and semantic analysis, node-based visualization, file/reference navigation, and GitHub/GitLab review workflows in a single Uno Platform app.
 
 The app is designed for code review sessions where a flat patch is not enough: it groups changes by file, folder, language, or semantic structure, highlights syntax and review signals, preserves navigation state, and can load or write remote review discussion data for pull requests and merge requests.
+
+## NuGet Packages
+
+Reusable SemanticDiff packages are published independently so apps can consume the core models, Git/diff services, semantic analysis, layout/rendering services, workbench orchestration, or Uno controls without referencing the desktop app.
+
+| Package ID | NuGet | Downloads |
+| --- | --- | --- |
+| `SemanticDiff.Core` | [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Core.svg)](https://www.nuget.org/packages/SemanticDiff.Core/) | [![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Core.svg)](https://www.nuget.org/packages/SemanticDiff.Core/) |
+| `SemanticDiff.Diff` | [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Diff.svg)](https://www.nuget.org/packages/SemanticDiff.Diff/) | [![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Diff.svg)](https://www.nuget.org/packages/SemanticDiff.Diff/) |
+| `SemanticDiff.Git` | [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Git.svg)](https://www.nuget.org/packages/SemanticDiff.Git/) | [![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Git.svg)](https://www.nuget.org/packages/SemanticDiff.Git/) |
+| `SemanticDiff.Layout` | [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Layout.svg)](https://www.nuget.org/packages/SemanticDiff.Layout/) | [![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Layout.svg)](https://www.nuget.org/packages/SemanticDiff.Layout/) |
+| `SemanticDiff.Rendering` | [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Rendering.svg)](https://www.nuget.org/packages/SemanticDiff.Rendering/) | [![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Rendering.svg)](https://www.nuget.org/packages/SemanticDiff.Rendering/) |
+| `SemanticDiff.Semantics` | [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Semantics.svg)](https://www.nuget.org/packages/SemanticDiff.Semantics/) | [![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Semantics.svg)](https://www.nuget.org/packages/SemanticDiff.Semantics/) |
+| `SemanticDiff.Semantics.Roslyn` | [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Semantics.Roslyn.svg)](https://www.nuget.org/packages/SemanticDiff.Semantics.Roslyn/) | [![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Semantics.Roslyn.svg)](https://www.nuget.org/packages/SemanticDiff.Semantics.Roslyn/) |
+| `SemanticDiff.Semantics.Xaml` | [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Semantics.Xaml.svg)](https://www.nuget.org/packages/SemanticDiff.Semantics.Xaml/) | [![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Semantics.Xaml.svg)](https://www.nuget.org/packages/SemanticDiff.Semantics.Xaml/) |
+| `SemanticDiff.Workbench` | [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Workbench.svg)](https://www.nuget.org/packages/SemanticDiff.Workbench/) | [![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Workbench.svg)](https://www.nuget.org/packages/SemanticDiff.Workbench/) |
+| `SemanticDiff.Controls.Uno` | [![NuGet](https://img.shields.io/nuget/vpre/SemanticDiff.Controls.Uno.svg)](https://www.nuget.org/packages/SemanticDiff.Controls.Uno/) | [![NuGet Downloads](https://img.shields.io/nuget/dt/SemanticDiff.Controls.Uno.svg)](https://www.nuget.org/packages/SemanticDiff.Controls.Uno/) |
 
 ## Highlights
 
