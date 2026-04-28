@@ -23,6 +23,7 @@ public sealed record SemanticDiffAppState(
     GitReviewRequestState ReviewRequestState = GitReviewRequestState.Open,
     string? SelectedBranchRef = null,
     int? SelectedPullRequestNumber = null,
+    bool UseInteractiveLevelOfDetail = true,
     double LeftPaneWidth = 260)
 {
     public DiffNodeLayoutState[] EffectiveLayoutNodes => LayoutNodes ?? [];

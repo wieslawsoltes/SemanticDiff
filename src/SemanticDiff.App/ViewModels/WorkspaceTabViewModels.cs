@@ -122,6 +122,9 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
     [ObservableProperty]
     private bool isLightTheme;
 
+    [ObservableProperty]
+    private bool useInteractiveLevelOfDetail = true;
+
     public static WorkspaceTabViewModel Graph() => new(
         "graph",
         WorkspaceTabKind.Graph,

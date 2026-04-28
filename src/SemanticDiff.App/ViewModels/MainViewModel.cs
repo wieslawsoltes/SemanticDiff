@@ -286,6 +286,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private string semanticEdgesText = "Edges on";
 
     [ObservableProperty]
+    private bool useInteractiveLevelOfDetail = true;
+
+    [ObservableProperty]
     private string semanticAnalysisModeText = "MSBuild";
 
     public ImmutableArray<LayoutModeOptionViewModel> LayoutModeOptions { get; } = LayoutModeOptionViewModel.All;

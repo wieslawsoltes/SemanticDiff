@@ -287,6 +287,7 @@
                                        VerticalAlignment="Stretch"
                                        Scene="{Binding Blame.ChangeGraphScene}"
                                        IsLightTheme="{Binding IsLightTheme}"
+                                       UseInteractiveLevelOfDetail="{Binding UseInteractiveLevelOfDetail}"
                                        NodeNavigationRequested="OnDiffCanvasNodeNavigationRequested"
                                        NodeDiffTabRequested="OnDiffCanvasNodeDiffTabRequested"
                                        NodeBlameTabRequested="OnDiffCanvasNodeBlameTabRequested"
@@ -410,6 +411,7 @@
                                      Visibility="{Binding SymbolGraph.ContentVisibility}"
                                      Scene="{Binding SymbolGraph.Scene}"
                                      IsLightTheme="{Binding IsLightTheme}"
+                                     UseInteractiveLevelOfDetail="{Binding UseInteractiveLevelOfDetail}"
                                      NodeNavigationRequested="OnDiffCanvasNodeNavigationRequested"
                                      NodeDiffTabRequested="OnDiffCanvasNodeDiffTabRequested"
                                      NodeBlameTabRequested="OnDiffCanvasNodeBlameTabRequested"
@@ -834,6 +836,14 @@
                   <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
                     <ToggleButton Content="{x:Bind ThemeToggleText, Mode=OneWay}" IsChecked="{x:Bind IsLightThemeEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnThemeClicked" />
                     <ToggleButton Grid.Column="1" Content="Semantic edges" IsChecked="{x:Bind IsSemanticEdgesEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnSemanticEdgesClicked" />
+                  </Grid>
+                  <Grid RowDefinitions="Auto,Auto" RowSpacing="3">
+                    <ToggleButton Content="Canvas LOD" IsChecked="{x:Bind UseInteractiveLevelOfDetail, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnInteractiveLevelOfDetailClicked" />
+                    <TextBlock Grid.Row="1"
+                               Text="Use simplified node bodies while zoomed out, panning, dragging, and resizing."
+                               Foreground="{ThemeResource TertiaryTextBrush}"
+                               FontSize="10"
+                               TextWrapping="WrapWholeWords" />
                   </Grid>
                   <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="6" RowSpacing="6">
                     <ToggleButton Content="Git refs" Tag="Git" IsChecked="{x:Bind IsGitVisualizationEnabled, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnVisualizationToggleClicked" />
@@ -1333,7 +1343,10 @@
 
       <Grid Grid.Row="1">
         <Grid Visibility="{x:Bind ViewModel.GraphWorkspaceVisibility, Mode=OneWay}">
-          <views:DiffCanvasControl x:Name="DiffCanvas" Scene="{x:Bind ViewModel.Scene, Mode=OneWay}" IsLightTheme="{x:Bind ViewModel.IsLightThemeEnabled, Mode=OneWay}" />
+          <views:DiffCanvasControl x:Name="DiffCanvas"
+                                   Scene="{x:Bind ViewModel.Scene, Mode=OneWay}"
+                                   IsLightTheme="{x:Bind ViewModel.IsLightThemeEnabled, Mode=OneWay}"
+                                   UseInteractiveLevelOfDetail="{x:Bind ViewModel.UseInteractiveLevelOfDetail, Mode=OneWay}" />
           <Border HorizontalAlignment="Left"
                   VerticalAlignment="Top"
                   Margin="12"

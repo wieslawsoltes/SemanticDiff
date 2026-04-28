@@ -164,35 +164,6 @@ public sealed class DiffSceneRendererTests
     }
 
     [Fact]
-    public void MiddleEllipsizeText_TrimsTitleFromMiddleWithinAvailableWidth()
-    {
-        using var font = new SKFont(SKTypeface.Default, 13);
-        using var paint = new SKPaint { IsAntialias = true };
-        var path = "src/SamplesApp/UITests.Shared/Windows_UI_Xaml_Controls/ScrollViewer/ScrollViewer_Anchoring.xaml";
-        var maxWidth = font.MeasureText(path, paint) * 0.45f;
-
-        var trimmed = DiffSceneRenderer.MiddleEllipsizeText(path, maxWidth, font, paint);
-
-        Assert.Contains("...", trimmed);
-        Assert.StartsWith("src/", trimmed);
-        Assert.EndsWith(".xaml", trimmed);
-        Assert.True(trimmed.Length < path.Length);
-        Assert.True(font.MeasureText(trimmed, paint) <= maxWidth);
-    }
-
-    [Fact]
-    public void MiddleEllipsizeText_ReturnsOriginalTitleWhenItFits()
-    {
-        using var font = new SKFont(SKTypeface.Default, 13);
-        using var paint = new SKPaint { IsAntialias = true };
-        const string path = "src/App.xaml";
-
-        var trimmed = DiffSceneRenderer.MiddleEllipsizeText(path, font.MeasureText(path, paint) + 1, font, paint);
-
-        Assert.Equal(path, trimmed);
-    }
-
-    [Fact]
     public void Render_CullsNodesOutsideWorldViewport()
     {
         var documents = CreateDocuments(48);
@@ -231,6 +202,22 @@ public sealed class DiffSceneRendererTests
     }
 
     [Fact]
+    public void Render_CanDisableOverviewBodiesWhenZoomedOut()
+    {
+        var documents = CreateDocuments(80);
+        var scene = DiffCanvasScene.FromDocuments(documents);
+        scene.FitToGraph(new Size2(320, 240));
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(320, 240));
+
+        renderer.Render(surface.Canvas, new SKSize(320, 240), scene, DiffCanvasColorTheme.Dark, useLevelOfDetail: false);
+
+        Assert.True(renderer.LastRenderStats.DrawnNodeCount > 0);
+        Assert.Equal(renderer.LastRenderStats.DrawnNodeCount, renderer.LastRenderStats.DetailedNodeCount);
+    }
+
+    [Fact]
     public void Render_UsesOverviewBodiesWhenVisibleNodeBudgetIsExceeded()
     {
         var documents = CreateDocuments(160);
@@ -246,6 +233,24 @@ public sealed class DiffSceneRendererTests
 
         Assert.Equal(documents.Length, renderer.LastRenderStats.DrawnNodeCount);
         Assert.Equal(0, renderer.LastRenderStats.DetailedNodeCount);
+    }
+
+    [Fact]
+    public void Render_CanDisableOverviewBodiesWhenVisibleNodeBudgetIsExceeded()
+    {
+        var documents = CreateDocuments(160);
+        var layout = documents
+            .Select(document => new DiffNodeLayout(document.Id, new Rect2(40, 40, 620, 420)))
+            .ToImmutableArray();
+        var scene = DiffCanvasScene.FromDocuments(documents, layoutResult: new GraphLayoutResult(layout));
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(900, 700));
+
+        renderer.Render(surface.Canvas, new SKSize(900, 700), scene, DiffCanvasColorTheme.Dark, useLevelOfDetail: false);
+
+        Assert.Equal(documents.Length, renderer.LastRenderStats.DrawnNodeCount);
+        Assert.Equal(documents.Length, renderer.LastRenderStats.DetailedNodeCount);
     }
 
     [Fact]
@@ -341,6 +346,32 @@ public sealed class DiffSceneRendererTests
         Assert.True(renderer.LastRenderStats.DrawnNodeCount > 0);
         Assert.Equal(0, renderer.LastRenderStats.DetailedNodeCount);
         Assert.Equal(0, renderer.LastRenderStats.CachedEdgePathCount);
+        Assert.Equal(scene.Edges.Count, renderer.LastRenderStats.DrawnEdgeCount);
+    }
+
+    [Fact]
+    public void Render_InteractiveModeWithLevelOfDetailDisabled_KeepsDetailedBodiesAndCachedEdgePaths()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }\nvoid M() { }\nvoid N() { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("B.cs"), "B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }\nvoid M() { }\nvoid N() { }");
+        var graph = new SemanticGraph(
+            [
+                new SemanticAnchor("A:type", first.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "A"),
+                new SemanticAnchor("B:type", second.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "B")
+            ],
+            [
+                new SemanticEdge("A->B", "A:type", "B:type", SemanticEdgeKind.SymbolReference, 0.82, "B")
+            ]);
+        var scene = DiffCanvasScene.FromDocuments([first, second], graph, groupingMode: GraphGroupingMode.None);
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(1_400, 900));
+        renderer.Render(surface.Canvas, new SKSize(1_400, 900), scene, DiffCanvasColorTheme.Dark, DiffSceneRenderMode.Interactive, useLevelOfDetail: false);
+
+        Assert.True(renderer.LastRenderStats.DrawnNodeCount > 0);
+        Assert.Equal(renderer.LastRenderStats.DrawnNodeCount, renderer.LastRenderStats.DetailedNodeCount);
+        Assert.Equal(scene.Edges.Count, renderer.LastRenderStats.CachedEdgePathCount);
         Assert.Equal(scene.Edges.Count, renderer.LastRenderStats.DrawnEdgeCount);
     }
 

@@ -31,6 +31,14 @@ public sealed partial class MainViewModel
         ApplyExplorerFilter();
     }
 
+    partial void OnUseInteractiveLevelOfDetailChanged(bool value)
+    {
+        foreach (var tab in WorkspaceTabs)
+        {
+            tab.UseInteractiveLevelOfDetail = value;
+        }
+    }
+
     private void ApplyExplorerFilter()
     {
         var query = FileSearchText.Trim();

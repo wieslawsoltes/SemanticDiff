@@ -332,6 +332,10 @@ public sealed partial class MainPage : Page
         {
             DiffCanvas.Scene = ViewModel.Scene;
         }
+        else if (args.PropertyName == nameof(ViewModel.UseInteractiveLevelOfDetail))
+        {
+            DiffCanvas.UseInteractiveLevelOfDetail = ViewModel.UseInteractiveLevelOfDetail;
+        }
     }
 
     private void ApplyRequestedTheme()
@@ -811,6 +815,12 @@ public sealed partial class MainPage : Page
     {
         var isEnabled = sender is ToggleButton { IsChecked: true };
         await ViewModel.SetSemanticEdgesAsync(isEnabled);
+    }
+
+    private async void OnInteractiveLevelOfDetailClicked(object sender, RoutedEventArgs args)
+    {
+        var isEnabled = sender is ToggleButton { IsChecked: true };
+        await ViewModel.SetInteractiveLevelOfDetailAsync(isEnabled);
     }
 
     private async void OnSemanticWorkspaceModeClicked(object sender, RoutedEventArgs args)

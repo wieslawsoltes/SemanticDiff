@@ -12,6 +12,7 @@ public sealed class AppStateStoreTests
         Assert.Equal(GraphLayoutMode.Layered, state.LayoutMode);
         Assert.Equal(GraphGroupingMode.Folder, state.GroupingMode);
         Assert.Equal(GitReviewRequestState.Open, state.ReviewRequestState);
+        Assert.True(state.UseInteractiveLevelOfDetail);
     }
 
     [Fact]
@@ -48,6 +49,7 @@ public sealed class AppStateStoreTests
             ReviewRequestState: GitReviewRequestState.Merged,
             SelectedBranchRef: "origin/feature/work",
             SelectedPullRequestNumber: 42,
+            UseInteractiveLevelOfDetail: false,
             LeftPaneWidth: 344);
 
         try
@@ -76,12 +78,42 @@ public sealed class AppStateStoreTests
             Assert.Equal(GitReviewRequestState.Merged, loaded.ReviewRequestState);
             Assert.Equal("origin/feature/work", loaded.SelectedBranchRef);
             Assert.Equal(42, loaded.SelectedPullRequestNumber);
+            Assert.False(loaded.UseInteractiveLevelOfDetail);
             Assert.Equal(344, loaded.LeftPaneWidth);
             var node = Assert.Single(loaded.EffectiveLayoutNodes);
             Assert.Equal("A.cs", node.DocumentId);
             Assert.True(node.IsPinned);
             Assert.Equal(10, node.X);
             Assert.Equal(15.5, node.FontSize);
+        }
+        finally
+        {
+            if (Directory.Exists(directoryPath))
+            {
+                Directory.Delete(directoryPath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task JsonAppStateStore_LoadsMissingInteractionLevelOfDetailAsEnabled()
+    {
+        var directoryPath = Path.Combine(Path.GetTempPath(), $"SemanticDiffState-{Guid.NewGuid():N}");
+        var filePath = Path.Combine(directoryPath, "app-state.json");
+        Directory.CreateDirectory(directoryPath);
+        await File.WriteAllTextAsync(filePath, """
+            {
+              "RepositoryPath": "/repo"
+            }
+            """);
+
+        var store = new JsonAppStateStore(filePath);
+
+        try
+        {
+            var loaded = await store.LoadAsync(CancellationToken.None);
+
+            Assert.True(loaded.UseInteractiveLevelOfDetail);
         }
         finally
         {

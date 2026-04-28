@@ -49,6 +49,12 @@ public sealed class DiffCanvasControl : Grid
         typeof(DiffCanvasControl),
         new PropertyMetadata(false, OnThemeChanged));
 
+    public static readonly DependencyProperty UseInteractiveLevelOfDetailProperty = DependencyProperty.Register(
+        nameof(UseInteractiveLevelOfDetail),
+        typeof(bool),
+        typeof(DiffCanvasControl),
+        new PropertyMetadata(true, OnRenderOptionChanged));
+
     private readonly SKXamlCanvas canvas;
     private readonly DiffSceneRenderer renderer = new();
     private readonly InputSystemCursor handCursor = InputSystemCursor.Create(InputSystemCursorShape.Hand);
@@ -113,6 +119,12 @@ public sealed class DiffCanvasControl : Grid
     {
         get => (bool)GetValue(IsLightThemeProperty);
         set => SetValue(IsLightThemeProperty, value);
+    }
+
+    public bool UseInteractiveLevelOfDetail
+    {
+        get => (bool)GetValue(UseInteractiveLevelOfDetailProperty);
+        set => SetValue(UseInteractiveLevelOfDetailProperty, value);
     }
 
     public ICommand? RevealNodeCommand { get; set; }
@@ -295,6 +307,14 @@ public sealed class DiffCanvasControl : Grid
         }
     }
 
+    private static void OnRenderOptionChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        if (dependencyObject is DiffCanvasControl control)
+        {
+            control.RequestRender();
+        }
+    }
+
     private void OnPaintSurface(object? sender, SKPaintSurfaceEventArgs args)
     {
         lastCanvasSize = new Size2(args.Info.Width, args.Info.Height);
@@ -310,7 +330,8 @@ public sealed class DiffCanvasControl : Grid
             args.Info.Size,
             Scene,
             IsLightTheme ? DiffCanvasColorTheme.Light : DiffCanvasColorTheme.Dark,
-            ShouldRenderDetailedDocumentBodies() ? DiffSceneRenderMode.Normal : DiffSceneRenderMode.Interactive);
+            ShouldRenderDetailedDocumentBodies() ? DiffSceneRenderMode.Normal : DiffSceneRenderMode.Interactive,
+            UseInteractiveLevelOfDetail);
     }
 
     private void OnPointerPressed(object sender, PointerRoutedEventArgs args)
@@ -977,8 +998,9 @@ public sealed class DiffCanvasControl : Grid
     }
 
     private bool ShouldRenderDetailedDocumentBodies() =>
-        !wheelZoomActive &&
-        activeInteraction is ActiveInteraction.None or ActiveInteraction.DragScrollbar;
+        !UseInteractiveLevelOfDetail ||
+        (!wheelZoomActive &&
+         activeInteraction is ActiveInteraction.None or ActiveInteraction.DragScrollbar);
 
     private static PanPointerButton GetPanButton(Microsoft.UI.Input.PointerPoint pointerPoint)
     {

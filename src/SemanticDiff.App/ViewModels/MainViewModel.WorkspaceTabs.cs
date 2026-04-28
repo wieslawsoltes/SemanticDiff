@@ -200,6 +200,7 @@ public sealed partial class MainViewModel
     private void AddWorkspaceTab(WorkspaceTabViewModel tab)
     {
         tab.IsLightTheme = IsLightThemeEnabled;
+        tab.UseInteractiveLevelOfDetail = UseInteractiveLevelOfDetail;
         workspaceDocumentManager.AddAndSelect(tab, selected => SelectedWorkspaceTab = selected);
     }
 

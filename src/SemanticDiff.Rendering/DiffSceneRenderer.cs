@@ -120,12 +120,13 @@ public sealed class DiffSceneRenderer
         SKSize canvasSize,
         DiffCanvasScene scene,
         DiffCanvasColorTheme colorTheme = DiffCanvasColorTheme.Dark,
-        DiffSceneRenderMode renderMode = DiffSceneRenderMode.Normal)
+        DiffSceneRenderMode renderMode = DiffSceneRenderMode.Normal,
+        bool useLevelOfDetail = true)
     {
         var palette = colorTheme == DiffCanvasColorTheme.Light ? LightPalette : DarkPalette;
         canvas.Clear(palette.Background);
         DrawGrid(canvas, canvasSize, scene.Camera, palette);
-        var useInteractiveRendering = renderMode == DiffSceneRenderMode.Interactive;
+        var useInteractiveRendering = useLevelOfDetail && renderMode == DiffSceneRenderMode.Interactive;
         var cache = GetRenderCache(scene);
         using var textResources = new RenderTextResources(palette);
 
@@ -175,7 +176,7 @@ public sealed class DiffSceneRenderer
         foreach (var node in visibleNodes)
         {
             var documentCache = cache.Documents.GetValueOrDefault(node.Document.Id) ?? DocumentRenderCache.Create(node.Document, []);
-            var bodyDetail = ResolveBodyDetail(node, scene.Camera.Scale, visibleNodes.Length, useInteractiveRendering);
+            var bodyDetail = ResolveBodyDetail(node, scene.Camera.Scale, visibleNodes.Length, useInteractiveRendering, useLevelOfDetail);
             if (bodyDetail == NodeBodyDetail.Full)
             {
                 detailedNodeCount++;
@@ -398,8 +399,13 @@ public sealed class DiffSceneRenderer
         DrawResizeHandles(canvas, node, palette, cameraScale);
     }
 
-    private static NodeBodyDetail ResolveBodyDetail(DiffNode node, double cameraScale, int visibleNodeCount, bool useInteractiveRendering)
+    private static NodeBodyDetail ResolveBodyDetail(DiffNode node, double cameraScale, int visibleNodeCount, bool useInteractiveRendering, bool useLevelOfDetail)
     {
+        if (!useLevelOfDetail)
+        {
+            return NodeBodyDetail.Full;
+        }
+
         if (useInteractiveRendering)
         {
             return NodeBodyDetail.Overview;
@@ -511,54 +517,6 @@ public sealed class DiffSceneRenderer
         }
 
         return Math.Max(titleRect.Left + TitlePathLeftInset, metadataLeft - TitleMetadataGap);
-    }
-
-    internal static string MiddleEllipsizeText(string text, float maxWidth, SKFont font, SKPaint paint)
-    {
-        if (string.IsNullOrEmpty(text) || maxWidth <= 0)
-        {
-            return string.Empty;
-        }
-
-        if (font.MeasureText(text, paint) <= maxWidth)
-        {
-            return text;
-        }
-
-        if (font.MeasureText(TextEllipsis, paint) > maxWidth)
-        {
-            return string.Empty;
-        }
-
-        var best = TextEllipsis;
-        var low = 0;
-        var high = text.Length - 1;
-        while (low <= high)
-        {
-            var keepCount = low + (high - low) / 2;
-            var prefixCount = keepCount / 2;
-            var suffixCount = keepCount - prefixCount;
-            var candidate = BuildMiddleEllipsizedText(text, prefixCount, suffixCount);
-            if (font.MeasureText(candidate, paint) <= maxWidth)
-            {
-                best = candidate;
-                low = keepCount + 1;
-            }
-            else
-            {
-                high = keepCount - 1;
-            }
-        }
-
-        return best;
-    }
-
-    private static string BuildMiddleEllipsizedText(string text, int prefixCount, int suffixCount)
-    {
-        return string.Concat(
-            text.AsSpan(0, prefixCount),
-            TextEllipsis,
-            text.AsSpan(text.Length - suffixCount, suffixCount));
     }
 
     private static void DrawFontControls(SKCanvas canvas, CameraState camera, IReadOnlyList<DiffNode> nodes, RendererPalette palette, RenderTextResources textResources, SKSize canvasSize)

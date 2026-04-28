@@ -120,6 +120,20 @@ public sealed partial class MainViewModel
         AddDiagnostic("Info", isEnabled ? "Semantic edges shown" : "Semantic edges hidden");
     }
 
+    public async Task SetInteractiveLevelOfDetailAsync(bool isEnabled)
+    {
+        if (appState.UseInteractiveLevelOfDetail == isEnabled)
+        {
+            ApplyAppStateToPresentation();
+            return;
+        }
+
+        appState = appState with { UseInteractiveLevelOfDetail = isEnabled };
+        ApplyAppStateToPresentation();
+        await SaveOptionsAsync(CancellationToken.None);
+        AddDiagnostic("Info", isEnabled ? "Canvas LOD optimization enabled" : "Canvas LOD optimization disabled");
+    }
+
     public async Task SetSemanticAnalysisModeAsync(SemanticAnalysisMode analysisMode)
     {
         if (appState.SemanticAnalysisMode == analysisMode)

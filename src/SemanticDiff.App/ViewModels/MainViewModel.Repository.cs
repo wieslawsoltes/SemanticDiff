@@ -549,6 +549,7 @@ public sealed partial class MainViewModel
             ReviewRequestState = appState.ReviewRequestState,
             SelectedBranchRef = appState.SelectedBranchRef,
             SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
+            UseInteractiveLevelOfDetail = UseInteractiveLevelOfDetail,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth),
             LayoutNodes = currentDocumentsAreRepositoryDocuments ? layoutNodes : appState.LayoutNodes
         };
@@ -576,6 +577,7 @@ public sealed partial class MainViewModel
             ReviewRequestState = appState.ReviewRequestState,
             SelectedBranchRef = appState.SelectedBranchRef,
             SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
+            UseInteractiveLevelOfDetail = UseInteractiveLevelOfDetail,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth)
         };
         await appStateStore.SaveAsync(appState, cancellationToken);
@@ -679,6 +681,7 @@ public sealed partial class MainViewModel
         ThemeToggleText = IsLightThemeEnabled ? "Light" : "Dark";
         IsSemanticEdgesEnabled = appState.ShowSemanticEdges;
         SemanticEdgesText = appState.ShowSemanticEdges ? "Edges on" : "Edges off";
+        UseInteractiveLevelOfDetail = appState.UseInteractiveLevelOfDetail;
         SemanticAnalysisModeText = FormatSemanticAnalysisMode(appState.SemanticAnalysisMode);
         LayoutModeText = FormatLayoutMode(appState.LayoutMode);
         SelectedLayoutModeOption = LayoutModeOptions.FirstOrDefault(option => option.Mode == appState.LayoutMode) ?? LayoutModeOptions[1];
