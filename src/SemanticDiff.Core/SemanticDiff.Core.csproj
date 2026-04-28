@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Description>Core diff, Git, annotation, semantic, and visualization data contracts for SemanticDiff.</Description>
+    <PackageTags>$(PackageTags);contracts;models</PackageTags>
   </PropertyGroup>
 
 </Project>

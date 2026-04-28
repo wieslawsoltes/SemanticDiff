@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Description>Graph layout services for SemanticDiff file, symbol, semantic map, blame, and workspace visualizations.</Description>
+    <PackageTags>$(PackageTags);graph-layout;msagl;visualization</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Description>UI-framework-free SemanticDiff workbench orchestration services for file diffs, references, reviews, symbols, history, blame, and workspace tabs.</Description>
+    <PackageTags>$(PackageTags);workbench;orchestration;reviews;symbols;history</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Description>Git command, reference discovery, branch, pull request, merge request, review, history, and blame integration services for SemanticDiff.</Description>
+    <PackageTags>$(PackageTags);git;github;gitlab;reviews;blame</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

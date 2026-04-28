@@ -53,13 +53,16 @@ var symbols = new SymbolBrowserModel();
 symbols.SetItems(new SemanticNavigationIndex().Build(semanticGraph, result.Documents));
 ```
 
-## Packaging Decision
+## NuGet Packaging
 
-Do not publish this project as a NuGet package yet. It is ready for in-repo reuse and unit testing, but the API should settle through one more internal consumer or sample before package publication.
+This project is packable as `SemanticDiff.Workbench`. Common NuGet metadata, repository metadata, license expression, symbols, and the default version are inherited from the repository `Directory.Build.props`.
 
-| Area | Before Packing |
+| Metadata | Value |
 | --- | --- |
-| Workspace load pipeline | Decide whether `RepositoryDiffLoader` accepts injected services by interface everywhere. |
-| Generic browser models | Keep generic type parameters or introduce stable adapter interfaces. |
-| Scene builders | Freeze graph-scene DTO contracts shared with `SemanticDiff.Rendering`. |
-| Versioning | Add package metadata, API review notes, and a compatibility policy. |
+| Package | `SemanticDiff.Workbench` |
+| Version | `0.1.0-preview.1` by default, overridable with `VersionPrefix` and `VersionSuffix` |
+| Readme | This `README.md` is included at the package root |
+| Symbols | `snupkg` symbol package generation is enabled |
+| License | MIT license expression |
+
+Use `dotnet pack src/SemanticDiff.Workbench/SemanticDiff.Workbench.csproj -c Release` to create the package.

@@ -58,13 +58,16 @@ Current direct dependencies:
 | `SemanticDiff.Rendering` | Canvas scene model and renderer contract. |
 | `SkiaSharp.Views.Uno.WinUI` | `SKXamlCanvas` host used by graph and text controls. |
 
-## Packaging Decision
+## NuGet Packaging
 
-Do not publish this project as a NuGet package yet. The controls are reusable inside this repository and are validated by the standalone sample host, but the public API is still stabilizing around:
+This project is packable as `SemanticDiff.Controls.Uno`. Common NuGet metadata, repository metadata, license expression, symbols, and the default version are inherited from the repository `Directory.Build.props`.
 
-| Area | Before Packing |
+| Metadata | Value |
 | --- | --- |
-| Control commands/events | Finalize command/event names for node, annotation, and line-context actions. |
-| Text viewer model | Decide whether `DiffLine` remains the public input or gets a smaller rendering DTO. |
-| Theme resources | Freeze resource keys or add compatibility aliases. |
-| Target frameworks | Decide whether to keep only `net10.0-desktop` or add mobile/browser targets. |
+| Package | `SemanticDiff.Controls.Uno` |
+| Version | `0.1.0-preview.1` by default, overridable with `VersionPrefix` and `VersionSuffix` |
+| Readme | This `README.md` is included at the package root |
+| Symbols | `snupkg` symbol package generation is enabled |
+| License | MIT license expression |
+
+Use `dotnet pack src/SemanticDiff.Controls.Uno/SemanticDiff.Controls.Uno.csproj -c Release` to create the package. The app and standalone sample remain non-packable.

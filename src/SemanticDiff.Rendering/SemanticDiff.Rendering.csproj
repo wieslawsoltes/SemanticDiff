@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Description>Skia-based SemanticDiff scene models, graph rendering, annotations, and export services.</Description>
+    <PackageTags>$(PackageTags);skia;rendering;svg;png;pdf</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

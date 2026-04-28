@@ -3,9 +3,12 @@
   <PropertyGroup>
     <TargetFrameworks>net10.0-desktop</TargetFrameworks>
     <OutputType>Library</OutputType>
+    <IsPackable>true</IsPackable>
     <UnoSingleProject>true</UnoSingleProject>
     <UnoDisableHotDesign>true</UnoDisableHotDesign>
     <UnoDisableMCPSupport>true</UnoDisableMCPSupport>
+    <Description>Reusable Uno controls for SemanticDiff graph, diff, file, annotation, and review visualization surfaces.</Description>
+    <PackageTags>$(PackageTags);uno;winui;controls;skia;diff-viewer</PackageTags>
     <UnoFeatures>
       SkiaRenderer;
     </UnoFeatures>

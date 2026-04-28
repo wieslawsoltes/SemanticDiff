@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Description>Language-neutral semantic graph, symbol navigation, and relationship models for SemanticDiff.</Description>
+    <PackageTags>$(PackageTags);semantics;symbols;code-navigation</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
