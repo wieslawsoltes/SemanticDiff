@@ -262,6 +262,8 @@ Notes:
 | Project | Responsibility |
 | --- | --- |
 | `SemanticDiff.App` | Uno desktop app, XAML views, view models, keyboard accelerators, app composition. |
+| `SemanticDiff.Controls.Uno` | Reusable Uno controls, resource dictionaries, graph canvas, code viewer, and UI primitives consumable without `SemanticDiff.App`. |
+| `SemanticDiff.Workbench` | UI-framework-free builders/controllers for file diff tabs, symbol graphs, blame graphs, history lanes, reference browsing, review workflow state, repository loading, and workspace caching. |
 | `SemanticDiff.Core` | Shared models, app state, service contracts, annotations. |
 | `SemanticDiff.Git` | Git command integration, diff loading, branch/PR/MR discovery, blame, review discussions. |
 | `SemanticDiff.Diff` | Diff document construction, tokenization, language registry, sample documents. |
@@ -269,8 +271,14 @@ Notes:
 | `SemanticDiff.Semantics.Roslyn` | C# semantic/syntax analysis. |
 | `SemanticDiff.Semantics.Xaml` | XAML semantic analysis. |
 | `SemanticDiff.Layout` | Graph layout, grouping, and layout strategies. |
-| `SemanticDiff.Rendering` | Skia scene model and renderer. |
+| `SemanticDiff.Rendering` | Skia scene model, renderer, and SVG/PNG/PDF export support. |
 | `SemanticDiff.Tests` | Unit tests for core behavior, Git services, rendering, layout, and tokenization. |
+
+Reusable package notes:
+
+- `src/SemanticDiff.Controls.Uno/README.md` documents reusable Uno controls, resource dictionaries, and package readiness.
+- `src/SemanticDiff.Workbench/README.md` documents UI-framework-free workbench services and package readiness.
+- `samples/SemanticDiff.Controls.Uno.Sample` is a standalone Uno host that references `SemanticDiff.Controls.Uno` without referencing `SemanticDiff.App`.
 
 ## Technology Stack
 
@@ -303,6 +311,12 @@ dotnet build src/SemanticDiff.App/SemanticDiff.App.csproj
 
 ```bash
 dotnet run --project src/SemanticDiff.App/SemanticDiff.App.csproj -f net10.0-desktop
+```
+
+To run the standalone reusable controls sample:
+
+```bash
+dotnet run --project samples/SemanticDiff.Controls.Uno.Sample/SemanticDiff.Controls.Uno.Sample.csproj
 ```
 
 ```bash
