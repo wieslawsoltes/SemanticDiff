@@ -24,4 +24,15 @@
     <PackageReference Include="SkiaSharp.Views.Uno.WinUI" />
   </ItemGroup>
 
+  <!-- Keep generated Uno helper types out of the public API docs without changing normal package builds. -->
+  <Target Name="RemoveDocumentationOnlyAnalyzers"
+          BeforeTargets="CoreCompile"
+          Condition="'$(SemanticDiffDocumentationBuild)' == 'true'">
+    <ItemGroup>
+      <Analyzer Remove="@(Analyzer)"
+                Condition="$([System.String]::Copy('%(Analyzer.Identity)').ToLowerInvariant().Contains('uno.resizetizer'))
+                           Or $([System.String]::Copy('%(Analyzer.Identity)').ToLowerInvariant().Contains('uno.ui.sourcegenerators'))" />
+    </ItemGroup>
+  </Target>
+
 </Project>
