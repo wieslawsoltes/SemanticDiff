@@ -350,11 +350,27 @@ dotnet run --project samples/SemanticDiff.Controls.Uno.Sample/SemanticDiff.Contr
 dotnet test tests/SemanticDiff.Tests/SemanticDiff.Tests.csproj --no-restore
 ```
 
-To publish the desktop app folder:
+To publish for the current desktop host:
 
 ```bash
 scripts/package-desktop.sh
 ```
+
+To publish a specific unsigned app artifact locally, use the reusable publish script. This mirrors CI output and follows Uno's desktop publish model: folder packages for Linux/Windows and an unsigned `.app` bundle for macOS. See the [Uno publishing overview](https://platform.uno/docs/articles/uno-publishing-overview.html) for platform-specific signing and store-publishing details.
+
+```bash
+scripts/publish-app.sh --rid osx-arm64 --format app
+```
+
+```bash
+scripts/publish-app.sh --rid linux-x64 --format folder
+```
+
+```bash
+scripts/publish-app.sh --rid win-x64 --format folder
+```
+
+CI publishes unsigned app archives for `linux-x64`, `win-x64`, and `osx-arm64`. Release builds attach those archives to the GitHub release together with the NuGet packages. Signing is intentionally not configured yet.
 
 ## Typical Workflow
 
