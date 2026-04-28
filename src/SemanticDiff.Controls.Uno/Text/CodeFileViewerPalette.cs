@@ -41,7 +41,14 @@ internal sealed record CodeFileViewerPalette(
     SKColor Invalid,
     SKColor ScrollbarTrack,
     SKColor ScrollbarThumb,
-    SKColor ScrollbarThumbActive)
+    SKColor ScrollbarThumbActive,
+    SKColor MinimapBackground,
+    SKColor MinimapBorder,
+    SKColor MinimapToken,
+    SKColor MinimapMutedToken,
+    SKColor MinimapViewport,
+    SKColor MinimapViewportBorder,
+    SKColor MinimapSelection)
 {
     public static CodeFileViewerPalette Create(bool isLight) => isLight
         ? new CodeFileViewerPalette(
@@ -83,7 +90,14 @@ internal sealed record CodeFileViewerPalette(
             new SKColor(203, 36, 49),
             new SKColor(229, 235, 242),
             new SKColor(150, 164, 181),
-            new SKColor(100, 116, 135))
+            new SKColor(100, 116, 135),
+            new SKColor(232, 238, 246, 220),
+            new SKColor(190, 202, 216),
+            new SKColor(97, 111, 128, 150),
+            new SKColor(153, 166, 182, 100),
+            new SKColor(0, 122, 204, 42),
+            new SKColor(0, 122, 204, 130),
+            new SKColor(0, 122, 204, 76))
         : new CodeFileViewerPalette(
             new SKColor(12, 17, 24),
             new SKColor(15, 21, 29),
@@ -123,5 +137,12 @@ internal sealed record CodeFileViewerPalette(
             new SKColor(255, 123, 114),
             new SKColor(22, 30, 40),
             new SKColor(82, 96, 114),
-            new SKColor(122, 140, 162));
+            new SKColor(122, 140, 162),
+            new SKColor(18, 25, 35, 230),
+            new SKColor(52, 66, 84),
+            new SKColor(130, 146, 166, 150),
+            new SKColor(88, 101, 118, 100),
+            new SKColor(121, 192, 255, 42),
+            new SKColor(121, 192, 255, 150),
+            new SKColor(121, 192, 255, 76));
 }

@@ -20,6 +20,17 @@ public sealed class CodeFileViewerControl : Grid
     private const float TextPadding = 10;
     private const float ScrollbarWidth = 8;
     private const float ScrollbarMargin = 4;
+    private const float MinimapWidth = 112;
+    private const float MinimapMargin = 8;
+    private const float MinimapPadding = 4;
+    private const float MinimapChangeLaneWidth = 4;
+    private const float MinimapViewportMinHeight = 28;
+    private const float MinimapMinimumHostWidth = 560;
+    private const float MinimapMinimumHostHeight = 180;
+    private const int MinimapMinimumRows = 24;
+    private const int MinimapDetailedRowLimit = 1200;
+    private const int MinimapMaxTokenSegmentsPerRow = 18;
+    private const int MinimapMaxVisualColumns = 220;
     private const double DefaultCodeFontSize = 15;
     private const double MinimumCodeFontSize = 10;
     private const double MaximumCodeFontSize = 28;
@@ -78,7 +89,9 @@ public sealed class CodeFileViewerControl : Grid
     private CodeTextPosition? selectionActive;
     private bool visibleRowsDirty = true;
     private bool isDraggingScrollbar;
+    private bool isDraggingMinimap;
     private bool isSelectingText;
+    private double minimapGrabOffsetY;
 
     public CodeFileViewerControl()
     {
@@ -183,9 +196,13 @@ public sealed class CodeFileViewerControl : Grid
         {
             control.visibleRowsDirty = true;
             control.hoveredFoldStartLine = null;
+            control.isDraggingScrollbar = false;
+            control.isDraggingMinimap = false;
+            control.activePointerId = null;
             control.ClearSelection();
             control.TrimCollapsedFoldState();
             control.ClampScrollOffset();
+            control.ReleasePointerCaptures();
             control.RequestDeferredRender();
         }
     }
@@ -237,6 +254,7 @@ public sealed class CodeFileViewerControl : Grid
         var charWidth = Math.Max(1, font.MeasureText("M", defaultPaint));
         var lines = GetLines();
         var gutterWidth = CalculateGutterWidth(charWidth, lines);
+        var contentRight = GetContentRight(width, height);
         DrawGutter(canvasSurface, palette, gutterWidth, height);
 
         var firstRow = Math.Max(0, (int)Math.Floor((scrollOffsetY - TopPadding) / LineHeight));
@@ -248,7 +266,7 @@ public sealed class CodeFileViewerControl : Grid
             return;
         }
 
-        var textClip = SKRect.Create(gutterWidth, 0, Math.Max(0, width - gutterWidth - ScrollbarWidth - ScrollbarMargin), height);
+        var textClip = SKRect.Create(gutterWidth, 0, Math.Max(0, contentRight - gutterWidth), height);
         for (var rowIndex = firstRow; rowIndex <= lastRow; rowIndex++)
         {
             var row = visibleRows[rowIndex];
@@ -260,7 +278,7 @@ public sealed class CodeFileViewerControl : Grid
             var y = TopPadding + rowIndex * LineHeight - (float)scrollOffsetY;
             var line = lines[row.LineIndex];
             var annotationKind = ShowDiffAnnotations ? line.Kind : DiffLineKind.Context;
-            DrawLineBackground(canvasSurface, palette, gutterWidth, width, y, LineHeight, annotationKind, row.CollapsedRegion is not null);
+            DrawLineBackground(canvasSurface, palette, gutterWidth, contentRight, y, LineHeight, annotationKind, row.CollapsedRegion is not null);
             if (IsDiffMode)
             {
                 DrawDiffGutter(canvasSurface, palette, line, ShowDiffAnnotations, gutterWidth, y, LineHeight, BaselineOffset, lineNumberPaint, font);
@@ -274,12 +292,20 @@ public sealed class CodeFileViewerControl : Grid
             using (new SKAutoCanvasRestore(canvasSurface, doSave: true))
             {
                 canvasSurface.ClipRect(textClip);
-                DrawSelection(canvasSurface, palette, rowIndex, line, gutterWidth + TextPadding, y, charWidth, width);
+                DrawSelection(canvasSurface, palette, rowIndex, line, gutterWidth + TextPadding, y, charWidth, contentRight);
                 DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, gutterWidth + TextPadding, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, palette);
             }
         }
 
-        DrawScrollbar(canvasSurface, palette, width, height);
+        if (ShouldShowMinimap(width, height))
+        {
+            DrawMinimap(canvasSurface, palette, lines, width, height);
+        }
+        else
+        {
+            DrawScrollbar(canvasSurface, palette, width, height);
+        }
+
         canvasSurface.Restore();
     }
 
@@ -292,6 +318,23 @@ public sealed class CodeFileViewerControl : Grid
         }
 
         var point = ToCanvasPoint(pointerPoint.Position);
+        if (TryHitTestMinimap(point, out var minimapBounds, out var minimapViewport))
+        {
+            isDraggingMinimap = true;
+            activePointerId = args.Pointer.PointerId;
+            minimapGrabOffsetY = minimapViewport.Contains((float)point.X, (float)point.Y)
+                ? point.Y - minimapViewport.Top
+                : minimapViewport.Height * 0.5;
+            if (!minimapViewport.Contains((float)point.X, (float)point.Y))
+            {
+                DragMinimap(point.Y, minimapBounds);
+            }
+
+            CapturePointer(args.Pointer);
+            args.Handled = true;
+            return;
+        }
+
         if (TryHitTestScrollbar(point, out var thumb))
         {
             isDraggingScrollbar = true;
@@ -339,6 +382,13 @@ public sealed class CodeFileViewerControl : Grid
             return;
         }
 
+        if (isDraggingMinimap && activePointerId == args.Pointer.PointerId)
+        {
+            DragMinimap(point.Y);
+            args.Handled = true;
+            return;
+        }
+
         if (isSelectingText && activePointerId == args.Pointer.PointerId)
         {
             if (TryHitTestText(point, out var position))
@@ -364,6 +414,7 @@ public sealed class CodeFileViewerControl : Grid
         if (activePointerId == args.Pointer.PointerId)
         {
             isDraggingScrollbar = false;
+            isDraggingMinimap = false;
             isSelectingText = false;
             activePointerId = null;
             ReleasePointerCaptures();
@@ -411,6 +462,11 @@ public sealed class CodeFileViewerControl : Grid
     {
         var position = args.GetPosition(this);
         var point = ToCanvasPoint(position);
+        if (IsPointInRightOverlay(point))
+        {
+            return;
+        }
+
         if (!TryHitTestLine(point, out var line, out var rowIndex, out var column))
         {
             return;
@@ -450,6 +506,36 @@ public sealed class CodeFileViewerControl : Grid
         RequestRender();
     }
 
+    private void DragMinimap(double pointerY)
+    {
+        var size = GetCanvasSize();
+        var bounds = GetMinimapBounds((float)size.Width, (float)size.Height);
+        DragMinimap(pointerY, bounds);
+    }
+
+    private void DragMinimap(double pointerY, SKRect minimapBounds)
+    {
+        EnsureVisibleRows();
+        var size = GetCanvasSize();
+        var contentHeight = GetContentHeight();
+        if (visibleRows.Length == 0 || contentHeight <= size.Height)
+        {
+            scrollOffsetY = 0;
+            RequestRender();
+            return;
+        }
+
+        var inner = GetMinimapInnerBounds(minimapBounds);
+        var viewport = GetMinimapViewport(minimapBounds, size.Height);
+        var availableTop = inner.Top;
+        var availableBottom = Math.Max(availableTop, inner.Bottom - viewport.Height);
+        var thumbTop = Math.Clamp(pointerY - minimapGrabOffsetY, availableTop, availableBottom);
+        var ratio = (thumbTop - inner.Top) / Math.Max(1, inner.Height - viewport.Height);
+        scrollOffsetY = ratio * Math.Max(0, contentHeight - size.Height);
+        ClampScrollOffset();
+        RequestRender();
+    }
+
     private void DrawGutter(SKCanvas canvasSurface, CodeFileViewerPalette palette, float gutterWidth, float height)
     {
         using var gutterPaint = new SKPaint { Color = palette.GutterBackground, Style = SKPaintStyle.Fill };
@@ -458,7 +544,7 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawLine(gutterWidth - 0.5f, 0, gutterWidth - 0.5f, height, borderPaint);
     }
 
-    private static void DrawLineBackground(SKCanvas canvasSurface, CodeFileViewerPalette palette, float gutterWidth, float width, float y, float lineHeight, DiffLineKind kind, bool isCollapsed)
+    private static void DrawLineBackground(SKCanvas canvasSurface, CodeFileViewerPalette palette, float gutterWidth, float contentRight, float y, float lineHeight, DiffLineKind kind, bool isCollapsed)
     {
         var color = kind switch
         {
@@ -478,10 +564,10 @@ public sealed class CodeFileViewerControl : Grid
         }
 
         using var paint = new SKPaint { Color = color, Style = SKPaintStyle.Fill, IsAntialias = true };
-        canvasSurface.DrawRect(SKRect.Create(gutterWidth, y, Math.Max(0, width - gutterWidth - ScrollbarWidth - ScrollbarMargin), lineHeight), paint);
+        canvasSurface.DrawRect(SKRect.Create(gutterWidth, y, Math.Max(0, contentRight - gutterWidth), lineHeight), paint);
     }
 
-    private void DrawSelection(SKCanvas canvasSurface, CodeFileViewerPalette palette, int rowIndex, DiffLine line, float textX, float y, float charWidth, float width)
+    private void DrawSelection(SKCanvas canvasSurface, CodeFileViewerPalette palette, int rowIndex, DiffLine line, float textX, float y, float charWidth, float contentRight)
     {
         if (!TryGetSelectionRange(out var start, out var end) ||
             rowIndex < start.RowIndex ||
@@ -499,7 +585,7 @@ public sealed class CodeFileViewerControl : Grid
         var endVisualColumn = CodeTextLayout.GetVisualColumn(line.Text, endColumn);
         var selectionLeft = textX + startVisualColumn * charWidth;
         var selectionRight = textX + Math.Max(startVisualColumn, endVisualColumn) * charWidth;
-        var maxRight = Math.Max(selectionLeft + 1, width - ScrollbarWidth - ScrollbarMargin);
+        var maxRight = Math.Max(selectionLeft + 1, contentRight);
 
         using var selectionPaint = new SKPaint { Color = palette.SelectionBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
         if (selectionRight <= selectionLeft)
@@ -696,6 +782,257 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawRoundRect(thumb, ScrollbarWidth / 2, ScrollbarWidth / 2, thumbPaint);
     }
 
+    private void DrawMinimap(SKCanvas canvasSurface, CodeFileViewerPalette palette, IReadOnlyList<DiffLine> lines, float width, float height)
+    {
+        EnsureVisibleRows();
+        if (visibleRows.Length == 0)
+        {
+            return;
+        }
+
+        var bounds = GetMinimapBounds(width, height);
+        var inner = GetMinimapInnerBounds(bounds);
+        if (inner.Width <= 0 || inner.Height <= 0)
+        {
+            return;
+        }
+
+        using var backgroundPaint = new SKPaint { Color = palette.MinimapBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
+        using var borderPaint = new SKPaint { Color = palette.MinimapBorder, Style = SKPaintStyle.Stroke, StrokeWidth = 1, IsAntialias = true };
+        canvasSurface.DrawRoundRect(bounds, 4, 4, backgroundPaint);
+        canvasSurface.DrawRoundRect(bounds, 4, 4, borderPaint);
+
+        using (new SKAutoCanvasRestore(canvasSurface, doSave: true))
+        {
+            canvasSurface.ClipRect(inner);
+            using var minimapPaint = new SKPaint { Style = SKPaintStyle.Fill, IsAntialias = false };
+            // Detailed rows preserve token colors for normal files; aggregation keeps very large files O(viewport pixels).
+            if (visibleRows.Length <= MinimapDetailedRowLimit)
+            {
+                DrawDetailedMinimapRows(canvasSurface, palette, lines, inner, minimapPaint);
+            }
+            else
+            {
+                DrawAggregatedMinimapRows(canvasSurface, palette, lines, inner, minimapPaint);
+            }
+
+            DrawMinimapSelection(canvasSurface, palette, inner, minimapPaint);
+        }
+
+        var viewport = GetMinimapViewport(bounds, height);
+        if (!viewport.IsEmpty)
+        {
+            using var viewportPaint = new SKPaint { Color = palette.MinimapViewport, Style = SKPaintStyle.Fill, IsAntialias = true };
+            using var viewportBorderPaint = new SKPaint
+            {
+                Color = isDraggingMinimap ? palette.Accent : palette.MinimapViewportBorder,
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = isDraggingMinimap ? 1.5f : 1,
+                IsAntialias = true
+            };
+            canvasSurface.DrawRoundRect(viewport, 3, 3, viewportPaint);
+            canvasSurface.DrawRoundRect(viewport, 3, 3, viewportBorderPaint);
+        }
+    }
+
+    private void DrawDetailedMinimapRows(
+        SKCanvas canvasSurface,
+        CodeFileViewerPalette palette,
+        IReadOnlyList<DiffLine> lines,
+        SKRect inner,
+        SKPaint paint)
+    {
+        var rowScale = inner.Height / Math.Max(1, visibleRows.Length);
+        var rowHeight = Math.Clamp(rowScale, 1, 3);
+        for (var rowIndex = 0; rowIndex < visibleRows.Length; rowIndex++)
+        {
+            var row = visibleRows[rowIndex];
+            if (row.LineIndex < 0 || row.LineIndex >= lines.Count)
+            {
+                continue;
+            }
+
+            var y = inner.Top + rowIndex * rowScale;
+            if (y > inner.Bottom)
+            {
+                break;
+            }
+
+            DrawMinimapLine(canvasSurface, palette, lines[row.LineIndex], row.CollapsedRegion, inner, y, rowHeight, paint);
+        }
+    }
+
+    private void DrawAggregatedMinimapRows(
+        SKCanvas canvasSurface,
+        CodeFileViewerPalette palette,
+        IReadOnlyList<DiffLine> lines,
+        SKRect inner,
+        SKPaint paint)
+    {
+        var bucketCount = Math.Max(1, (int)Math.Ceiling(inner.Height));
+        var rowsPerBucket = visibleRows.Length / (double)bucketCount;
+        for (var bucket = 0; bucket < bucketCount; bucket++)
+        {
+            var start = Math.Clamp((int)Math.Floor(bucket * rowsPerBucket), 0, visibleRows.Length - 1);
+            var end = Math.Clamp((int)Math.Ceiling((bucket + 1) * rowsPerBucket), start + 1, visibleRows.Length);
+            var dominantKind = DiffLineKind.Context;
+            var hasText = false;
+            var isCollapsed = false;
+
+            for (var index = start; index < end; index++)
+            {
+                var row = visibleRows[index];
+                if (row.LineIndex < 0 || row.LineIndex >= lines.Count)
+                {
+                    continue;
+                }
+
+                var line = lines[row.LineIndex];
+                hasText |= !string.IsNullOrWhiteSpace(line.Text);
+                isCollapsed |= row.CollapsedRegion is not null;
+                if (GetMinimapKindPriority(line.Kind) < GetMinimapKindPriority(dominantKind))
+                {
+                    dominantKind = line.Kind;
+                }
+            }
+
+            var y = inner.Top + bucket;
+            var kind = ShowDiffAnnotations ? dominantKind : DiffLineKind.Context;
+            if (kind != DiffLineKind.Context)
+            {
+                paint.Color = WithAlpha(CodeTextStyleMap.LineAccentColor(kind, palette), 190);
+                canvasSurface.DrawRect(SKRect.Create(inner.Left, y, MinimapChangeLaneWidth, 1), paint);
+                paint.Color = GetMinimapLineBackground(kind, palette);
+                canvasSurface.DrawRect(SKRect.Create(inner.Left + MinimapChangeLaneWidth + 2, y, inner.Width - MinimapChangeLaneWidth - 2, 1), paint);
+            }
+            else if (hasText)
+            {
+                paint.Color = isCollapsed ? WithAlpha(palette.FoldText, 120) : palette.MinimapMutedToken;
+                canvasSurface.DrawRect(SKRect.Create(inner.Left + MinimapChangeLaneWidth + 4, y, inner.Width * 0.62f, 1), paint);
+            }
+        }
+    }
+
+    private static int GetMinimapKindPriority(DiffLineKind kind) => kind switch
+    {
+        DiffLineKind.Conflict => 0,
+        DiffLineKind.Added or DiffLineKind.Deleted or DiffLineKind.Modified or DiffLineKind.Moved => 1,
+        DiffLineKind.Metadata => 2,
+        DiffLineKind.Ignored => 3,
+        DiffLineKind.Imaginary => 4,
+        _ => 10
+    };
+
+    private void DrawMinimapLine(
+        SKCanvas canvasSurface,
+        CodeFileViewerPalette palette,
+        DiffLine line,
+        CodeFoldRegion? collapsedRegion,
+        SKRect inner,
+        float y,
+        float rowHeight,
+        SKPaint paint)
+    {
+        var kind = ShowDiffAnnotations ? line.Kind : DiffLineKind.Context;
+        if (kind != DiffLineKind.Context)
+        {
+            paint.Color = GetMinimapLineBackground(kind, palette);
+            canvasSurface.DrawRect(SKRect.Create(inner.Left, y, inner.Width, rowHeight), paint);
+            paint.Color = WithAlpha(CodeTextStyleMap.LineAccentColor(kind, palette), 220);
+            canvasSurface.DrawRect(SKRect.Create(inner.Left, y, MinimapChangeLaneWidth, rowHeight), paint);
+        }
+        else if (collapsedRegion is not null)
+        {
+            paint.Color = WithAlpha(palette.FoldText, 95);
+            canvasSurface.DrawRect(SKRect.Create(inner.Left, y, inner.Width, rowHeight), paint);
+        }
+
+        if (string.IsNullOrWhiteSpace(line.Text))
+        {
+            return;
+        }
+
+        var textLeft = inner.Left + MinimapChangeLaneWidth + 5;
+        var textRight = inner.Right - 2;
+        var textWidth = Math.Max(0, textRight - textLeft);
+        if (textWidth <= 0)
+        {
+            return;
+        }
+
+        var columnScale = textWidth / MinimapMaxVisualColumns;
+        var tokenHeight = Math.Max(1, Math.Min(rowHeight, 2));
+        if (line.Tokens.IsDefaultOrEmpty)
+        {
+            var visualColumns = Math.Min(MinimapMaxVisualColumns, CodeTextLayout.GetVisualColumn(line.Text, line.Text.Length));
+            paint.Color = palette.MinimapToken;
+            canvasSurface.DrawRect(SKRect.Create(textLeft, y, Math.Max(1, visualColumns * columnScale), tokenHeight), paint);
+            return;
+        }
+
+        var drawnSegments = 0;
+        foreach (var token in line.Tokens)
+        {
+            if (drawnSegments >= MinimapMaxTokenSegmentsPerRow)
+            {
+                break;
+            }
+
+            var startColumn = Math.Clamp(token.StartColumn, 0, line.Text.Length);
+            var endColumn = Math.Clamp(token.StartColumn + token.Length, startColumn, line.Text.Length);
+            if (endColumn <= startColumn)
+            {
+                continue;
+            }
+
+            var startVisual = Math.Min(MinimapMaxVisualColumns, CodeTextLayout.GetVisualColumn(line.Text, startColumn));
+            var endVisual = Math.Min(MinimapMaxVisualColumns, CodeTextLayout.GetVisualColumn(line.Text, endColumn));
+            var rectLeft = textLeft + startVisual * columnScale;
+            var rectWidth = Math.Max(1, (endVisual - startVisual) * columnScale);
+            if (rectLeft >= textRight)
+            {
+                break;
+            }
+
+            paint.Color = WithAlpha(CodeTextStyleMap.TokenColor(token, palette), 170);
+            canvasSurface.DrawRect(SKRect.Create(rectLeft, y, Math.Min(rectWidth, textRight - rectLeft), tokenHeight), paint);
+            drawnSegments++;
+        }
+
+        if (drawnSegments == 0)
+        {
+            paint.Color = palette.MinimapToken;
+            canvasSurface.DrawRect(SKRect.Create(textLeft, y, Math.Min(textWidth, 24), tokenHeight), paint);
+        }
+    }
+
+    private void DrawMinimapSelection(SKCanvas canvasSurface, CodeFileViewerPalette palette, SKRect inner, SKPaint paint)
+    {
+        if (!TryGetSelectionRange(out var start, out var end) || visibleRows.Length == 0)
+        {
+            return;
+        }
+
+        var startRatio = Math.Clamp(start.RowIndex / (float)visibleRows.Length, 0, 1);
+        var endRatio = Math.Clamp((end.RowIndex + 1) / (float)visibleRows.Length, 0, 1);
+        var selectionTop = inner.Top + inner.Height * startRatio;
+        var selectionBottom = inner.Top + inner.Height * Math.Max(startRatio, endRatio);
+        paint.Color = palette.MinimapSelection;
+        canvasSurface.DrawRect(SKRect.Create(inner.Left, selectionTop, inner.Width, Math.Max(2, selectionBottom - selectionTop)), paint);
+    }
+
+    private static SKColor GetMinimapLineBackground(DiffLineKind kind, CodeFileViewerPalette palette) => kind switch
+    {
+        DiffLineKind.Added => WithAlpha(palette.AddedAccent, 36),
+        DiffLineKind.Deleted => WithAlpha(palette.DeletedAccent, 36),
+        DiffLineKind.Modified => WithAlpha(palette.ModifiedAccent, 36),
+        DiffLineKind.Moved => WithAlpha(palette.MovedAccent, 36),
+        DiffLineKind.Conflict => WithAlpha(palette.ConflictAccent, 48),
+        DiffLineKind.Metadata => WithAlpha(palette.MetadataAccent, 28),
+        DiffLineKind.Imaginary => WithAlpha(palette.FoldText, 28),
+        _ => SKColors.Transparent
+    };
+
     private bool TryHitTestFold(Point2 point, out CodeFoldRegion region)
     {
         EnsureVisibleRows();
@@ -722,7 +1059,14 @@ public sealed class CodeFileViewerControl : Grid
 
     private bool TryHitTestScrollbar(Point2 point, out SKRect thumb)
     {
-        var viewportHeight = GetCanvasSize().Height;
+        var size = GetCanvasSize();
+        if (ShouldShowMinimap((float)size.Width, (float)size.Height))
+        {
+            thumb = SKRect.Empty;
+            return false;
+        }
+
+        var viewportHeight = size.Height;
         var contentHeight = GetContentHeight();
         if (contentHeight <= viewportHeight)
         {
@@ -730,9 +1074,38 @@ public sealed class CodeFileViewerControl : Grid
             return false;
         }
 
-        var track = GetScrollbarTrack(GetCanvasSize().Width, viewportHeight);
+        var track = GetScrollbarTrack(size.Width, viewportHeight);
         thumb = GetScrollbarThumb(track, viewportHeight, contentHeight);
         return thumb.Contains((float)point.X, (float)point.Y);
+    }
+
+    private bool TryHitTestMinimap(Point2 point, out SKRect bounds, out SKRect viewport)
+    {
+        var size = GetCanvasSize();
+        if (!ShouldShowMinimap((float)size.Width, (float)size.Height))
+        {
+            bounds = SKRect.Empty;
+            viewport = SKRect.Empty;
+            return false;
+        }
+
+        bounds = GetMinimapBounds((float)size.Width, (float)size.Height);
+        viewport = GetMinimapViewport(bounds, size.Height);
+        return bounds.Contains((float)point.X, (float)point.Y);
+    }
+
+    private bool IsPointInRightOverlay(Point2 point)
+    {
+        var size = GetCanvasSize();
+        var width = (float)size.Width;
+        var height = (float)size.Height;
+        if (ShouldShowMinimap(width, height))
+        {
+            return GetMinimapBounds(width, height).Contains((float)point.X, (float)point.Y);
+        }
+
+        return GetContentHeight() > size.Height &&
+            point.X >= GetScrollbarTrack(size.Width, size.Height).Left - ScrollbarMargin;
     }
 
     private bool TryHitTestText(Point2 point, out CodeTextPosition position)
@@ -741,6 +1114,13 @@ public sealed class CodeFileViewerControl : Grid
         position = default;
         var lines = GetLines();
         if (visibleRows.Length == 0 || lines.Count == 0)
+        {
+            return false;
+        }
+
+        var size = GetCanvasSize();
+        var contentRight = GetContentRight((float)size.Width, (float)size.Height);
+        if (point.X >= contentRight)
         {
             return false;
         }
@@ -772,6 +1152,13 @@ public sealed class CodeFileViewerControl : Grid
         column = 0;
         var lines = GetLines();
         if (visibleRows.Length == 0 || lines.Count == 0)
+        {
+            return false;
+        }
+
+        var size = GetCanvasSize();
+        var contentRight = GetContentRight((float)size.Width, (float)size.Height);
+        if (point.X >= contentRight)
         {
             return false;
         }
@@ -906,6 +1293,56 @@ public sealed class CodeFileViewerControl : Grid
     private static float GetScrollbarThumbHeight(float trackHeight, double viewportHeight, double contentHeight) =>
         (float)Math.Clamp(viewportHeight / Math.Max(1, contentHeight) * trackHeight, 32, Math.Max(32, trackHeight));
 
+    private bool ShouldShowMinimap(float width, float height)
+    {
+        EnsureVisibleRows();
+        return width >= MinimapMinimumHostWidth &&
+            height >= MinimapMinimumHostHeight &&
+            visibleRows.Length >= MinimapMinimumRows;
+    }
+
+    private float GetContentRight(float width, float height) =>
+        ShouldShowMinimap(width, height)
+            ? Math.Max(0, width - MinimapWidth - MinimapMargin * 2)
+            : Math.Max(0, width - ScrollbarWidth - ScrollbarMargin);
+
+    private static SKRect GetMinimapBounds(float width, float height) =>
+        SKRect.Create(
+            Math.Max(0, width - MinimapWidth - MinimapMargin),
+            MinimapMargin,
+            MinimapWidth,
+            Math.Max(0, height - MinimapMargin * 2));
+
+    private static SKRect GetMinimapInnerBounds(SKRect bounds) =>
+        SKRect.Create(
+            bounds.Left + MinimapPadding,
+            bounds.Top + MinimapPadding,
+            Math.Max(0, bounds.Width - MinimapPadding * 2),
+            Math.Max(0, bounds.Height - MinimapPadding * 2));
+
+    private SKRect GetMinimapViewport(SKRect minimapBounds, double viewportHeight)
+    {
+        EnsureVisibleRows();
+        var inner = GetMinimapInnerBounds(minimapBounds);
+        if (inner.Width <= 0 || inner.Height <= 0 || visibleRows.Length == 0)
+        {
+            return SKRect.Empty;
+        }
+
+        var contentHeight = GetContentHeight();
+        if (contentHeight <= viewportHeight)
+        {
+            return inner;
+        }
+
+        var scrollable = Math.Max(1, contentHeight - viewportHeight);
+        var viewportRatio = Math.Clamp(viewportHeight / Math.Max(1, contentHeight), 0, 1);
+        var thumbHeight = (float)Math.Clamp(inner.Height * viewportRatio, MinimapViewportMinHeight, inner.Height);
+        var thumbTop = inner.Top + (float)(scrollOffsetY / scrollable * Math.Max(1, inner.Height - thumbHeight));
+        thumbTop = Math.Clamp(thumbTop, inner.Top, Math.Max(inner.Top, inner.Bottom - thumbHeight));
+        return SKRect.Create(inner.Left, thumbTop, inner.Width, thumbHeight);
+    }
+
     private Point2 ToCanvasPoint(Point point)
     {
         var canvasSize = GetCanvasSize();
@@ -945,6 +1382,9 @@ public sealed class CodeFileViewerControl : Grid
         Color = color,
         IsAntialias = true
     };
+
+    private static SKColor WithAlpha(SKColor color, byte alpha) =>
+        new(color.Red, color.Green, color.Blue, alpha);
 }
 
 public sealed class CodeFileLineContextRequestedEventArgs : EventArgs
