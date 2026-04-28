@@ -215,7 +215,7 @@ public sealed class DiffSceneRendererTests
     }
 
     [Fact]
-    public void Render_DrawsNodeDetailsWhenZoomedOut()
+    public void Render_UsesOverviewBodiesWhenZoomedOut()
     {
         var documents = CreateDocuments(80);
         var scene = DiffCanvasScene.FromDocuments(documents);
@@ -227,7 +227,25 @@ public sealed class DiffSceneRendererTests
         renderer.Render(surface.Canvas, new SKSize(320, 240), scene, DiffCanvasColorTheme.Dark);
 
         Assert.True(renderer.LastRenderStats.DrawnNodeCount > 0);
-        Assert.Equal(renderer.LastRenderStats.DrawnNodeCount, renderer.LastRenderStats.DetailedNodeCount);
+        Assert.True(renderer.LastRenderStats.DetailedNodeCount < renderer.LastRenderStats.DrawnNodeCount);
+    }
+
+    [Fact]
+    public void Render_UsesOverviewBodiesWhenVisibleNodeBudgetIsExceeded()
+    {
+        var documents = CreateDocuments(160);
+        var layout = documents
+            .Select(document => new DiffNodeLayout(document.Id, new Rect2(40, 40, 620, 420)))
+            .ToImmutableArray();
+        var scene = DiffCanvasScene.FromDocuments(documents, layoutResult: new GraphLayoutResult(layout));
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(900, 700));
+
+        renderer.Render(surface.Canvas, new SKSize(900, 700), scene, DiffCanvasColorTheme.Dark);
+
+        Assert.Equal(documents.Length, renderer.LastRenderStats.DrawnNodeCount);
+        Assert.Equal(0, renderer.LastRenderStats.DetailedNodeCount);
     }
 
     [Fact]

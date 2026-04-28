@@ -32,6 +32,12 @@ public sealed class DiffSceneRenderer
     private const float TitlePathLeftInset = 40;
     private const float TitleMetadataGap = 8;
     private const float TitlePinnedLabelLeftInset = 188;
+    private const double DetailedBodyMinimumFontPixels = 6.5;
+    private const double DetailedBodyMinimumNodeWidthPixels = 360;
+    private const double DetailedBodyMinimumBodyHeightPixels = 110;
+    private const int DetailedBodyVisibleNodeBudget = 140;
+    private const int OverviewMinimumBucketCount = 8;
+    private const int OverviewMaximumBucketCount = 160;
 
     private RenderSceneCache? renderCache;
 
@@ -120,11 +126,12 @@ public sealed class DiffSceneRenderer
         canvas.Clear(palette.Background);
         DrawGrid(canvas, canvasSize, scene.Camera, palette);
         var useInteractiveRendering = renderMode == DiffSceneRenderMode.Interactive;
-        var cache = useInteractiveRendering ? null : GetRenderCache(scene);
+        var cache = GetRenderCache(scene);
+        using var textResources = new RenderTextResources(palette);
 
         var worldViewport = GetWorldViewport(scene.Camera, canvasSize)
             .Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 96));
-        var nodeSource = cache?.Nodes ?? scene.Nodes;
+        var nodeSource = cache.Nodes;
         var visibleNodes = nodeSource
             .Where(node => node.Bounds.Intersects(worldViewport))
             .ToArray();
@@ -146,7 +153,7 @@ public sealed class DiffSceneRenderer
             Style = SKPaintStyle.Stroke,
             IsAntialias = true
         };
-        if (cache is not null)
+        if (!useInteractiveRendering)
         {
             foreach (var edge in cache.Edges)
             {
@@ -164,28 +171,37 @@ public sealed class DiffSceneRenderer
             drawnEdges = DrawInteractiveEdges(canvas, scene, worldViewport, edgePaint, palette);
         }
 
+        var detailedNodeCount = 0;
         foreach (var node in visibleNodes)
         {
+            var documentCache = cache.Documents.GetValueOrDefault(node.Document.Id) ?? DocumentRenderCache.Create(node.Document, []);
+            var bodyDetail = ResolveBodyDetail(node, scene.Camera.Scale, visibleNodes.Length, useInteractiveRendering);
+            if (bodyDetail == NodeBodyDetail.Full)
+            {
+                detailedNodeCount++;
+            }
+
             DrawNode(
                 canvas,
                 node,
                 palette,
-                cache?.AnnotationsByDocument.GetValueOrDefault(node.Document.Id) ?? [],
+                documentCache,
+                textResources,
                 scene.Camera.Scale,
                 scene.HoveredAnnotationId,
-                drawDocumentBody: !useInteractiveRendering);
+                bodyDetail);
         }
 
         LastRenderStats = new(
             scene.Nodes.Count,
             visibleNodes.Length,
-            useInteractiveRendering ? 0 : visibleNodes.Length,
+            detailedNodeCount,
             scene.Edges.Count,
             drawnEdges,
-            cache?.Edges.Length ?? 0);
+            useInteractiveRendering ? 0 : cache.Edges.Length);
         canvas.Restore();
-        DrawGroupLabels(canvas, scene.Camera, visibleGroups, palette, canvasSize);
-        DrawFontControls(canvas, scene.Camera, visibleNodes, palette, canvasSize);
+        DrawGroupLabels(canvas, scene.Camera, visibleGroups, palette, textResources, canvasSize);
+        DrawFontControls(canvas, scene.Camera, visibleNodes, palette, textResources, canvasSize);
     }
 
     private RenderSceneCache GetRenderCache(DiffCanvasScene scene)
@@ -218,20 +234,20 @@ public sealed class DiffSceneRenderer
         canvas.DrawRoundRect(rect, radius, radius, strokePaint);
     }
 
-    private static void DrawGroupLabels(SKCanvas canvas, CameraState camera, IReadOnlyList<GraphGroup> groups, RendererPalette palette, SKSize canvasSize)
+    private static void DrawGroupLabels(SKCanvas canvas, CameraState camera, IReadOnlyList<GraphGroup> groups, RendererPalette palette, RenderTextResources textResources, SKSize canvasSize)
     {
         if (groups.Count == 0)
         {
             return;
         }
 
-        using var textStyle = CreateUiTextStyle(18, palette.TextColor, true);
+        var textStyle = textResources.GetUiTextStyle(18, palette.TextColor, true);
         foreach (var group in groups)
         {
             var color = GroupColor(group, palette);
             var labelPoint = camera.WorldToScreen(new Point2(group.Bounds.Left + 14, group.Bounds.Top + 9));
             var label = group.SummaryText;
-            var width = Math.Clamp(textStyle.Font.MeasureText(label, textStyle.Paint) + 30, 104, 420);
+            var width = Math.Clamp(textStyle.MeasureText(label) + 30, 104, 420);
             var rect = SKRect.Create((float)labelPoint.X, (float)labelPoint.Y, width, 32);
             if (rect.Right < 0 || rect.Left > canvasSize.Width || rect.Bottom < 0 || rect.Top > canvasSize.Height)
             {
@@ -354,10 +370,11 @@ public sealed class DiffSceneRenderer
         SKCanvas canvas,
         DiffNode node,
         RendererPalette palette,
-        IReadOnlyList<DiffAnnotation> annotations,
+        DocumentRenderCache documentCache,
+        RenderTextResources textResources,
         double cameraScale,
         string? hoveredAnnotationId,
-        bool drawDocumentBody)
+        NodeBodyDetail bodyDetail)
     {
         var bounds = ToRect(node.Bounds);
         var statusColor = NodeStatusColor(node.Document.Metadata.Status, palette);
@@ -367,18 +384,45 @@ public sealed class DiffSceneRenderer
         canvas.DrawRoundRect(bounds, 6, 6, backgroundPaint);
         DrawNodeStatusAccent(canvas, bounds, statusColor);
         canvas.DrawRoundRect(bounds, 6, 6, borderPaint);
-        DrawTitle(canvas, node, palette, cameraScale);
-        if (drawDocumentBody)
+        DrawTitle(canvas, node, palette, textResources, cameraScale);
+        if (bodyDetail == NodeBodyDetail.Full)
         {
-            DrawDocumentBody(canvas, node, palette, annotations, cameraScale, hoveredAnnotationId);
+            DrawDocumentBody(canvas, node, palette, documentCache, textResources, cameraScale, hoveredAnnotationId);
         }
         else
         {
-            DrawInteractiveDocumentBody(canvas, node, palette, cameraScale);
+            DrawOverviewDocumentBody(canvas, node, palette, documentCache, cameraScale);
         }
 
-        DrawFooter(canvas, node, palette, annotations, hoveredAnnotationId);
+        DrawFooter(canvas, node, palette, documentCache.NodeAnnotations, textResources, hoveredAnnotationId);
         DrawResizeHandles(canvas, node, palette, cameraScale);
+    }
+
+    private static NodeBodyDetail ResolveBodyDetail(DiffNode node, double cameraScale, int visibleNodeCount, bool useInteractiveRendering)
+    {
+        if (useInteractiveRendering)
+        {
+            return NodeBodyDetail.Overview;
+        }
+
+        var nodeWidthPixels = node.Bounds.Width * cameraScale;
+        var bodyHeightPixels = node.BodyBounds.Height * cameraScale;
+        var fontPixels = node.FontSize * cameraScale;
+        var readable = nodeWidthPixels >= DetailedBodyMinimumNodeWidthPixels &&
+            bodyHeightPixels >= DetailedBodyMinimumBodyHeightPixels &&
+            fontPixels >= DetailedBodyMinimumFontPixels;
+
+        if (!readable)
+        {
+            return NodeBodyDetail.Overview;
+        }
+
+        if (visibleNodeCount > DetailedBodyVisibleNodeBudget && !node.IsSelected && !node.IsPinned)
+        {
+            return NodeBodyDetail.Overview;
+        }
+
+        return NodeBodyDetail.Full;
     }
 
     private static void DrawNodeStatusAccent(SKCanvas canvas, SKRect bounds, SKColor statusColor)
@@ -418,15 +462,15 @@ public sealed class DiffSceneRenderer
         }
     }
 
-    private static void DrawTitle(SKCanvas canvas, DiffNode node, RendererPalette palette, double cameraScale)
+    private static void DrawTitle(SKCanvas canvas, DiffNode node, RendererPalette palette, RenderTextResources textResources, double cameraScale)
     {
         var titleRect = SKRect.Create((float)node.Bounds.X, (float)node.Bounds.Y, (float)node.Bounds.Width, (float)DiffNode.TitleHeight);
         var statusColor = NodeStatusColor(node.Document.Metadata.Status, palette);
         using var paint = new SKPaint { Color = palette.TitleBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
-        using var textStyle = CreateUiTextStyle(17, palette.TextColor, true);
-        using var metaStyle = CreateUiTextStyle(11.5f, palette.MutedTextColor, false);
+        var textStyle = textResources.GetUiTextStyle(17, palette.TextColor, true);
+        var metaStyle = textResources.GetUiTextStyle(11.5f, palette.MutedTextColor, false);
         using var statusPaint = new SKPaint { Color = statusColor, Style = SKPaintStyle.Fill, IsAntialias = true };
-        using var statusTextStyle = CreateUiTextStyle(11, SKColors.White, true);
+        var statusTextStyle = textResources.GetUiTextStyle(11, SKColors.White, true);
 
         canvas.Save();
         canvas.ClipRect(titleRect);
@@ -438,7 +482,7 @@ public sealed class DiffSceneRenderer
         var pathTextX = titleRect.Left + TitlePathLeftInset;
         var pathTextRight = GetTitlePathRightEdge(node, titleRect, cameraScale);
         var pathMaxWidth = Math.Max(0, pathTextRight - pathTextX);
-        var pathText = MiddleEllipsizeText(node.Document.Metadata.Path, pathMaxWidth, textStyle.Font, textStyle.Paint);
+        var pathText = textStyle.MiddleEllipsize(node.Document.Metadata.Path, pathMaxWidth);
         canvas.DrawText(pathText, pathTextX, titleRect.Top + 23, textStyle.Font, textStyle.Paint);
         if (node.IsPinned)
         {
@@ -517,11 +561,11 @@ public sealed class DiffSceneRenderer
             text.AsSpan(text.Length - suffixCount, suffixCount));
     }
 
-    private static void DrawFontControls(SKCanvas canvas, CameraState camera, IReadOnlyList<DiffNode> nodes, RendererPalette palette, SKSize canvasSize)
+    private static void DrawFontControls(SKCanvas canvas, CameraState camera, IReadOnlyList<DiffNode> nodes, RendererPalette palette, RenderTextResources textResources, SKSize canvasSize)
     {
         using var fillPaint = new SKPaint { Color = palette.NodeBackground.WithAlpha(230), Style = SKPaintStyle.Fill, IsAntialias = true };
         using var strokePaint = new SKPaint { Color = palette.NodeBorder, Style = SKPaintStyle.Stroke, StrokeWidth = 1, IsAntialias = true };
-        using var textStyle = CreateUiTextStyle(11, palette.TextColor, true);
+        var textStyle = textResources.GetUiTextStyle(11, palette.TextColor, true);
 
         foreach (var node in nodes)
         {
@@ -545,11 +589,11 @@ public sealed class DiffSceneRenderer
         const float radius = 4.5f;
         canvas.DrawRoundRect(rect, radius, radius, fillPaint);
         canvas.DrawRoundRect(rect, radius, radius, strokePaint);
-        var textWidth = textStyle.Font.MeasureText(text, textStyle.Paint);
+        var textWidth = textStyle.MeasureText(text);
         canvas.DrawText(text, rect.Left + (rect.Width - textWidth) / 2, rect.Top + rect.Height * 0.68f, textStyle.Font, textStyle.Paint);
     }
 
-    private static void DrawDocumentBody(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, double cameraScale, string? hoveredAnnotationId)
+    private static void DrawDocumentBody(SKCanvas canvas, DiffNode node, RendererPalette palette, DocumentRenderCache documentCache, RenderTextResources textResources, double cameraScale, string? hoveredAnnotationId)
     {
         var body = node.BodyBounds;
         var bodyRect = ToRect(body);
@@ -569,8 +613,8 @@ public sealed class DiffSceneRenderer
         using var inlineDeletedPaint = new SKPaint { Color = palette.InlineDeletedBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
         using var inlineChangedPaint = new SKPaint { Color = palette.InlineChangedBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
         using var metadataPaint = new SKPaint { Color = palette.MetadataBackground, Style = SKPaintStyle.Fill };
-        using var codeStyles = new CodeTextStyles(palette, (float)node.FontSize);
-        using var lineStyle = CreateCodeTextStyle((float)Math.Max(8, node.FontSize - 1), palette.MutedTextColor);
+        var codeStyles = textResources.GetCodeTextStyles((float)node.FontSize);
+        var lineStyle = textResources.GetCodeTextStyle((float)Math.Max(8, node.FontSize - 1), palette.MutedTextColor);
 
         canvas.DrawRect(SKRect.Create(bodyRect.Left, bodyRect.Top, gutterWidth, bodyRect.Height), gutterPaint);
 
@@ -579,23 +623,19 @@ public sealed class DiffSceneRenderer
         var visibleLineCount = (int)Math.Ceiling(body.Height / lineHeight) + 2;
         var y = body.Y - node.ScrollOffsetY % lineHeight;
 
-        var annotationsByLine = annotations
-            .Where(annotation => annotation.Target == DiffAnnotationTarget.Line && annotation.LineIndex is not null)
-            .GroupBy(annotation => annotation.LineIndex!.Value)
-            .ToDictionary(group => group.Key, group => group.OrderBy(AnnotationPriority).ToArray());
-
         foreach (var line in node.Document.GetVisibleLines(firstLineIndex, visibleLineCount))
         {
             var lineRect = SKRect.Create(bodyRect.Left, (float)y, bodyRect.Width, (float)lineHeight);
             var codeX = bodyRect.Left + gutterWidth + markerWidth + 10;
-            var lineAnnotations = annotationsByLine.GetValueOrDefault(line.Index) ?? [];
+            var lineAnnotations = documentCache.GetLineAnnotations(line.Index);
+            var lineLayout = documentCache.GetLineLayout(line.Index);
             DrawLineBackground(canvas, line, lineRect, addedPaint, deletedPaint, ignoredPaint, movedPaint, conflictPaint, metadataPaint);
             DrawLineAnnotationBand(canvas, lineAnnotations, lineRect, palette, hoveredAnnotationId);
             DrawLineNumber(canvas, line, bodyRect.Left + 8, (float)(y + lineHeight * 0.73), lineStyle);
             DrawMarker(canvas, line, bodyRect.Left + gutterWidth, (float)y, markerWidth, (float)lineHeight, lineStyle);
             DrawInlineSpans(canvas, line, codeX, (float)y, codeStyles.Default, inlineAddedPaint, inlineDeletedPaint, inlineChangedPaint);
-            DrawCode(canvas, line, codeX, (float)(y + lineHeight * 0.73), codeStyles);
-            DrawLineAnnotationMarkers(canvas, lineAnnotations, lineRect, palette, lineStyle, hoveredAnnotationId);
+            DrawCode(canvas, line, lineLayout, codeX, (float)(y + lineHeight * 0.73), codeStyles);
+            DrawLineAnnotationMarkers(canvas, lineAnnotations, lineRect, palette, lineStyle, textResources, hoveredAnnotationId);
             y += lineHeight;
         }
 
@@ -603,7 +643,7 @@ public sealed class DiffSceneRenderer
         DrawScrollbar(canvas, node, palette, cameraScale);
     }
 
-    private static void DrawInteractiveDocumentBody(SKCanvas canvas, DiffNode node, RendererPalette palette, double cameraScale)
+    private static void DrawOverviewDocumentBody(SKCanvas canvas, DiffNode node, RendererPalette palette, DocumentRenderCache documentCache, double cameraScale)
     {
         var body = node.BodyBounds;
         if (body.Width <= 0 || body.Height <= 0)
@@ -613,30 +653,40 @@ public sealed class DiffSceneRenderer
 
         var bodyRect = ToRect(body);
         using var gutterPaint = new SKPaint { Color = palette.GutterBackground, Style = SKPaintStyle.Fill };
-        using var linePaint = new SKPaint
-        {
-            Color = palette.MutedTextColor.WithAlpha(70),
-            Style = SKPaintStyle.Stroke,
-            StrokeWidth = (float)DiffCanvasScene.ScreenStableWorldLength(cameraScale, 1),
-            IsAntialias = false
-        };
+        using var bucketPaint = new SKPaint { Style = SKPaintStyle.Fill, IsAntialias = false };
+        using var annotationPaint = new SKPaint { Color = palette.ReviewAction.WithAlpha(155), Style = SKPaintStyle.Fill, IsAntialias = false };
 
         canvas.Save();
         canvas.ClipRect(bodyRect);
         canvas.DrawRect(SKRect.Create(bodyRect.Left, bodyRect.Top, 94, bodyRect.Height), gutterPaint);
 
-        var lineHeight = Math.Max(10, node.LineHeight);
-        var firstY = bodyRect.Top + (float)(lineHeight - node.ScrollOffsetY % lineHeight);
-        var maxLines = Math.Min(16, (int)Math.Ceiling(bodyRect.Height / lineHeight));
-        for (var index = 0; index < maxLines; index++)
+        var bucketCount = Math.Clamp(
+            (int)Math.Ceiling(bodyRect.Height * Math.Max(cameraScale, 0.01)),
+            OverviewMinimumBucketCount,
+            OverviewMaximumBucketCount);
+        var buckets = documentCache.GetOverviewBuckets(bucketCount);
+        var bucketHeight = bodyRect.Height / Math.Max(1, buckets.Length);
+        for (var index = 0; index < buckets.Length; index++)
         {
-            var y = firstY + (float)(index * lineHeight);
-            if (y > bodyRect.Bottom)
+            var bucket = buckets[index];
+            var y = bodyRect.Top + index * bucketHeight;
+            if (bucket.Kind != DiffLineKind.Context)
             {
-                break;
+                bucketPaint.Color = OverviewColor(bucket.Kind, palette);
+                canvas.DrawRect(SKRect.Create(bodyRect.Left + 94, y, Math.Max(1, bodyRect.Width - 94), Math.Max(1, bucketHeight)), bucketPaint);
+                bucketPaint.Color = LineAccentColor(bucket.Kind, palette).WithAlpha(220);
+                canvas.DrawRect(SKRect.Create(bodyRect.Left + 94, y, 5, Math.Max(1, bucketHeight)), bucketPaint);
+            }
+            else if (bucket.HasText)
+            {
+                bucketPaint.Color = palette.MutedTextColor.WithAlpha(42);
+                canvas.DrawRect(SKRect.Create(bodyRect.Left + 112, y + bucketHeight * 0.35f, Math.Max(18, bodyRect.Width * 0.58f), Math.Max(1, bucketHeight * 0.2f)), bucketPaint);
             }
 
-            canvas.DrawLine(bodyRect.Left + 118, y, bodyRect.Right - 18, y, linePaint);
+            if (bucket.HasAnnotation)
+            {
+                canvas.DrawRect(SKRect.Create(bodyRect.Right - 11, y, 6, Math.Max(1, bucketHeight)), annotationPaint);
+            }
         }
 
         canvas.Restore();
@@ -712,7 +762,7 @@ public sealed class DiffSceneRenderer
             return;
         }
 
-        var characterWidth = textStyle.Font.MeasureText("M", textStyle.Paint);
+        var characterWidth = textStyle.MonospaceAdvance;
         foreach (var span in line.InlineSpans)
         {
             if (span.StartColumn < 0 || span.StartColumn >= line.Text.Length || span.Length <= 0)
@@ -732,28 +782,37 @@ public sealed class DiffSceneRenderer
         }
     }
 
-    private static void DrawCode(SKCanvas canvas, DiffLine line, float x, float y, CodeTextStyles codeStyles)
+    private static void DrawCode(SKCanvas canvas, DiffLine line, DiffLineRenderLayout lineLayout, float x, float y, CodeTextStyles codeStyles)
     {
-        if (line.Tokens.IsDefaultOrEmpty)
+        if (lineLayout.Runs.Length == 0)
         {
             canvas.DrawText(line.Text, x, y, codeStyles.Default.Font, codeStyles.Default.Paint);
             return;
         }
 
-        canvas.DrawText(line.Text, x, y, codeStyles.Default.Font, codeStyles.Default.Paint);
-        var characterWidth = codeStyles.Default.Font.MeasureText("M", codeStyles.Default.Paint);
-
-        foreach (var token in line.Tokens)
+        var characterWidth = codeStyles.Default.MonospaceAdvance;
+        foreach (var run in lineLayout.Runs)
         {
-            if (token.StartColumn < 0 || token.StartColumn >= line.Text.Length || token.Length <= 0)
-            {
-                continue;
-            }
-
-            var length = Math.Min(token.Length, line.Text.Length - token.StartColumn);
-            var style = codeStyles.GetStyle(token);
-            canvas.DrawText(line.Text.Substring(token.StartColumn, length), x + token.StartColumn * characterWidth, y, style.Font, style.Paint);
+            var style = run.Token is null ? codeStyles.Default : codeStyles.GetStyle(run.Token);
+            DrawCodeTextRange(canvas, line.Text, run.StartColumn, run.Length, x, y, characterWidth, style);
         }
+    }
+
+    private static void DrawCodeTextRange(SKCanvas canvas, string text, int start, int length, float x, float y, float characterWidth, TextStyle style)
+    {
+        if (length <= 0 || start < 0 || start >= text.Length)
+        {
+            return;
+        }
+
+        var safeLength = Math.Min(length, text.Length - start);
+        var value = text.Substring(start, safeLength);
+        if (value.Contains('\t'))
+        {
+            value = value.Replace("\t", "    ", StringComparison.Ordinal);
+        }
+
+        canvas.DrawText(value, x + start * characterWidth, y, style.Font, style.Paint);
     }
 
     private static void DrawScrollbar(SKCanvas canvas, DiffNode node, RendererPalette palette, double cameraScale)
@@ -788,7 +847,7 @@ public sealed class DiffSceneRenderer
         canvas.DrawRect(SKRect.Create(lineRect.Left, lineRect.Top, lineRect.Width, lineRect.Height), paint);
     }
 
-    private static void DrawLineAnnotationMarkers(SKCanvas canvas, IReadOnlyList<DiffAnnotation> annotations, SKRect lineRect, RendererPalette palette, TextStyle textStyle, string? hoveredAnnotationId)
+    private static void DrawLineAnnotationMarkers(SKCanvas canvas, IReadOnlyList<DiffAnnotation> annotations, SKRect lineRect, RendererPalette palette, TextStyle textStyle, RenderTextResources textResources, string? hoveredAnnotationId)
     {
         if (annotations.Count == 0)
         {
@@ -815,9 +874,9 @@ public sealed class DiffSceneRenderer
 
         var isLabeledHovered = IsAnnotationHovered(labeled, hoveredAnnotationId);
         using var chipPaint = new SKPaint { Color = AnnotationColor(labeled.Kind, palette).WithAlpha(isLabeledHovered ? (byte)245 : (byte)210), Style = SKPaintStyle.Fill, IsAntialias = true };
-        using var labelStyle = CreateUiTextStyle(9.5f, palette.Background, true);
+        var labelStyle = textResources.GetUiTextStyle(9.5f, palette.Background, true);
         var label = ShortAnnotationLabel(labeled.Label);
-        var width = Math.Clamp(labelStyle.Font.MeasureText(label, labelStyle.Paint) + 12, 38, 88);
+        var width = Math.Clamp(labelStyle.MeasureText(label) + 12, 38, 88);
         var chipRect = SKRect.Create(lineRect.Right - width - 22, lineRect.Top + 2, width, 13);
         canvas.DrawRoundRect(chipRect, 3, 3, chipPaint);
         if (isLabeledHovered)
@@ -829,9 +888,9 @@ public sealed class DiffSceneRenderer
         canvas.DrawText(label, chipRect.Left + 6, chipRect.Top + 10, labelStyle.Font, labelStyle.Paint);
     }
 
-    private static void DrawFooter(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, string? hoveredAnnotationId)
+    private static void DrawFooter(SKCanvas canvas, DiffNode node, RendererPalette palette, IReadOnlyList<DiffAnnotation> annotations, RenderTextResources textResources, string? hoveredAnnotationId)
     {
-        using var textStyle = CreateUiTextStyle(11, palette.MutedTextColor, false);
+        var textStyle = textResources.GetUiTextStyle(11, palette.MutedTextColor, false);
         var y = (float)(node.Bounds.Bottom - 7);
         var summary = $"+{node.Document.Metadata.AddedLines}  -{node.Document.Metadata.DeletedLines}  {node.Document.Metadata.Language}";
         canvas.DrawText(summary, (float)node.Bounds.X + 12, y, textStyle.Font, textStyle.Paint);
@@ -848,12 +907,12 @@ public sealed class DiffSceneRenderer
             return;
         }
 
-        using var chipTextStyle = CreateUiTextStyle(9.5f, palette.Background, true);
+        var chipTextStyle = textResources.GetUiTextStyle(9.5f, palette.Background, true);
         var right = (float)node.Bounds.Right - 10;
         foreach (var annotation in groupedAnnotations.Reverse())
         {
             var label = annotation.Count > 1 ? $"{ShortAnnotationLabel(annotation.Label)} {annotation.Count}" : ShortAnnotationLabel(annotation.Label);
-            var width = Math.Clamp(chipTextStyle.Font.MeasureText(label, chipTextStyle.Paint) + 12, 34, 84);
+            var width = Math.Clamp(chipTextStyle.MeasureText(label) + 12, 34, 84);
             right -= width;
             using var chipPaint = new SKPaint { Color = AnnotationColor(annotation.Kind, palette).WithAlpha(annotation.IsHovered ? (byte)245 : (byte)215), Style = SKPaintStyle.Fill, IsAntialias = true };
             var chipRect = SKRect.Create(right, (float)node.Bounds.Bottom - 19, width, 14);
@@ -967,6 +1026,42 @@ public sealed class DiffSceneRenderer
         _ => palette.EdgeColor
     };
 
+    private static SKColor LineAccentColor(DiffLineKind kind, RendererPalette palette) => kind switch
+    {
+        DiffLineKind.Added => palette.NodeAdded,
+        DiffLineKind.Deleted => palette.NodeDeleted,
+        DiffLineKind.Modified => palette.NodeModified,
+        DiffLineKind.Moved => palette.MovedAccent,
+        DiffLineKind.Conflict => palette.Invalid,
+        DiffLineKind.Metadata => palette.MetadataAccent,
+        DiffLineKind.Ignored => palette.MutedTextColor,
+        DiffLineKind.Imaginary => palette.MetadataAccent,
+        _ => palette.MutedTextColor
+    };
+
+    private static SKColor OverviewColor(DiffLineKind kind, RendererPalette palette) => kind switch
+    {
+        DiffLineKind.Added => palette.AddedBackground.WithAlpha(180),
+        DiffLineKind.Deleted => palette.DeletedBackground.WithAlpha(180),
+        DiffLineKind.Modified => palette.MetadataBackground.WithAlpha(130),
+        DiffLineKind.Moved => palette.MovedBackground.WithAlpha(180),
+        DiffLineKind.Conflict => palette.ConflictBackground.WithAlpha(190),
+        DiffLineKind.Metadata => palette.MetadataBackground.WithAlpha(120),
+        DiffLineKind.Ignored => palette.IgnoredBackground.WithAlpha(150),
+        DiffLineKind.Imaginary => palette.MetadataBackground.WithAlpha(120),
+        _ => SKColors.Transparent
+    };
+
+    private static int LineKindPriority(DiffLineKind kind) => kind switch
+    {
+        DiffLineKind.Conflict => 0,
+        DiffLineKind.Added or DiffLineKind.Deleted or DiffLineKind.Modified or DiffLineKind.Moved => 1,
+        DiffLineKind.Metadata => 2,
+        DiffLineKind.Ignored => 3,
+        DiffLineKind.Imaginary => 4,
+        _ => 10
+    };
+
     private static int AnnotationPriority(DiffAnnotation annotation) => AnnotationPriority(annotation.Kind);
 
     private static int AnnotationPriority(DiffAnnotationKind kind) => kind switch
@@ -998,11 +1093,156 @@ public sealed class DiffSceneRenderer
         "SF Pro Text",
         size,
         color,
-        bold ? SKFontStyle.Bold : SKFontStyle.Normal);
+        bold);
 
-    private static TextStyle CreateCodeTextStyle(float size, SKColor color) => new("Menlo", size, color, SKFontStyle.Normal);
+    private static TextStyle CreateCodeTextStyle(float size, SKColor color) => new("Menlo", size, color, bold: false);
+
+    private enum NodeBodyDetail
+    {
+        Full,
+        Overview
+    }
 
     private sealed record RenderGraphEdge(GraphEdge Edge, DiffNode Source, DiffNode Target, Rect2 Bounds, SKPath Path);
+
+    private readonly record struct DiffTextRun(int StartColumn, int Length, TokenSpan? Token);
+
+    private sealed record DiffLineRenderLayout(DiffTextRun[] Runs)
+    {
+        public static DiffLineRenderLayout Empty { get; } = new([]);
+
+        public static DiffLineRenderLayout Create(DiffLine line)
+        {
+            if (string.IsNullOrEmpty(line.Text) || line.Tokens.IsDefaultOrEmpty)
+            {
+                return Empty;
+            }
+
+            var runs = new List<DiffTextRun>();
+            var cursor = 0;
+            foreach (var token in line.Tokens.OrderBy(token => token.StartColumn))
+            {
+                if (token.StartColumn < 0 || token.StartColumn >= line.Text.Length || token.Length <= 0)
+                {
+                    continue;
+                }
+
+                var start = Math.Clamp(token.StartColumn, 0, line.Text.Length);
+                var end = Math.Clamp(token.StartColumn + token.Length, start, line.Text.Length);
+                if (start > cursor)
+                {
+                    runs.Add(new DiffTextRun(cursor, start - cursor, null));
+                }
+
+                if (end > start)
+                {
+                    runs.Add(new DiffTextRun(start, end - start, token));
+                    cursor = Math.Max(cursor, end);
+                }
+            }
+
+            if (cursor < line.Text.Length)
+            {
+                runs.Add(new DiffTextRun(cursor, line.Text.Length - cursor, null));
+            }
+
+            return runs.Count == 0 ? Empty : new DiffLineRenderLayout(runs.ToArray());
+        }
+    }
+
+    private readonly record struct DocumentOverviewBucket(DiffLineKind Kind, bool HasText, bool HasAnnotation);
+
+    private sealed class DocumentRenderCache
+    {
+        private readonly DiffDocumentSnapshot document;
+        private readonly DiffLineRenderLayout[] lineLayouts;
+        private readonly Dictionary<int, DiffAnnotation[]> lineAnnotationsByIndex;
+        private readonly Dictionary<int, DocumentOverviewBucket[]> overviewBucketsByCount = [];
+
+        private DocumentRenderCache(
+            DiffDocumentSnapshot document,
+            DiffAnnotation[] nodeAnnotations,
+            Dictionary<int, DiffAnnotation[]> lineAnnotationsByIndex,
+            DiffLineRenderLayout[] lineLayouts)
+        {
+            this.document = document;
+            NodeAnnotations = nodeAnnotations;
+            this.lineAnnotationsByIndex = lineAnnotationsByIndex;
+            this.lineLayouts = lineLayouts;
+        }
+
+        public DiffAnnotation[] NodeAnnotations { get; }
+
+        public static DocumentRenderCache Create(DiffDocumentSnapshot document, IReadOnlyList<DiffAnnotation> annotations)
+        {
+            var nodeAnnotations = annotations
+                .Where(annotation => annotation.Target == DiffAnnotationTarget.Node)
+                .OrderBy(AnnotationPriority)
+                .ToArray();
+            var lineAnnotationsByIndex = annotations
+                .Where(annotation => annotation.Target == DiffAnnotationTarget.Line && annotation.LineIndex is not null)
+                .GroupBy(annotation => annotation.LineIndex!.Value)
+                .ToDictionary(group => group.Key, group => group.OrderBy(AnnotationPriority).ToArray());
+            var lineLayouts = document.Lines
+                .Select(DiffLineRenderLayout.Create)
+                .ToArray();
+
+            return new DocumentRenderCache(document, nodeAnnotations, lineAnnotationsByIndex, lineLayouts);
+        }
+
+        public DiffAnnotation[] GetLineAnnotations(int lineIndex) =>
+            lineAnnotationsByIndex.GetValueOrDefault(lineIndex) ?? [];
+
+        public DiffLineRenderLayout GetLineLayout(int lineIndex) =>
+            lineIndex >= 0 && lineIndex < lineLayouts.Length ? lineLayouts[lineIndex] : DiffLineRenderLayout.Empty;
+
+        public DocumentOverviewBucket[] GetOverviewBuckets(int bucketCount)
+        {
+            bucketCount = Math.Clamp(bucketCount, OverviewMinimumBucketCount, OverviewMaximumBucketCount);
+            if (overviewBucketsByCount.TryGetValue(bucketCount, out var buckets))
+            {
+                return buckets;
+            }
+
+            buckets = BuildOverviewBuckets(bucketCount);
+            overviewBucketsByCount[bucketCount] = buckets;
+            return buckets;
+        }
+
+        private DocumentOverviewBucket[] BuildOverviewBuckets(int bucketCount)
+        {
+            if (document.Lines.Length == 0)
+            {
+                return Array.Empty<DocumentOverviewBucket>();
+            }
+
+            var buckets = new DocumentOverviewBucket[bucketCount];
+            var rowsPerBucket = document.Lines.Length / (double)bucketCount;
+            for (var bucket = 0; bucket < bucketCount; bucket++)
+            {
+                var start = Math.Clamp((int)Math.Floor(bucket * rowsPerBucket), 0, document.Lines.Length - 1);
+                var end = Math.Clamp((int)Math.Ceiling((bucket + 1) * rowsPerBucket), start + 1, document.Lines.Length);
+                var dominantKind = DiffLineKind.Context;
+                var hasText = false;
+                var hasAnnotation = false;
+
+                for (var index = start; index < end; index++)
+                {
+                    var line = document.Lines[index];
+                    hasText |= !string.IsNullOrWhiteSpace(line.Text);
+                    hasAnnotation |= lineAnnotationsByIndex.ContainsKey(line.Index);
+                    if (LineKindPriority(line.Kind) < LineKindPriority(dominantKind))
+                    {
+                        dominantKind = line.Kind;
+                    }
+                }
+
+                buckets[bucket] = new DocumentOverviewBucket(dominantKind, hasText, hasAnnotation);
+            }
+
+            return buckets;
+        }
+    }
 
     private sealed class RenderSceneCache : IDisposable
     {
@@ -1011,13 +1251,13 @@ public sealed class DiffSceneRenderer
             int geometryVersion,
             DiffNode[] nodes,
             RenderGraphEdge[] edges,
-            Dictionary<DiffDocumentId, DiffAnnotation[]> annotationsByDocument)
+            Dictionary<DiffDocumentId, DocumentRenderCache> documents)
         {
             Scene = scene;
             GeometryVersion = geometryVersion;
             Nodes = nodes;
             Edges = edges;
-            AnnotationsByDocument = annotationsByDocument;
+            Documents = documents;
         }
 
         private DiffCanvasScene Scene { get; }
@@ -1028,7 +1268,7 @@ public sealed class DiffSceneRenderer
 
         public RenderGraphEdge[] Edges { get; }
 
-        public Dictionary<DiffDocumentId, DiffAnnotation[]> AnnotationsByDocument { get; }
+        public Dictionary<DiffDocumentId, DocumentRenderCache> Documents { get; }
 
         public static RenderSceneCache Create(DiffCanvasScene scene)
         {
@@ -1043,8 +1283,15 @@ public sealed class DiffSceneRenderer
                 .Where(annotation => scene.AnnotationVisibility.IsVisible(annotation.Kind))
                 .GroupBy(annotation => annotation.DocumentId)
                 .ToDictionary(group => group.Key, group => group.OrderBy(AnnotationPriority).ToArray());
+            var documents = nodes
+                .GroupBy(node => node.Document.Id)
+                .ToDictionary(
+                    group => group.Key,
+                    group => DocumentRenderCache.Create(
+                        group.First().Document,
+                        annotationsByDocument.GetValueOrDefault(group.Key) ?? []));
 
-            return new RenderSceneCache(scene, scene.GeometryVersion, nodes, edges, annotationsByDocument);
+            return new RenderSceneCache(scene, scene.GeometryVersion, nodes, edges, documents);
         }
 
         public bool Matches(DiffCanvasScene scene) => ReferenceEquals(scene, Scene) && scene.GeometryVersion == GeometryVersion;
@@ -1126,6 +1373,76 @@ public sealed class DiffSceneRenderer
         public SKColor MovedAccent => new((byte)Math.Min(255, MovedBackground.Red + 85), (byte)Math.Min(255, MovedBackground.Green + 65), (byte)Math.Min(255, MovedBackground.Blue + 25));
 
         public SKColor MetadataAccent => new((byte)Math.Min(255, MetadataBackground.Red + 55), (byte)Math.Min(255, MetadataBackground.Green + 55), (byte)Math.Min(255, MetadataBackground.Blue + 55));
+    }
+
+    private sealed class RenderTextResources : IDisposable
+    {
+        private readonly RendererPalette palette;
+        private readonly Dictionary<UiTextStyleKey, TextStyle> uiStyles = [];
+        private readonly Dictionary<CodeTextStyleKey, TextStyle> codeStyles = [];
+        private readonly Dictionary<float, CodeTextStyles> codeStyleSets = [];
+
+        public RenderTextResources(RendererPalette palette)
+        {
+            this.palette = palette;
+        }
+
+        public TextStyle GetUiTextStyle(float size, SKColor color, bool bold)
+        {
+            var key = new UiTextStyleKey(size, color, bold);
+            if (!uiStyles.TryGetValue(key, out var style))
+            {
+                style = CreateUiTextStyle(size, color, bold);
+                uiStyles[key] = style;
+            }
+
+            return style;
+        }
+
+        public TextStyle GetCodeTextStyle(float size, SKColor color)
+        {
+            var key = new CodeTextStyleKey(size, color);
+            if (!codeStyles.TryGetValue(key, out var style))
+            {
+                style = CreateCodeTextStyle(size, color);
+                codeStyles[key] = style;
+            }
+
+            return style;
+        }
+
+        public CodeTextStyles GetCodeTextStyles(float size)
+        {
+            if (!codeStyleSets.TryGetValue(size, out var styles))
+            {
+                styles = new CodeTextStyles(palette, size);
+                codeStyleSets[size] = styles;
+            }
+
+            return styles;
+        }
+
+        public void Dispose()
+        {
+            foreach (var styles in codeStyleSets.Values)
+            {
+                styles.Dispose();
+            }
+
+            foreach (var style in codeStyles.Values)
+            {
+                style.Dispose();
+            }
+
+            foreach (var style in uiStyles.Values)
+            {
+                style.Dispose();
+            }
+        }
+
+        private readonly record struct UiTextStyleKey(float Size, SKColor Color, bool Bold);
+
+        private readonly record struct CodeTextStyleKey(float Size, SKColor Color);
     }
 
     private sealed class CodeTextStyles : IDisposable
@@ -1250,24 +1567,33 @@ public sealed class DiffSceneRenderer
 
     private sealed class TextStyle : IDisposable
     {
-        private readonly SKTypeface typeface;
+        private readonly TextMetricsCache metrics = TextMetricsCache.Shared;
 
-        public TextStyle(string familyName, float size, SKColor color, SKFontStyle fontStyle)
+        public TextStyle(string familyName, float size, SKColor color, bool bold)
         {
-            typeface = SKTypeface.FromFamilyName(familyName, fontStyle);
+            Descriptor = new TextFontDescriptor(familyName, size, bold);
+            var typeface = metrics.GetTypeface(Descriptor);
             Font = new SKFont(typeface, size, 1, 0);
             Paint = new SKPaint { Color = color, IsAntialias = true };
+            MonospaceAdvance = metrics.MeasureMonospaceAdvance(Descriptor);
         }
+
+        public TextFontDescriptor Descriptor { get; }
 
         public SKFont Font { get; }
 
         public SKPaint Paint { get; }
 
+        public float MonospaceAdvance { get; }
+
+        public float MeasureText(string text) => metrics.MeasureNaturalWidth(text, Descriptor);
+
+        public string MiddleEllipsize(string text, float maxWidth) => metrics.MiddleEllipsize(text, maxWidth, Descriptor);
+
         public void Dispose()
         {
             Font.Dispose();
             Paint.Dispose();
-            typeface.Dispose();
         }
     }
 }
