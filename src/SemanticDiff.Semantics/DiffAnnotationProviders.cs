@@ -16,10 +16,13 @@ public sealed class BuiltInDiffAnnotationProvider : IDiffAnnotationProvider
 
         var builder = ImmutableArray.CreateBuilder<DiffAnnotation>();
         var documentsById = request.Documents.ToDictionary(document => document.Id);
+        var semanticInsights = new SemanticDocumentInsightIndex()
+            .Build(request.SemanticGraph, request.Documents)
+            .ToImmutableDictionary(insight => insight.DocumentId);
 
         AddDocumentAnnotations(request, builder);
         AddLineAnnotations(request.Documents, builder);
-        AddSemanticAnnotations(request.SemanticGraph, documentsById, builder);
+        AddSemanticAnnotations(semanticInsights, documentsById, builder);
         AddImpactAnnotations(request.SemanticGraph, documentsById, builder);
         AddNavigationAnnotations(request, documentsById, builder);
         AddReviewCommentAnnotations(request, documentsById, builder);
@@ -90,36 +93,48 @@ public sealed class BuiltInDiffAnnotationProvider : IDiffAnnotationProvider
     }
 
     private static void AddSemanticAnnotations(
-        SemanticGraph semanticGraph,
+        IReadOnlyDictionary<DiffDocumentId, SemanticDocumentInsight> semanticInsights,
         IReadOnlyDictionary<DiffDocumentId, DiffDocumentSnapshot> documentsById,
         ImmutableArray<DiffAnnotation>.Builder builder)
     {
-        if (semanticGraph.Anchors.IsDefaultOrEmpty)
+        if (semanticInsights.Count == 0)
         {
             return;
         }
 
-        foreach (var anchor in semanticGraph.Anchors)
+        foreach (var insight in semanticInsights.Values.Where(insight => insight.HasInsights))
         {
-            if (!documentsById.TryGetValue(anchor.DocumentId, out var document))
+            if (!documentsById.TryGetValue(insight.DocumentId, out var document))
             {
                 continue;
             }
 
-            var lineIndex = FindLineIndex(document, anchor.Range.Line);
-            var kind = anchor.Kind == SemanticAnchorKind.Unknown || anchor.DisplayName.StartsWith("XML parse error:", StringComparison.Ordinal)
-                ? DiffAnnotationKind.ParserDiagnostic
-                : DiffAnnotationKind.SemanticAnchor;
-            var severity = kind == DiffAnnotationKind.ParserDiagnostic ? DiffAnnotationSeverity.Warning : DiffAnnotationSeverity.Info;
-            var label = kind == DiffAnnotationKind.ParserDiagnostic ? "parse" : SemanticLabel(anchor.Kind);
-            builder.Add(DiffAnnotation.Line(
+            builder.Add(DiffAnnotation.Node(
                 document.Id,
-                kind,
-                lineIndex,
-                anchor.Range.Line,
-                label,
-                anchor.DisplayName,
-                severity));
+                DiffAnnotationKind.SemanticAnchor,
+                "sem",
+                insight.SummaryText,
+                insight.ChangedAnchorCount > 0 || insight.ImpactedEdgeCount > 0 ? DiffAnnotationSeverity.Warning : DiffAnnotationSeverity.Info));
+
+            foreach (var lineInsight in insight.Lines)
+            {
+                var kind = lineInsight.Kind == SemanticAnchorKind.Unknown
+                    ? DiffAnnotationKind.ParserDiagnostic
+                    : DiffAnnotationKind.SemanticAnchor;
+                var severity = kind == DiffAnnotationKind.ParserDiagnostic
+                    ? DiffAnnotationSeverity.Warning
+                    : lineInsight.IsChanged || lineInsight.IsImpacted
+                        ? DiffAnnotationSeverity.Warning
+                        : DiffAnnotationSeverity.Info;
+                builder.Add(DiffAnnotation.Line(
+                    document.Id,
+                    kind,
+                    FindLineIndex(document, lineInsight.LineNumber),
+                    lineInsight.LineNumber,
+                    lineInsight.Label,
+                    lineInsight.Detail,
+                    severity));
+            }
         }
     }
 

@@ -57,6 +57,10 @@ public sealed class DiffAnnotationProviderTests
         Assert.Contains(DiffAnnotationKind.ReviewAction, kinds);
         Assert.Contains(DiffAnnotationKind.ReviewComment, kinds);
         Assert.Equal(DiffAnnotationActionKind.ChangeNavigation, annotations.Single(annotation => annotation.Kind == DiffAnnotationKind.Navigation).ActionKind);
+        Assert.Contains(annotations, annotation =>
+            annotation.Target == DiffAnnotationTarget.Node &&
+            annotation.Kind == DiffAnnotationKind.SemanticAnchor &&
+            annotation.Detail.Contains("semantic anchors", StringComparison.Ordinal));
 
         var reviewAnnotations = annotations.Where(annotation => annotation.Kind == DiffAnnotationKind.ReviewComment).ToArray();
         Assert.All(reviewAnnotations, annotation =>

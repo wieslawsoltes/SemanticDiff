@@ -54,6 +54,48 @@ public sealed record SemanticGraph(
     public static SemanticGraph Empty { get; } = new(ImmutableArray<SemanticAnchor>.Empty, ImmutableArray<SemanticEdge>.Empty);
 }
 
+public sealed record SemanticLineInsight(
+    int LineNumber,
+    string Label,
+    string Detail,
+    SemanticAnchorKind Kind,
+    int AnchorCount,
+    int LinkCount,
+    bool IsChanged,
+    bool IsImpacted)
+{
+    public string KindText => Kind switch
+    {
+        SemanticAnchorKind.XamlRoot => "XAML",
+        SemanticAnchorKind.XamlName => "Name",
+        _ => Kind.ToString()
+    };
+}
+
+public sealed record SemanticDocumentInsight(
+    DiffDocumentId DocumentId,
+    int AnchorCount,
+    int ChangedAnchorCount,
+    int LinkedAnchorCount,
+    int ImpactedEdgeCount,
+    ImmutableArray<SemanticLineInsight> Lines)
+{
+    public static SemanticDocumentInsight Empty(DiffDocumentId documentId) => new(
+        documentId,
+        0,
+        0,
+        0,
+        0,
+        ImmutableArray<SemanticLineInsight>.Empty);
+
+    public bool HasInsights => AnchorCount > 0 || ChangedAnchorCount > 0 || LinkedAnchorCount > 0 || ImpactedEdgeCount > 0;
+
+    public string SummaryText =>
+        HasInsights
+            ? $"{AnchorCount:N0} semantic anchors | {ChangedAnchorCount:N0} changed | {LinkedAnchorCount:N0} linked | {ImpactedEdgeCount:N0} impacted links"
+            : "No semantic anchors";
+}
+
 public sealed record SemanticGraphFilter(
     ImmutableHashSet<SemanticEdgeKind>? IncludedEdgeKinds = null,
     double MinimumConfidence = 0,
