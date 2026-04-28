@@ -74,6 +74,71 @@ public sealed class CSharpSemanticProviderTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_UsesGitRevisionContentForAnchorLines()
+    {
+        var repositoryPath = Path.Combine(Path.GetTempPath(), $"SemanticDiffTests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(repositoryPath);
+        await File.WriteAllTextAsync(Path.Combine(repositoryPath, "Sample.cs"), "namespace Sample; public sealed class WorkingTreeClass { }");
+
+        const string revisionContent = """
+            namespace Sample;
+
+            public sealed class RevisionAlignedClass
+            {
+            }
+            """;
+        var fileChange = new GitFileChange("Sample.cs", null, DiffFileStatus.Modified, 1, 0, "C#");
+        var gitSnapshot = new GitDiffSnapshot(
+            repositoryPath,
+            new GitDiffRequest(repositoryPath, GitDiffScope.Branch, "origin/main", "refs/remotes/origin/pull/1/head"),
+            "origin/main",
+            ImmutableArray.Create(fileChange),
+            DateTimeOffset.UtcNow);
+
+        try
+        {
+            var documents = CreateDocuments(("Sample.cs", "namespace Sample; public sealed class DocumentFallbackClass { }"));
+            var provider = new CSharpSemanticProvider(new MSBuildWorkspaceFactory(), new FakeGitDiffService(revisionContent));
+
+            var graph = await provider.AnalyzeAsync(
+                new SemanticAnalysisRequest(repositoryPath, gitSnapshot, documents, SemanticAnalysisMode.FastSyntaxOnly),
+                CancellationToken.None);
+
+            var typeAnchor = Assert.Single(graph.Anchors, anchor => anchor.Kind == SemanticAnchorKind.Type);
+            Assert.Equal("Sample.RevisionAlignedClass", typeAnchor.DisplayName);
+            Assert.Equal(3, typeAnchor.Range.Line);
+        }
+        finally
+        {
+            Directory.Delete(repositoryPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_RemoteRevisionSkipsWorkspaceAnalysis()
+    {
+        var documents = CreateDocuments(("Sample.cs", "namespace Sample; public sealed class DocumentFallbackClass { }"));
+        var fileChange = new GitFileChange("Sample.cs", null, DiffFileStatus.Modified, 1, 0, "C#");
+        var gitSnapshot = new GitDiffSnapshot(
+            "/repo",
+            new GitDiffRequest("/repo", GitDiffScope.Branch, "origin/main", "refs/remotes/origin/pull/1/head"),
+            "origin/main",
+            ImmutableArray.Create(fileChange),
+            DateTimeOffset.UtcNow);
+        var workspaceFactory = new TrackingWorkspaceFactory();
+        var provider = new CSharpSemanticProvider(
+            workspaceFactory,
+            new FakeGitDiffService("namespace Sample; public sealed class RevisionAlignedClass { }"));
+
+        var graph = await provider.AnalyzeAsync(
+            new SemanticAnalysisRequest("/repo", gitSnapshot, documents, SemanticAnalysisMode.WorkspaceThenSyntax),
+            CancellationToken.None);
+
+        Assert.False(workspaceFactory.WasCalled);
+        Assert.Contains(graph.Anchors, anchor => anchor.Kind == SemanticAnchorKind.Type && anchor.DisplayName == "Sample.RevisionAlignedClass");
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_WorkspaceModeKeepsSyntaxCoverageForFilesOutsideLoadedProject()
     {
         var repositoryPath = Path.Combine(Path.GetTempPath(), $"SemanticDiffTests-{Guid.NewGuid():N}");
@@ -131,5 +196,17 @@ public sealed class CSharpSemanticProviderTests
             WasCalled = true;
             throw new InvalidOperationException("MSBuildWorkspace should not be opened in fast syntax mode.");
         }
+    }
+
+    private sealed class FakeGitDiffService(string content) : IGitDiffService
+    {
+        public Task<GitDiffSnapshot> GetDiffAsync(GitDiffRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<GitFileDiff> GetFileDiffAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<string> GetFileContentAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken) =>
+            Task.FromResult(content);
     }
 }

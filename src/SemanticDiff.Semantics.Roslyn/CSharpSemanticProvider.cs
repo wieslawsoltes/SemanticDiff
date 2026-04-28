@@ -5,21 +5,29 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
 using Microsoft.CodeAnalysis.Text;
 using SemanticDiff.Core;
+using SemanticDiff.Git;
 
 namespace SemanticDiff.Semantics.Roslyn;
 
 public sealed class CSharpSemanticProvider : ISemanticProvider
 {
     private readonly MSBuildWorkspaceFactory workspaceFactory;
+    private readonly IGitDiffService gitDiffService;
 
     public CSharpSemanticProvider()
-        : this(new MSBuildWorkspaceFactory())
+        : this(new MSBuildWorkspaceFactory(), new GitDiffService())
     {
     }
 
     public CSharpSemanticProvider(MSBuildWorkspaceFactory workspaceFactory)
+        : this(workspaceFactory, new GitDiffService())
+    {
+    }
+
+    public CSharpSemanticProvider(MSBuildWorkspaceFactory workspaceFactory, IGitDiffService gitDiffService)
     {
         this.workspaceFactory = workspaceFactory;
+        this.gitDiffService = gitDiffService;
     }
 
     public string Id => "roslyn-csharp";
@@ -38,7 +46,9 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
         }
 
         SemanticGraph? workspaceGraph = null;
-        if (request.AnalysisMode == SemanticAnalysisMode.WorkspaceThenSyntax && !string.IsNullOrWhiteSpace(request.RepositoryPath))
+        if (request.AnalysisMode == SemanticAnalysisMode.WorkspaceThenSyntax &&
+            ShouldUseWorkspaceAnalysis(request) &&
+            !string.IsNullOrWhiteSpace(request.RepositoryPath))
         {
             try
             {
@@ -52,11 +62,23 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
 
         if (workspaceGraph is not null)
         {
-            var syntaxGraph = await AnalyzeWithInMemoryCompilationAsync(request.RepositoryPath, csharpDocuments, cancellationToken).ConfigureAwait(false);
-            return MergeGraphs(workspaceGraph, syntaxGraph);
+            var syntaxGraph = await AnalyzeWithInMemoryCompilationAsync(request, csharpDocuments, cancellationToken).ConfigureAwait(false);
+            return MergeGraphs(syntaxGraph, workspaceGraph);
         }
 
-        return await AnalyzeWithInMemoryCompilationAsync(request.RepositoryPath, csharpDocuments, cancellationToken).ConfigureAwait(false);
+        return await AnalyzeWithInMemoryCompilationAsync(request, csharpDocuments, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool ShouldUseWorkspaceAnalysis(SemanticAnalysisRequest request)
+    {
+        if (request.GitSnapshot is null)
+        {
+            return true;
+        }
+
+        var diffRequest = request.GitSnapshot.Request;
+        return diffRequest.Scope is GitDiffScope.Worktree or GitDiffScope.Unstaged or GitDiffScope.Head ||
+            diffRequest.Scope == GitDiffScope.Branch && IsCurrentHeadReference(diffRequest.HeadRef);
     }
 
     private static SemanticGraph MergeGraphs(SemanticGraph first, SemanticGraph second)
@@ -128,7 +150,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
     }
 
     private async ValueTask<SemanticGraph> AnalyzeWithInMemoryCompilationAsync(
-        string repositoryPath,
+        SemanticAnalysisRequest request,
         ImmutableArray<DiffDocumentSnapshot> documents,
         CancellationToken cancellationToken)
     {
@@ -138,7 +160,7 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
 
         foreach (var document in documents)
         {
-            var sourceText = SourceText.From(await LoadAnalysisTextAsync(repositoryPath, document, cancellationToken).ConfigureAwait(false));
+            var sourceText = SourceText.From(await LoadAnalysisTextAsync(request, document, cancellationToken).ConfigureAwait(false));
             var tree = CSharpSyntaxTree.ParseText(sourceText, parseOptions, document.Metadata.Path, cancellationToken);
             trees.Add(tree);
             snapshotsByTree.Add(tree, document);
@@ -163,11 +185,28 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
         return await AnalyzeContextsAsync(contexts.ToImmutable(), cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<string> LoadAnalysisTextAsync(string repositoryPath, DiffDocumentSnapshot document, CancellationToken cancellationToken)
+    private async Task<string> LoadAnalysisTextAsync(SemanticAnalysisRequest request, DiffDocumentSnapshot document, CancellationToken cancellationToken)
     {
-        if (document.Metadata.Status != DiffFileStatus.Deleted)
+        if (request.GitSnapshot is not null &&
+            TryFindFileChange(request.GitSnapshot, document, out var fileChange))
         {
-            var filePath = Path.Combine(repositoryPath, document.Metadata.Path);
+            try
+            {
+                var content = await gitDiffService.GetFileContentAsync(request.GitSnapshot.Request, fileChange, cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(content))
+                {
+                    return content;
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // Fall back to local/document text when git cannot materialize the requested revision.
+            }
+        }
+
+        if (ShouldReadWorkingTreeFallback(request.GitSnapshot, document.Metadata.Status))
+        {
+            var filePath = Path.Combine(request.RepositoryPath, document.Metadata.Path);
             if (File.Exists(filePath))
             {
                 return await File.ReadAllTextAsync(filePath, cancellationToken).ConfigureAwait(false);
@@ -178,6 +217,50 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
             .Where(line => line.Kind != DiffLineKind.Metadata && line.Kind != DiffLineKind.Imaginary)
             .Select(line => line.Text));
     }
+
+    private static bool TryFindFileChange(GitDiffSnapshot gitSnapshot, DiffDocumentSnapshot document, out GitFileChange fileChange)
+    {
+        foreach (var candidate in gitSnapshot.Files)
+        {
+            if (string.Equals(candidate.Path, document.Metadata.Path, StringComparison.Ordinal) ||
+                string.Equals(candidate.OldPath, document.Metadata.Path, StringComparison.Ordinal) ||
+                string.Equals(candidate.Path, document.Metadata.OldPath, StringComparison.Ordinal) ||
+                string.Equals(candidate.OldPath, document.Metadata.OldPath, StringComparison.Ordinal))
+            {
+                fileChange = candidate;
+                return true;
+            }
+        }
+
+        fileChange = new GitFileChange(
+            document.Metadata.Path,
+            document.Metadata.OldPath,
+            document.Metadata.Status,
+            document.Metadata.AddedLines,
+            document.Metadata.DeletedLines,
+            document.Metadata.Language);
+        return !string.IsNullOrWhiteSpace(document.Metadata.Path);
+    }
+
+    private static bool ShouldReadWorkingTreeFallback(GitDiffSnapshot? gitSnapshot, DiffFileStatus status)
+    {
+        if (status == DiffFileStatus.Deleted)
+        {
+            return false;
+        }
+
+        if (gitSnapshot is null)
+        {
+            return true;
+        }
+
+        var request = gitSnapshot.Request;
+        return request.Scope is GitDiffScope.Worktree or GitDiffScope.Unstaged or GitDiffScope.Head ||
+            request.Scope == GitDiffScope.Branch && IsCurrentHeadReference(request.HeadRef);
+    }
+
+    private static bool IsCurrentHeadReference(string? reference) =>
+        string.IsNullOrWhiteSpace(reference) || string.Equals(reference.Trim(), "HEAD", StringComparison.Ordinal);
 
     private static async ValueTask<SemanticGraph> AnalyzeContextsAsync(
         ImmutableArray<CSharpDocumentContext> contexts,

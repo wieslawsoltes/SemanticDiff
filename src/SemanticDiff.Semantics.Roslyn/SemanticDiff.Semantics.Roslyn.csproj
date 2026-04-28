@@ -11,6 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="..\SemanticDiff.Core\SemanticDiff.Core.csproj" />
     <ProjectReference Include="..\SemanticDiff.Diff\SemanticDiff.Diff.csproj" />
+    <ProjectReference Include="..\SemanticDiff.Git\SemanticDiff.Git.csproj" />
     <ProjectReference Include="..\SemanticDiff.Semantics\SemanticDiff.Semantics.csproj" />
   </ItemGroup>
 
