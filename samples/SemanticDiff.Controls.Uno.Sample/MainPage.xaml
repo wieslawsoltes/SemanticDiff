@@ -1,0 +1,38 @@
+<Page x:Class="SemanticDiff.Controls.Uno.Sample.MainPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:controls="using:SemanticDiff.Controls.Uno"
+      Background="{ThemeResource AppBackgroundBrush}">
+  <Grid RowDefinitions="Auto,*" Padding="16" RowSpacing="12">
+    <StackPanel Spacing="4">
+      <TextBlock Text="SemanticDiff.Controls.Uno sample"
+                 Foreground="{ThemeResource PrimaryTextBrush}"
+                 FontSize="20"
+                 FontWeight="SemiBold" />
+      <TextBlock Text="Standalone host for DiffCanvasControl and CodeFileViewerControl without an app project reference."
+                 Foreground="{ThemeResource SecondaryTextBrush}"
+                 FontSize="12" />
+    </StackPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="12">
+      <Border Background="{ThemeResource PanelBrush}"
+              BorderBrush="{ThemeResource BorderBrush}"
+              BorderThickness="1"
+              CornerRadius="8">
+        <controls:DiffCanvasControl x:Name="DiffCanvas"
+                                    IsLightTheme="True" />
+      </Border>
+
+      <Border Grid.Column="1"
+              Background="{ThemeResource PanelBrush}"
+              BorderBrush="{ThemeResource BorderBrush}"
+              BorderThickness="1"
+              CornerRadius="8">
+        <controls:CodeFileViewerControl x:Name="CodeViewer"
+                                        IsDiffMode="True"
+                                        CodeFontSize="15"
+                                        ShowDiffAnnotations="True" />
+      </Border>
+    </Grid>
+  </Grid>
+</Page>
