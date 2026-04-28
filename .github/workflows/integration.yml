@@ -1,0 +1,201 @@
+name: Package Integration
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+      - "feature/**"
+      - "release/**"
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  SOLUTION_FILE: SemanticDiff.slnx
+  DESKTOP_TARGET_FRAMEWORK: net10.0-desktop
+
+jobs:
+  version:
+    name: Determine Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version-prefix: ${{ steps.version.outputs.version-prefix }}
+      version-suffix: ${{ steps.version.outputs.version-suffix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          VERSION_PREFIX=$(sed -nE 's/.*<VersionPrefix[^>]*>([^<]+)<\/VersionPrefix>.*/\1/p' Directory.Build.props | head -n 1)
+
+          if [[ -z "${VERSION_PREFIX}" ]]; then
+            echo "VersionPrefix was not found in Directory.Build.props" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF}" == refs/heads/release/* ]]; then
+            VERSION_SUFFIX=""
+            VERSION="${VERSION_PREFIX}"
+          else
+            VERSION_SUFFIX="ci.${GITHUB_RUN_NUMBER}"
+            VERSION="${VERSION_PREFIX}-${VERSION_SUFFIX}"
+          fi
+
+          {
+            echo "version-prefix=${VERSION_PREFIX}"
+            echo "version-suffix=${VERSION_SUFFIX}"
+            echo "version=${VERSION}"
+          } >> "${GITHUB_OUTPUT}"
+
+  package-integration:
+    name: Package Consumer Integration (macOS)
+    runs-on: macos-14
+    needs: version
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Prepare local package feed
+        run: mkdir -p artifacts/local-feed artifacts/test/integration
+
+      - name: Restore
+        run: dotnet restore "${{ env.SOLUTION_FILE }}"
+
+      - name: Pack local packages
+        run: dotnet pack "${{ env.SOLUTION_FILE }}" -c Release --no-restore -p:GeneratePackageOnBuild=false -p:Version="${{ needs.version.outputs.version }}" -o artifacts/local-feed
+
+      - name: Create package consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONSUMER_ROOT="${RUNNER_TEMP}/semanticdiff-package-integration"
+          LOCAL_FEED="${GITHUB_WORKSPACE}/artifacts/local-feed"
+          SKIASHARP_VIEWS_UNO_VERSION=$(sed -nE 's/.*<PackageVersion Include="SkiaSharp.Views.Uno.WinUI" Version="([^"]+)".*/\1/p' Directory.Packages.props | head -n 1)
+          if [[ -z "${SKIASHARP_VIEWS_UNO_VERSION}" ]]; then
+            echo "SkiaSharp.Views.Uno.WinUI package version was not found in Directory.Packages.props" >&2
+            exit 1
+          fi
+          rm -rf "${CONSUMER_ROOT}"
+          mkdir -p "${CONSUMER_ROOT}/workbench" "${CONSUMER_ROOT}/controls"
+          cp global.json "${CONSUMER_ROOT}/global.json"
+
+          cat > "${CONSUMER_ROOT}/NuGet.config" <<XML
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="local" value="${LOCAL_FEED}" />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+            </packageSources>
+          </configuration>
+          XML
+
+          cat > "${CONSUMER_ROOT}/workbench/SemanticDiff.Workbench.Consumer.csproj" <<XML
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net10.0</TargetFramework>
+              <ImplicitUsings>enable</ImplicitUsings>
+              <Nullable>enable</Nullable>
+            </PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="SemanticDiff.Workbench" Version="${{ needs.version.outputs.version }}" />
+            </ItemGroup>
+          </Project>
+          XML
+
+          cat > "${CONSUMER_ROOT}/workbench/Program.cs" <<'CS'
+          using System.Collections.Immutable;
+          using SemanticDiff.Workbench.Symbols;
+          using SemanticDiff.Workbench.Workspace;
+
+          var browser = new SymbolBrowserModel();
+          browser.SetItems(ImmutableArray<SemanticDiff.Semantics.SemanticNavigationItem>.Empty);
+          var view = browser.Apply(string.Empty);
+          var cache = new DiffWorkspaceCache(capacity: 2);
+          Console.WriteLine($"{view.CountText}; {cache.StatusText}");
+          CS
+
+          cat > "${CONSUMER_ROOT}/controls/SemanticDiff.Controls.Consumer.csproj" <<XML
+          <Project Sdk="Uno.Sdk">
+            <PropertyGroup>
+              <TargetFrameworks>${{ env.DESKTOP_TARGET_FRAMEWORK }}</TargetFrameworks>
+              <OutputType>Library</OutputType>
+              <UnoSingleProject>true</UnoSingleProject>
+              <UnoDisableHotDesign>true</UnoDisableHotDesign>
+              <UnoDisableMCPSupport>true</UnoDisableMCPSupport>
+              <UnoFeatures>
+                SkiaRenderer;
+              </UnoFeatures>
+            </PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="SemanticDiff.Controls.Uno" Version="${{ needs.version.outputs.version }}" />
+              <PackageReference Include="SkiaSharp.Views.Uno.WinUI" Version="${SKIASHARP_VIEWS_UNO_VERSION}" />
+            </ItemGroup>
+          </Project>
+          XML
+
+          cat > "${CONSUMER_ROOT}/controls/ControlFactory.cs" <<'CS'
+          using SemanticDiff.Controls.Uno;
+
+          namespace SemanticDiff.Controls.Consumer;
+
+          public static class ControlFactory
+          {
+              public static CodeFileViewerControl CreateCodeViewer() => new();
+          }
+          CS
+
+          echo "CONSUMER_ROOT=${CONSUMER_ROOT}" >> "${GITHUB_ENV}"
+
+      - name: Restore workbench consumer
+        run: dotnet restore "${CONSUMER_ROOT}/workbench/SemanticDiff.Workbench.Consumer.csproj" --configfile "${CONSUMER_ROOT}/NuGet.config" --no-cache
+
+      - name: Build workbench consumer
+        run: dotnet build "${CONSUMER_ROOT}/workbench/SemanticDiff.Workbench.Consumer.csproj" -c Release --no-restore
+
+      - name: Run workbench consumer
+        run: dotnet run --project "${CONSUMER_ROOT}/workbench/SemanticDiff.Workbench.Consumer.csproj" -c Release --no-build --no-restore
+
+      - name: Restore controls consumer
+        run: dotnet restore "${CONSUMER_ROOT}/controls/SemanticDiff.Controls.Consumer.csproj" --configfile "${CONSUMER_ROOT}/NuGet.config" --no-cache
+
+      - name: Build controls consumer
+        run: dotnet build "${CONSUMER_ROOT}/controls/SemanticDiff.Controls.Consumer.csproj" -c Release -f "${{ env.DESKTOP_TARGET_FRAMEWORK }}" --no-restore
+
+      - name: Upload local packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-integration-local-feed
+          path: |
+            artifacts/local-feed/*.nupkg
+            artifacts/local-feed/*.snupkg
+          if-no-files-found: error
+          retention-days: 14
