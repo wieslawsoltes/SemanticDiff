@@ -61,11 +61,12 @@ public sealed class CodeFoldingService
         foreach (var line in document.Lines)
         {
             var text = StripLineComment(line.Text);
-            foreach (var character in text)
+            for (var index = 0; index < text.Length; index++)
             {
+                var character = text[index];
                 if (character == '{')
                 {
-                    stack.Push(line.Index);
+                    stack.Push(ResolveBraceFoldStartLine(document.Lines, line.Index, index));
                 }
                 else if (character == '}' && stack.TryPop(out var startLine) && line.Index > startLine)
                 {
@@ -73,6 +74,26 @@ public sealed class CodeFoldingService
                 }
             }
         }
+    }
+
+    private static int ResolveBraceFoldStartLine(ImmutableArray<DiffLine> lines, int braceLineIndex, int braceColumn)
+    {
+        var text = lines[braceLineIndex].Text;
+        var prefix = text[..Math.Clamp(braceColumn, 0, text.Length)].Trim();
+        if (!string.IsNullOrWhiteSpace(prefix))
+        {
+            return braceLineIndex;
+        }
+
+        for (var index = braceLineIndex - 1; index >= 0; index--)
+        {
+            if (!string.IsNullOrWhiteSpace(lines[index].Text))
+            {
+                return index;
+            }
+        }
+
+        return braceLineIndex;
     }
 
     private static void AddXmlFoldings(DiffDocumentSnapshot document, ImmutableArray<CodeFoldRegion>.Builder builder)

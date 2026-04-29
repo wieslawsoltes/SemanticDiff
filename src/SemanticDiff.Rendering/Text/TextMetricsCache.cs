@@ -23,6 +23,7 @@ public sealed class TextMetricsCache : IDisposable
     private const string MeasurementTabReplacement = "    ";
     private static readonly object PretextMeasurementGate = new();
     private static int pretextBackendInitialized;
+    private static int pretextMeasurementUnavailable;
     private readonly object gate = new();
     private readonly int maxEntries;
     private readonly Dictionary<TextMeasureKey, float> measuredWidths = [];
@@ -54,7 +55,8 @@ public sealed class TextMetricsCache : IDisposable
             }
         }
 
-        var width = MeasureWithPretext(measuredText, fontDescriptor);
+        var width = TryMeasureWithPretext(measuredText, fontDescriptor) ??
+            MeasureWithFallback(measuredText, fontDescriptor);
         lock (gate)
         {
             if (!measuredWidths.ContainsKey(key))
@@ -122,19 +124,96 @@ public sealed class TextMetricsCache : IDisposable
             return;
         }
 
+        if (!TryWarmUpSkia())
+        {
+            Volatile.Write(ref pretextMeasurementUnavailable, 1);
+            return;
+        }
+
         PretextLayout.SetTextMeasurerFactory(new SkiaSharpTextMeasurerFactory());
     }
 
-    private static float MeasureWithPretext(string text, TextFontDescriptor fontDescriptor)
+    private static bool TryWarmUpSkia()
     {
+        try
+        {
+            using var surface = SKSurface.Create(new SKImageInfo(1, 1));
+            return surface is not null;
+        }
+        catch (Exception exception) when (IsRecoverablePretextMeasurementFailure(exception))
+        {
+            return false;
+        }
+    }
+
+    private static float? TryMeasureWithPretext(string text, TextFontDescriptor fontDescriptor)
+    {
+        if (Volatile.Read(ref pretextMeasurementUnavailable) == 1)
+        {
+            return null;
+        }
+
         lock (PretextMeasurementGate)
         {
-            var prepared = PretextLayout.PrepareWithSegments(
-                text,
-                fontDescriptor.ToPretextFontString(),
-                new PrepareOptions(WhiteSpaceMode.PreWrap));
-            return (float)PretextLayout.MeasureNaturalWidth(prepared);
+            if (Volatile.Read(ref pretextMeasurementUnavailable) == 1)
+            {
+                return null;
+            }
+
+            try
+            {
+                var prepared = PretextLayout.PrepareWithSegments(
+                    text,
+                    fontDescriptor.ToPretextFontString(),
+                    new PrepareOptions(WhiteSpaceMode.PreWrap));
+                return (float)PretextLayout.MeasureNaturalWidth(prepared);
+            }
+            catch (Exception exception) when (IsRecoverablePretextMeasurementFailure(exception))
+            {
+                Volatile.Write(ref pretextMeasurementUnavailable, 1);
+                return null;
+            }
         }
+    }
+
+    internal static bool IsRecoverablePretextMeasurementFailure(Exception exception) =>
+        exception is TypeInitializationException or DllNotFoundException or EntryPointNotFoundException or TypeLoadException or InvalidOperationException;
+
+    private static float MeasureWithFallback(string text, TextFontDescriptor fontDescriptor)
+    {
+        var maxLineWidth = 0f;
+        var currentLineWidth = 0f;
+        foreach (var character in text)
+        {
+            if (character == '\n')
+            {
+                maxLineWidth = Math.Max(maxLineWidth, currentLineWidth);
+                currentLineWidth = 0;
+                continue;
+            }
+
+            currentLineWidth += GetFallbackCharacterWidth(character, fontDescriptor);
+        }
+
+        return Math.Max(maxLineWidth, currentLineWidth);
+    }
+
+    private static float GetFallbackCharacterWidth(char character, TextFontDescriptor fontDescriptor)
+    {
+        var size = Math.Max(1, fontDescriptor.Size);
+        var weightFactor = fontDescriptor.Bold ? 1.06f : 1f;
+        var widthFactor = character switch
+        {
+            ' ' => 0.34f,
+            '.' or ',' or ':' or ';' or '\'' or '"' or '`' => 0.32f,
+            'i' or 'l' or 'I' or '!' or '|' => 0.36f,
+            'm' or 'w' or 'M' or 'W' => 0.82f,
+            _ when char.IsDigit(character) => 0.58f,
+            _ when char.IsUpper(character) => 0.66f,
+            _ => 0.57f
+        };
+
+        return size * widthFactor * weightFactor;
     }
 
     private static string NormalizeMeasuredText(string text) =>

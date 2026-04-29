@@ -582,6 +582,8 @@ public sealed class CSharpSemanticProvider : ISemanticProvider
 
 public class MSBuildWorkspaceFactory
 {
+    private static readonly StringComparer PathComparer = StringComparer.OrdinalIgnoreCase;
+
     public virtual MSBuildWorkspace CreateWorkspace() => MSBuildWorkspace.Create();
 
     public static string? FindWorkspacePath(string repositoryPath)
@@ -591,12 +593,77 @@ public class MSBuildWorkspaceFactory
             return null;
         }
 
-        return Directory.EnumerateFiles(repositoryPath, "*.slnx", SearchOption.TopDirectoryOnly).Order(StringComparer.OrdinalIgnoreCase).FirstOrDefault()
-            ?? Directory.EnumerateFiles(repositoryPath, "*.sln", SearchOption.TopDirectoryOnly).Order(StringComparer.OrdinalIgnoreCase).FirstOrDefault()
-            ?? Directory.EnumerateFiles(repositoryPath, "*.csproj", SearchOption.AllDirectories)
-                .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) &&
-                               !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
-                .Order(StringComparer.OrdinalIgnoreCase)
-                .FirstOrDefault();
+        return EnumerateWorkspaceFiles(repositoryPath, ["*.slnx", "*.sln", "*.slnf"])
+            .OrderBy(path => GetSolutionScore(repositoryPath, path))
+            .ThenBy(path => path, PathComparer)
+            .FirstOrDefault()
+            ?? EnumerateProjectFiles(repositoryPath).FirstOrDefault();
+    }
+
+    public static ImmutableArray<string> FindProjectPaths(string repositoryPath) =>
+        !Directory.Exists(repositoryPath)
+            ? ImmutableArray<string>.Empty
+            : EnumerateProjectFiles(repositoryPath).ToImmutableArray();
+
+    private static IEnumerable<string> EnumerateProjectFiles(string repositoryPath) =>
+        EnumerateWorkspaceFiles(repositoryPath, ["*.csproj", "*.fsproj", "*.vbproj"])
+            .Order(PathComparer);
+
+    private static IEnumerable<string> EnumerateWorkspaceFiles(string repositoryPath, string[] patterns)
+    {
+        foreach (var pattern in patterns)
+        {
+            foreach (var path in Directory.EnumerateFiles(repositoryPath, pattern, SearchOption.AllDirectories))
+            {
+                if (!IsIgnoredWorkspacePath(path))
+                {
+                    yield return path;
+                }
+            }
+        }
+    }
+
+    private static bool IsIgnoredWorkspacePath(string path)
+    {
+        var segments = path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return segments.Any(segment =>
+            segment.Equals("bin", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals("obj", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals(".vs", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals(".idea", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals(".vscode", StringComparison.OrdinalIgnoreCase) ||
+            segment.Equals("node_modules", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static int GetSolutionScore(string repositoryPath, string path)
+    {
+        var relativePath = Path.GetRelativePath(repositoryPath, path)
+            .Replace(Path.DirectorySeparatorChar, '/')
+            .Replace(Path.AltDirectorySeparatorChar, '/');
+        var segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var fileName = Path.GetFileNameWithoutExtension(path);
+        var extensionScore = Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".slnx" => 0,
+            ".sln" => 4,
+            ".slnf" => 8,
+            _ => 12
+        };
+        var depthScore = Math.Max(0, segments.Length - 1) * 10;
+        var repoName = Path.GetFileName(Path.GetFullPath(repositoryPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var nameScore = fileName.Contains(repoName, StringComparison.OrdinalIgnoreCase) ? 0 : 20;
+        var directoryScore = segments.Length switch
+        {
+            1 => 0,
+            > 1 when segments[0].Equals("src", StringComparison.OrdinalIgnoreCase) => 2,
+            > 1 when segments[0].Equals("source", StringComparison.OrdinalIgnoreCase) => 3,
+            > 1 when segments[0].Equals("build", StringComparison.OrdinalIgnoreCase) => 80,
+            > 1 when segments[0].Equals("tools", StringComparison.OrdinalIgnoreCase) => 100,
+            > 1 when segments[0].Equals("samples", StringComparison.OrdinalIgnoreCase) => 120,
+            > 1 when segments[0].Equals("tests", StringComparison.OrdinalIgnoreCase) => 140,
+            _ => 30
+        };
+        return extensionScore + depthScore + nameScore + directoryScore;
     }
 }

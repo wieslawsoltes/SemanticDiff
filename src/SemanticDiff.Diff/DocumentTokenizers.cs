@@ -621,6 +621,14 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
 
     public string Id => "textmate-sharp";
 
+    public void ClearCache()
+    {
+        lock (gate)
+        {
+            documentCaches.Clear();
+        }
+    }
+
     public async ValueTask<ImmutableArray<TokenSpan>> TokenizeLineAsync(
         DiffDocumentSnapshot document,
         DiffLine line,

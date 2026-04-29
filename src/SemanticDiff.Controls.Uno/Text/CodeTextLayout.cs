@@ -3,7 +3,16 @@ using SemanticDiff.Core;
 
 namespace SemanticDiff.Controls.Uno;
 
-internal readonly record struct VisibleCodeRow(int LineIndex, CodeFoldRegion? CollapsedRegion);
+internal readonly record struct VisibleCodeRow(
+    int LineIndex,
+    CodeFoldRegion? CollapsedRegion,
+    CodeFoldRegion? StartRegion,
+    ImmutableArray<CodeFoldRegion> ActiveRegions)
+{
+    public CodeFoldRegion? InnermostActiveRegion => ActiveRegions.IsDefaultOrEmpty ? null : ActiveRegions[^1];
+
+    public int FoldDepth => ActiveRegions.IsDefaultOrEmpty ? 0 : ActiveRegions.Length;
+}
 
 internal readonly record struct CodeTextPosition(int RowIndex, int Column);
 
@@ -26,17 +35,45 @@ internal static class CodeTextLayout
             .Select(group => group.OrderByDescending(region => region.EndLineIndex).First())
             .ToDictionary(region => region.StartLineIndex);
 
+        var orderedRegions = regionsByStart.Values
+            .OrderBy(region => region.StartLineIndex)
+            .ThenBy(region => region.EndLineIndex)
+            .ToArray();
+        var activeRegions = new List<CodeFoldRegion>();
+        var nextRegionIndex = 0;
         var rows = ImmutableArray.CreateBuilder<VisibleCodeRow>(lines.Count);
         for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
+            activeRegions.RemoveAll(region => region.EndLineIndex < lineIndex);
+            while (nextRegionIndex < orderedRegions.Length && orderedRegions[nextRegionIndex].StartLineIndex < lineIndex)
+            {
+                nextRegionIndex++;
+            }
+
+            while (nextRegionIndex < orderedRegions.Length && orderedRegions[nextRegionIndex].StartLineIndex == lineIndex)
+            {
+                var candidate = orderedRegions[nextRegionIndex];
+                if (candidate.EndLineIndex >= lineIndex)
+                {
+                    activeRegions.Add(candidate);
+                }
+
+                nextRegionIndex++;
+            }
+
+            var startRegion = regionsByStart.GetValueOrDefault(lineIndex);
+            var activeRegionSnapshot = activeRegions
+                .OrderBy(region => region.StartLineIndex)
+                .ThenByDescending(region => region.EndLineIndex)
+                .ToImmutableArray();
             if (regionsByStart.TryGetValue(lineIndex, out var region) && collapsedFoldStarts.Contains(lineIndex))
             {
-                rows.Add(new VisibleCodeRow(lineIndex, region));
+                rows.Add(new VisibleCodeRow(lineIndex, region, startRegion, activeRegionSnapshot));
                 lineIndex = Math.Min(lines.Count - 1, region.EndLineIndex);
             }
             else
             {
-                rows.Add(new VisibleCodeRow(lineIndex, null));
+                rows.Add(new VisibleCodeRow(lineIndex, null, startRegion, activeRegionSnapshot));
             }
         }
 
