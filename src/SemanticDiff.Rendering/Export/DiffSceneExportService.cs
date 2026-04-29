@@ -95,21 +95,30 @@ public sealed class DiffSceneExportService : IDiffSceneExporter
         var nodes = sourceScene.Nodes
             .Select(node =>
             {
-                var clone = new DiffNode(node.Document, node.Bounds, node.IsPinned, node.FontSize)
+                var clone = new DiffNode(node.DiffDocument, node.Bounds, node.IsPinned, node.FontSize)
                 {
                     IsSelected = node.IsSelected
                 };
+                if (node.FullFileDocument is not null && node.FullText is not null)
+                {
+                    clone.SetFullFileDocument(node.FullFileDocument, node.FoldRegions, node.FullText);
+                    clone.ApplyWorkspaceMode(sourceScene.ShowFullFileNodes, sourceScene.EnableNodeEditing);
+                }
+
                 clone.RestoreScrollOffset(node.ScrollOffsetY);
                 return clone;
             })
             .ToArray();
 
-        return new DiffCanvasScene(
+        var scene = new DiffCanvasScene(
             nodes,
             sourceScene.Edges.ToArray(),
             sourceScene.Groups,
             sourceScene.Annotations,
             sourceScene.AnnotationVisibility);
+        scene.SetShowFullFileNodes(sourceScene.ShowFullFileNodes);
+        scene.SetNodeEditingEnabled(sourceScene.EnableNodeEditing);
+        return scene;
     }
 
     private static SKSizeI GetExportSize(Rect2 graphBounds, DiffSceneExportOptions options)

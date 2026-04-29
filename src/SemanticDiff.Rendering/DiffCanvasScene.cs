@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using SemanticDiff.Core;
+using SemanticDiff.Diff;
 
 namespace SemanticDiff.Rendering;
 
@@ -20,16 +21,46 @@ public sealed class DiffNode
     public const double FontControlLineCountGapScreenSize = 8;
     public const double FontControlMinimumNodeScreenWidth = 220;
     public const double FontControlMinimumTitleScreenHeight = 22;
+    public const double DiffGutterWidth = 94;
+    public const double FullFileGutterWidth = 76;
+    public const double MarkerWidth = 24;
+    public const double CodeLeftPadding = 10;
+    private const int EditorTabSize = 4;
 
     public DiffNode(DiffDocumentSnapshot document, Rect2 bounds, bool isPinned = false, double fontSize = DefaultFontSize)
     {
+        DiffDocument = document;
         Document = document;
         Bounds = bounds;
         IsPinned = isPinned;
         FontSize = NormalizeFontSize(fontSize);
     }
 
-    public DiffDocumentSnapshot Document { get; }
+    public DiffDocumentSnapshot DiffDocument { get; }
+
+    public DiffDocumentSnapshot? FullFileDocument { get; private set; }
+
+    public string? FullText { get; private set; }
+
+    public ImmutableArray<CodeFoldRegion> FoldRegions { get; private set; } = [];
+
+    public DiffDocumentSnapshot Document { get; private set; }
+
+    public bool HasFullFileDocument => FullFileDocument is not null;
+
+    public bool IsShowingFullFile => (fullFileOverride ?? workspaceShowFullFile) && FullFileDocument is not null;
+
+    public bool IsEditingActive => IsShowingFullFile && (editingOverride ?? workspaceEditing);
+
+    public bool IsEditorFocused { get; private set; }
+
+    public int CaretLineIndex { get; private set; }
+
+    public int CaretColumn { get; private set; }
+
+    public bool? FullFileViewOverride => fullFileOverride;
+
+    public bool? EditingOverride => editingOverride;
 
     public Rect2 Bounds { get; set; }
 
@@ -43,11 +74,20 @@ public sealed class DiffNode
 
     public double LineHeight => Math.Round(FontSize + 4.5, 2);
 
-    public double MaxScrollOffset => Math.Max(0, Document.LineCount * LineHeight - BodyBounds.Height);
+    public double MaxScrollOffset => Math.Max(0, VisibleLineCount * LineHeight - BodyBounds.Height);
 
     public Rect2 TitleBounds => new(Bounds.X, Bounds.Y, Bounds.Width, TitleHeight);
 
     public Rect2 BodyBounds => new(Bounds.X, Bounds.Y + TitleHeight, Bounds.Width, Math.Max(0, Bounds.Height - TitleHeight - FooterHeight));
+
+    public int VisibleLineCount => GetVisibleRows().Length;
+
+    private bool workspaceShowFullFile;
+    private bool workspaceEditing;
+    private bool? fullFileOverride;
+    private bool? editingOverride;
+    private readonly HashSet<int> collapsedFoldStartLines = [];
+    private List<string>? editableLines;
 
     public void ScrollBy(double deltaY)
     {
@@ -84,10 +124,570 @@ public sealed class DiffNode
         ClampScrollOffset();
     }
 
+    public void SetFullFileDocument(DiffDocumentSnapshot fullFileDocument, ImmutableArray<CodeFoldRegion> foldRegions, string fullText)
+    {
+        FullFileDocument = fullFileDocument;
+        FullText = fullText;
+        FoldRegions = foldRegions.IsDefault ? ImmutableArray<CodeFoldRegion>.Empty : foldRegions;
+        editableLines = null;
+        collapsedFoldStartLines.RemoveWhere(lineIndex => lineIndex < 0 || lineIndex >= fullFileDocument.LineCount);
+        ApplyDocumentMode();
+    }
+
+    public void ApplyWorkspaceMode(bool showFullFile, bool enableEditing)
+    {
+        workspaceShowFullFile = showFullFile;
+        workspaceEditing = enableEditing;
+        ApplyDocumentMode();
+    }
+
+    public void ToggleFullFileOverride()
+    {
+        fullFileOverride = !IsShowingFullFile;
+        ApplyDocumentMode();
+    }
+
+    public void SetFullFileOverride(bool? isShowingFullFile)
+    {
+        fullFileOverride = isShowingFullFile;
+        ApplyDocumentMode();
+    }
+
+    public void ClearFullFileOverride()
+    {
+        fullFileOverride = null;
+        ApplyDocumentMode();
+    }
+
+    public void ToggleEditingOverride()
+    {
+        editingOverride = !IsEditingActive;
+        ApplyDocumentMode();
+    }
+
+    public void SetEditingOverride(bool? isEditing)
+    {
+        editingOverride = isEditing;
+        ApplyDocumentMode();
+    }
+
+    public void ClearEditingOverride()
+    {
+        editingOverride = null;
+        ApplyDocumentMode();
+    }
+
+    public void SetEditorFocus(bool isFocused)
+    {
+        IsEditorFocused = isFocused && IsEditingActive;
+    }
+
+    public bool ToggleFold(int startLineIndex)
+    {
+        if (!IsShowingFullFile || !FoldRegions.Any(region => region.StartLineIndex == startLineIndex))
+        {
+            return false;
+        }
+
+        if (!collapsedFoldStartLines.Add(startLineIndex))
+        {
+            collapsedFoldStartLines.Remove(startLineIndex);
+        }
+
+        ClampScrollOffset();
+        return true;
+    }
+
+    public bool TryHitTestFold(Point2 worldPoint, out int startLineIndex)
+    {
+        startLineIndex = -1;
+        if (!IsShowingFullFile || !BodyBounds.Contains(worldPoint))
+        {
+            return false;
+        }
+
+        var foldLaneLeft = BodyBounds.Left + 8;
+        var foldLaneRight = BodyBounds.Left + 30;
+        if (worldPoint.X < foldLaneLeft || worldPoint.X > foldLaneRight)
+        {
+            return false;
+        }
+
+        var rowIndex = (int)Math.Floor((worldPoint.Y - BodyBounds.Top + ScrollOffsetY) / LineHeight);
+        var rows = GetVisibleRows(rowIndex, 1);
+        if (rows.Length == 0 || rows[0].FoldRegion is not { } foldRegion)
+        {
+            return false;
+        }
+
+        startLineIndex = foldRegion.StartLineIndex;
+        return true;
+    }
+
+    public bool TrySetCaretFromWorldPoint(Point2 worldPoint)
+    {
+        if (!IsEditingActive || !BodyBounds.Contains(worldPoint))
+        {
+            return false;
+        }
+
+        var rowIndex = (int)Math.Floor((worldPoint.Y - BodyBounds.Top + ScrollOffsetY) / LineHeight);
+        var rows = GetVisibleRows(rowIndex, 1);
+        if (rows.Length == 0)
+        {
+            return false;
+        }
+
+        var codeX = BodyBounds.Left + FullFileGutterWidth + CodeLeftPadding;
+        var characterWidth = Math.Max(4.0, FontSize * 0.62);
+        var visualColumn = Math.Max(0, (int)Math.Round((worldPoint.X - codeX) / characterWidth));
+        CaretLineIndex = rows[0].Line.Index;
+        CaretColumn = Math.Clamp(visualColumn, 0, rows[0].Line.Text.Replace("\t", "    ", StringComparison.Ordinal).Length);
+        IsEditorFocused = true;
+        return true;
+    }
+
+    public bool MoveCaret(int lineDelta, int columnDelta)
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        var rows = GetVisibleRows();
+        if (rows.Length == 0)
+        {
+            return false;
+        }
+
+        var currentRowIndex = IndexOfVisibleLine(rows, CaretLineIndex);
+        if (currentRowIndex < 0)
+        {
+            currentRowIndex = 0;
+        }
+
+        if (lineDelta == 0 && columnDelta != 0)
+        {
+            var direction = Math.Sign(columnDelta);
+            for (var step = 0; step < Math.Abs(columnDelta); step++)
+            {
+                MoveCaretByCharacter(rows, direction);
+            }
+
+            EnsureCaretVisible();
+            return true;
+        }
+
+        var nextRowIndex = Math.Clamp(currentRowIndex + lineDelta, 0, rows.Length - 1);
+        var nextLine = rows[nextRowIndex].Line;
+        CaretLineIndex = nextLine.Index;
+        CaretColumn = Math.Clamp(CaretColumn + columnDelta, 0, nextLine.Text.Length);
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool MoveCaretWord(int direction)
+    {
+        if (!IsEditingActive || direction == 0)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        var text = string.Join('\n', editableLines!);
+        var offset = GetEditableTextOffset();
+        offset = direction < 0
+            ? FindPreviousTextWordBoundary(text, offset)
+            : FindNextTextWordBoundary(text, offset);
+        SetCaretFromTextOffset(offset);
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool SetCaretColumn(int column)
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        CaretColumn = Math.Clamp(column, 0, GetEditableLine(CaretLineIndex).Length);
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool MoveCaretToDocumentStart()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        CaretLineIndex = 0;
+        CaretColumn = 0;
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool MoveCaretToDocumentEnd()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        CaretLineIndex = Math.Max(0, editableLines!.Count - 1);
+        CaretColumn = GetEditableLine(CaretLineIndex).Length;
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool MoveCaretToSmartLineStart()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        var line = GetEditableLine(CaretLineIndex);
+        var firstNonWhitespace = 0;
+        while (firstNonWhitespace < line.Length && char.IsWhiteSpace(line[firstNonWhitespace]))
+        {
+            firstNonWhitespace++;
+        }
+
+        CaretColumn = CaretColumn == firstNonWhitespace ? 0 : firstNonWhitespace;
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool InsertText(string text)
+    {
+        if (!IsEditingActive || string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        var normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        foreach (var character in normalized)
+        {
+            if (character == '\n')
+            {
+                InsertNewLineCore();
+            }
+            else if (!char.IsControl(character))
+            {
+                InsertCharacterCore(character);
+            }
+        }
+
+        RebuildEditedDocument();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool InsertNewLine()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        InsertNewLineCore();
+        RebuildEditedDocument();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool Backspace()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        if (CaretLineIndex < 0 || CaretLineIndex >= editableLines!.Count)
+        {
+            return false;
+        }
+
+        if (CaretColumn > 0)
+        {
+            var line = editableLines[CaretLineIndex];
+            var column = Math.Clamp(CaretColumn, 0, line.Length);
+            editableLines[CaretLineIndex] = line.Remove(column - 1, 1);
+            CaretColumn = column - 1;
+        }
+        else if (CaretLineIndex > 0)
+        {
+            var previous = editableLines[CaretLineIndex - 1];
+            var current = editableLines[CaretLineIndex];
+            editableLines[CaretLineIndex - 1] = previous + current;
+            editableLines.RemoveAt(CaretLineIndex);
+            CaretLineIndex--;
+            CaretColumn = previous.Length;
+        }
+        else
+        {
+            return false;
+        }
+
+        RebuildEditedDocument();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool BackspaceWord()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        if (CaretLineIndex < 0 || CaretLineIndex >= editableLines!.Count)
+        {
+            return false;
+        }
+
+        var line = editableLines[CaretLineIndex];
+        var column = Math.Clamp(CaretColumn, 0, line.Length);
+        if (column > 0)
+        {
+            var startColumn = FindPreviousWordBoundary(line, column);
+            if (startColumn == column)
+            {
+                return false;
+            }
+
+            editableLines[CaretLineIndex] = line.Remove(startColumn, column - startColumn);
+            CaretColumn = startColumn;
+        }
+        else if (CaretLineIndex > 0)
+        {
+            var previous = editableLines[CaretLineIndex - 1];
+            editableLines[CaretLineIndex - 1] = previous + line;
+            editableLines.RemoveAt(CaretLineIndex);
+            CaretLineIndex--;
+            CaretColumn = previous.Length;
+        }
+        else
+        {
+            return false;
+        }
+
+        RebuildEditedDocument();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool Delete()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        if (CaretLineIndex < 0 || CaretLineIndex >= editableLines!.Count)
+        {
+            return false;
+        }
+
+        var line = editableLines[CaretLineIndex];
+        var column = Math.Clamp(CaretColumn, 0, line.Length);
+        if (column < line.Length)
+        {
+            editableLines[CaretLineIndex] = line.Remove(column, 1);
+        }
+        else if (CaretLineIndex < editableLines.Count - 1)
+        {
+            editableLines[CaretLineIndex] = line + editableLines[CaretLineIndex + 1];
+            editableLines.RemoveAt(CaretLineIndex + 1);
+        }
+        else
+        {
+            return false;
+        }
+
+        RebuildEditedDocument();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool DeleteWord()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        if (CaretLineIndex < 0 || CaretLineIndex >= editableLines!.Count)
+        {
+            return false;
+        }
+
+        var line = editableLines[CaretLineIndex];
+        var column = Math.Clamp(CaretColumn, 0, line.Length);
+        if (column < line.Length)
+        {
+            var endColumn = FindNextWordBoundary(line, column);
+            if (endColumn == column)
+            {
+                return false;
+            }
+
+            editableLines[CaretLineIndex] = line.Remove(column, endColumn - column);
+        }
+        else if (CaretLineIndex < editableLines.Count - 1)
+        {
+            editableLines[CaretLineIndex] = line + editableLines[CaretLineIndex + 1];
+            editableLines.RemoveAt(CaretLineIndex + 1);
+        }
+        else
+        {
+            return false;
+        }
+
+        CaretColumn = Math.Clamp(column, 0, editableLines[CaretLineIndex].Length);
+        RebuildEditedDocument();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool IndentCurrentLine()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        if (CaretLineIndex < 0 || CaretLineIndex >= editableLines!.Count)
+        {
+            return false;
+        }
+
+        editableLines[CaretLineIndex] = new string(' ', EditorTabSize) + editableLines[CaretLineIndex];
+        CaretColumn += EditorTabSize;
+        RebuildEditedDocument();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool OutdentCurrentLine()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        if (CaretLineIndex < 0 || CaretLineIndex >= editableLines!.Count)
+        {
+            return false;
+        }
+
+        var (line, removed) = RemoveIndent(editableLines[CaretLineIndex]);
+        if (removed == 0)
+        {
+            return false;
+        }
+
+        editableLines[CaretLineIndex] = line;
+        CaretColumn = Math.Max(0, CaretColumn - Math.Min(CaretColumn, removed));
+        RebuildEditedDocument();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool DuplicateCurrentLine()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        if (CaretLineIndex < 0 || CaretLineIndex >= editableLines!.Count)
+        {
+            return false;
+        }
+
+        var line = editableLines[CaretLineIndex];
+        editableLines.Insert(CaretLineIndex + 1, line);
+        CaretLineIndex++;
+        CaretColumn = Math.Clamp(CaretColumn, 0, line.Length);
+        RebuildEditedDocument();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public bool DeleteCurrentLine()
+    {
+        if (!IsEditingActive)
+        {
+            return false;
+        }
+
+        EnsureEditableLines();
+        if (CaretLineIndex < 0 || CaretLineIndex >= editableLines!.Count)
+        {
+            return false;
+        }
+
+        editableLines.RemoveAt(CaretLineIndex);
+        if (editableLines.Count == 0)
+        {
+            editableLines.Add(string.Empty);
+        }
+
+        CaretLineIndex = Math.Clamp(CaretLineIndex, 0, editableLines.Count - 1);
+        CaretColumn = Math.Clamp(CaretColumn, 0, editableLines[CaretLineIndex].Length);
+        RebuildEditedDocument();
+        EnsureCaretVisible();
+        return true;
+    }
+
+    public ImmutableArray<DiffNodeVisibleLine> GetVisibleRows(int firstRowIndex = 0, int count = int.MaxValue)
+    {
+        if (!IsShowingFullFile || FoldRegions.IsDefaultOrEmpty)
+        {
+            return GetFlatVisibleRows(firstRowIndex, count);
+        }
+
+        var rows = ImmutableArray.CreateBuilder<DiffNodeVisibleLine>();
+        var rowIndex = 0;
+        for (var lineIndex = 0; lineIndex < Document.LineCount; lineIndex++)
+        {
+            var line = Document.Lines[lineIndex];
+            var foldRegion = FoldRegions.FirstOrDefault(region => region.StartLineIndex == line.Index);
+            var isCollapsed = foldRegion is not null && collapsedFoldStartLines.Contains(foldRegion.StartLineIndex);
+            if (rowIndex >= firstRowIndex && rows.Count < count)
+            {
+                rows.Add(new DiffNodeVisibleLine(rowIndex, line.Index, line, foldRegion, isCollapsed, GetActiveFoldRegions(line.Index)));
+            }
+
+            rowIndex++;
+            if (isCollapsed)
+            {
+                lineIndex = Math.Max(lineIndex, foldRegion!.EndLineIndex);
+            }
+        }
+
+        return rows.ToImmutable();
+    }
+
     public Rect2 GetScrollbarThumbBounds(double cameraScale)
     {
         var body = BodyBounds;
-        var contentHeight = Math.Max(1, Document.LineCount * LineHeight);
+        var contentHeight = Math.Max(1, VisibleLineCount * LineHeight);
         if (contentHeight <= body.Height)
         {
             return Rect2.Empty;
@@ -152,15 +752,419 @@ public sealed class DiffNode
             }
         }
 
+        ScrollToLineIndex(targetLineIndex);
+    }
+
+    private ImmutableArray<DiffNodeVisibleLine> GetFlatVisibleRows(int firstRowIndex, int count)
+    {
+        var start = Math.Clamp(firstRowIndex, 0, Math.Max(0, Document.LineCount));
+        var end = Math.Clamp(start + Math.Max(0, count), 0, Document.LineCount);
+        return Document.Lines
+            .Skip(start)
+            .Take(end - start)
+            .Select((line, offset) => new DiffNodeVisibleLine(start + offset, line.Index, line, null, false, ImmutableArray<CodeFoldRegion>.Empty))
+            .ToImmutableArray();
+    }
+
+    private void ApplyDocumentMode()
+    {
+        Document = IsShowingFullFile ? FullFileDocument! : DiffDocument;
+        if (!IsEditingActive)
+        {
+            IsEditorFocused = false;
+        }
+
+        CaretLineIndex = Math.Clamp(CaretLineIndex, 0, Math.Max(0, Document.LineCount - 1));
+        CaretColumn = Math.Clamp(CaretColumn, 0, GetEditableLine(CaretLineIndex).Length);
+        ClampScrollOffset();
+    }
+
+    private ImmutableArray<CodeFoldRegion> GetActiveFoldRegions(int lineIndex)
+    {
+        if (FoldRegions.IsDefaultOrEmpty)
+        {
+            return [];
+        }
+
+        return FoldRegions
+            .Where(region =>
+                region.StartLineIndex < lineIndex &&
+                region.EndLineIndex >= lineIndex &&
+                !collapsedFoldStartLines.Contains(region.StartLineIndex))
+            .OrderBy(region => region.StartLineIndex)
+            .ToImmutableArray();
+    }
+
+    private void EnsureEditableLines()
+    {
+        editableLines ??= Document.Lines.Select(line => line.Text).ToList();
+        if (editableLines.Count == 0)
+        {
+            editableLines.Add(string.Empty);
+        }
+
+        CaretLineIndex = Math.Clamp(CaretLineIndex, 0, editableLines.Count - 1);
+        CaretColumn = Math.Clamp(CaretColumn, 0, editableLines[CaretLineIndex].Length);
+    }
+
+    private string GetEditableLine(int lineIndex)
+    {
+        if (editableLines is not null)
+        {
+            return lineIndex >= 0 && lineIndex < editableLines.Count ? editableLines[lineIndex] : string.Empty;
+        }
+
+        if (lineIndex < 0 || lineIndex >= Document.LineCount)
+        {
+            return string.Empty;
+        }
+
+        return Document.Lines[lineIndex].Text;
+    }
+
+    private static int FindPreviousWordBoundary(string line, int column)
+    {
+        var index = Math.Clamp(column, 0, line.Length);
+        while (index > 0 && char.IsWhiteSpace(line[index - 1]))
+        {
+            index--;
+        }
+
+        if (index > 0 && IsWordCharacter(line[index - 1]))
+        {
+            while (index > 0 && IsWordCharacter(line[index - 1]))
+            {
+                index--;
+            }
+
+            return index;
+        }
+
+        while (index > 0 && !char.IsWhiteSpace(line[index - 1]) && !IsWordCharacter(line[index - 1]))
+        {
+            index--;
+        }
+
+        return index;
+    }
+
+    private static int FindNextWordBoundary(string line, int column)
+    {
+        var index = Math.Clamp(column, 0, line.Length);
+        while (index < line.Length && char.IsWhiteSpace(line[index]))
+        {
+            index++;
+        }
+
+        if (index < line.Length && IsWordCharacter(line[index]))
+        {
+            while (index < line.Length && IsWordCharacter(line[index]))
+            {
+                index++;
+            }
+
+            return index;
+        }
+
+        while (index < line.Length && !char.IsWhiteSpace(line[index]) && !IsWordCharacter(line[index]))
+        {
+            index++;
+        }
+
+        return index;
+    }
+
+    private static int FindPreviousTextWordBoundary(string text, int offset)
+    {
+        var index = Math.Clamp(offset, 0, text.Length);
+        if (index > 0)
+        {
+            index--;
+        }
+
+        while (index > 0 && char.IsWhiteSpace(text[index]))
+        {
+            index--;
+        }
+
+        if (index >= 0 && index < text.Length && IsWordCharacter(text[index]))
+        {
+            while (index > 0 && IsWordCharacter(text[index - 1]))
+            {
+                index--;
+            }
+
+            return index;
+        }
+
+        while (index > 0 && !char.IsWhiteSpace(text[index - 1]) && !IsWordCharacter(text[index - 1]))
+        {
+            index--;
+        }
+
+        return index;
+    }
+
+    private static int FindNextTextWordBoundary(string text, int offset)
+    {
+        var index = Math.Clamp(offset, 0, text.Length);
+        if (index < text.Length && IsWordCharacter(text[index]))
+        {
+            while (index < text.Length && IsWordCharacter(text[index]))
+            {
+                index++;
+            }
+
+            while (index < text.Length && char.IsWhiteSpace(text[index]))
+            {
+                index++;
+            }
+        }
+        else if (index < text.Length && char.IsWhiteSpace(text[index]))
+        {
+            while (index < text.Length && char.IsWhiteSpace(text[index]))
+            {
+                index++;
+            }
+        }
+        else if (index < text.Length)
+        {
+            while (index < text.Length && !char.IsWhiteSpace(text[index]) && !IsWordCharacter(text[index]))
+            {
+                index++;
+            }
+
+            while (index < text.Length && char.IsWhiteSpace(text[index]))
+            {
+                index++;
+            }
+        }
+
+        return index;
+    }
+
+    private static bool IsWordCharacter(char character) =>
+        char.IsLetterOrDigit(character) || character == '_';
+
+    private static (string Line, int Removed) RemoveIndent(string line)
+    {
+        if (line.Length == 0)
+        {
+            return (line, 0);
+        }
+
+        if (line[0] == '\t')
+        {
+            return (line[1..], 1);
+        }
+
+        var spaces = 0;
+        while (spaces < Math.Min(EditorTabSize, line.Length) && line[spaces] == ' ')
+        {
+            spaces++;
+        }
+
+        return spaces == 0 ? (line, 0) : (line[spaces..], spaces);
+    }
+
+    private int GetEditableTextOffset()
+    {
+        EnsureEditableLines();
+        var offset = 0;
+        var lines = editableLines!;
+        var lineCount = lines.Count;
+        var row = Math.Clamp(CaretLineIndex, 0, Math.Max(0, lineCount - 1));
+        for (var index = 0; index < row; index++)
+        {
+            offset += lines[index].Length + 1;
+        }
+
+        return offset + Math.Clamp(CaretColumn, 0, lines[row].Length);
+    }
+
+    private void SetCaretFromTextOffset(int offset)
+    {
+        EnsureEditableLines();
+        var lines = editableLines!;
+        var remaining = Math.Clamp(offset, 0, string.Join('\n', lines).Length);
+        for (var row = 0; row < lines.Count; row++)
+        {
+            var lineLength = lines[row].Length;
+            if (remaining <= lineLength)
+            {
+                CaretLineIndex = row;
+                CaretColumn = remaining;
+                return;
+            }
+
+            remaining -= lineLength + 1;
+        }
+
+        CaretLineIndex = Math.Max(0, lines.Count - 1);
+        CaretColumn = lines.Count == 0 ? 0 : lines[^1].Length;
+    }
+
+    private void MoveCaretByCharacter(ImmutableArray<DiffNodeVisibleLine> rows, int direction)
+    {
+        var rowIndex = IndexOfVisibleLine(rows, CaretLineIndex);
+        if (rowIndex < 0)
+        {
+            rowIndex = Math.Clamp(CaretLineIndex, 0, Math.Max(0, rows.Length - 1));
+            CaretLineIndex = rows[rowIndex].LineIndex;
+        }
+
+        var line = GetEditableLine(CaretLineIndex);
+        if (direction < 0)
+        {
+            if (CaretColumn > 0)
+            {
+                CaretColumn--;
+                return;
+            }
+
+            if (rowIndex > 0)
+            {
+                var previousLine = rows[rowIndex - 1].Line;
+                CaretLineIndex = previousLine.Index;
+                CaretColumn = GetEditableLine(previousLine.Index).Length;
+            }
+
+            return;
+        }
+
+        if (CaretColumn < line.Length)
+        {
+            CaretColumn++;
+            return;
+        }
+
+        if (rowIndex < rows.Length - 1)
+        {
+            var nextLine = rows[rowIndex + 1].Line;
+            CaretLineIndex = nextLine.Index;
+            CaretColumn = 0;
+        }
+    }
+
+    private void InsertCharacterCore(char character)
+    {
+        var line = editableLines![CaretLineIndex];
+        var column = Math.Clamp(CaretColumn, 0, line.Length);
+        editableLines[CaretLineIndex] = line.Insert(column, character.ToString());
+        CaretColumn = column + 1;
+    }
+
+    private void InsertNewLineCore()
+    {
+        var line = editableLines![CaretLineIndex];
+        var column = Math.Clamp(CaretColumn, 0, line.Length);
+        editableLines[CaretLineIndex] = line[..column];
+        editableLines.Insert(CaretLineIndex + 1, line[column..]);
+        CaretLineIndex++;
+        CaretColumn = 0;
+    }
+
+    private void RebuildEditedDocument()
+    {
+        if (editableLines is null)
+        {
+            return;
+        }
+
+        var builder = ImmutableArray.CreateBuilder<DiffLine>(editableLines.Count);
+        for (var index = 0; index < editableLines.Count; index++)
+        {
+            var lineNumber = index + 1;
+            builder.Add(new DiffLine(index, lineNumber, lineNumber, DiffLineKind.Context, editableLines[index], ImmutableArray<TokenSpan>.Empty));
+        }
+
+        var nextDocument = new DiffDocumentSnapshot(DiffDocument.Id, DiffDocument.Metadata, builder.ToImmutable());
+        FullFileDocument = nextDocument;
+        FullText = string.Join(Environment.NewLine, editableLines);
+        Document = nextDocument;
+    }
+
+    private void EnsureCaretVisible()
+    {
+        var rows = GetVisibleRows();
+        var rowIndex = IndexOfVisibleLine(rows, CaretLineIndex);
+        if (rowIndex < 0)
+        {
+            return;
+        }
+
+        var top = rowIndex * LineHeight;
+        var bottom = top + LineHeight;
+        if (top < ScrollOffsetY)
+        {
+            SetScrollOffset(top);
+        }
+        else if (bottom > ScrollOffsetY + BodyBounds.Height)
+        {
+            SetScrollOffset(bottom - BodyBounds.Height);
+        }
+    }
+
+    private void ScrollToLineIndex(int targetLineIndex)
+    {
+        var rows = GetVisibleRows();
+        var rowIndex = IndexOfVisibleLine(rows, targetLineIndex);
+        if (rowIndex < 0)
+        {
+            rowIndex = Math.Clamp(targetLineIndex, 0, Math.Max(0, rows.Length - 1));
+        }
+
         var bodyHeight = BodyBounds.Height;
-        ScrollOffsetY = Math.Clamp(targetLineIndex * LineHeight - bodyHeight * 0.35, 0, MaxScrollOffset);
+        ScrollOffsetY = Math.Clamp(rowIndex * LineHeight - bodyHeight * 0.35, 0, MaxScrollOffset);
+    }
+
+    private static int IndexOfVisibleLine(ImmutableArray<DiffNodeVisibleLine> rows, int lineIndex)
+    {
+        for (var index = 0; index < rows.Length; index++)
+        {
+            if (rows[index].LineIndex == lineIndex)
+            {
+                return index;
+            }
+        }
+
+        return -1;
     }
 }
+
+public sealed record DiffNodeVisibleLine(
+    int RowIndex,
+    int LineIndex,
+    DiffLine Line,
+    CodeFoldRegion? FoldRegion,
+    bool IsFoldCollapsed,
+    ImmutableArray<CodeFoldRegion> ActiveFoldRegions);
+
+public sealed record DiffNodeFullFileContent(
+    DiffDocumentId DocumentId,
+    DiffDocumentSnapshot FullFileDocument,
+    ImmutableArray<CodeFoldRegion> FoldRegions,
+    string FullText);
 
 public enum DiffNodeFontSizeAction
 {
     Decrease,
     Increase
+}
+
+public enum DiffNodeSelectionMode
+{
+    Replace,
+    Add,
+    Toggle
+}
+
+public enum DiffNodeSelectionScope
+{
+    Direct,
+    Connected,
+    Incoming,
+    Outgoing
 }
 
 public enum DiffNodeResizeHandle
@@ -240,6 +1244,12 @@ public sealed class DiffCanvasScene
 
     public IReadOnlyList<DiffNode> Nodes => nodes;
 
+    public IEnumerable<DiffNode> SelectedNodes => nodes.Where(node => node.IsSelected);
+
+    public int SelectedNodeCount => nodes.Count(node => node.IsSelected);
+
+    public bool HasFocusedEditor => nodes.Any(node => node.IsEditorFocused);
+
     public IReadOnlyList<GraphEdge> Edges => edges;
 
     public ImmutableArray<GraphGroup> Groups => groups;
@@ -252,6 +1262,10 @@ public sealed class DiffCanvasScene
 
     public int GeometryVersion => geometryVersion;
 
+    public bool ShowFullFileNodes { get; private set; }
+
+    public bool EnableNodeEditing { get; private set; }
+
     public CameraState Camera { get; private set; } = CameraState.Default;
 
     public Rect2 GraphBounds => Rect2.Union(nodes.Select(node => node.Bounds).Concat(groups.Select(group => group.Bounds)));
@@ -261,6 +1275,352 @@ public sealed class DiffCanvasScene
     public void Pan(double deltaX, double deltaY) => Camera = Camera.Pan(deltaX, deltaY);
 
     public void ZoomAt(Point2 screenPoint, double zoomFactor) => Camera = Camera.ZoomAt(screenPoint, zoomFactor);
+
+    public void SetFullFileDocuments(IEnumerable<DiffNodeFullFileContent> fullFileContents)
+    {
+        var contentsByDocumentId = fullFileContents.ToDictionary(content => content.DocumentId, content => content);
+        var changed = false;
+        foreach (var node in nodes)
+        {
+            if (!contentsByDocumentId.TryGetValue(node.DiffDocument.Id, out var content))
+            {
+                continue;
+            }
+
+            node.SetFullFileDocument(content.FullFileDocument, content.FoldRegions, content.FullText);
+            node.ApplyWorkspaceMode(ShowFullFileNodes, EnableNodeEditing);
+            changed = true;
+        }
+
+        if (changed)
+        {
+            geometryVersion++;
+        }
+    }
+
+    public void SetShowFullFileNodes(bool showFullFile)
+    {
+        if (ShowFullFileNodes == showFullFile)
+        {
+            return;
+        }
+
+        ShowFullFileNodes = showFullFile;
+        foreach (var node in nodes)
+        {
+            node.ApplyWorkspaceMode(ShowFullFileNodes, EnableNodeEditing);
+        }
+
+        geometryVersion++;
+    }
+
+    public void SetNodeEditingEnabled(bool enableEditing)
+    {
+        if (EnableNodeEditing == enableEditing)
+        {
+            return;
+        }
+
+        EnableNodeEditing = enableEditing;
+        foreach (var node in nodes)
+        {
+            node.ApplyWorkspaceMode(ShowFullFileNodes, EnableNodeEditing);
+        }
+
+        geometryVersion++;
+    }
+
+    public bool ToggleNodeFullFileView(string documentId)
+    {
+        var node = FindNode(documentId);
+        if (node is null || !node.HasFullFileDocument)
+        {
+            return false;
+        }
+
+        node.ToggleFullFileOverride();
+        geometryVersion++;
+        return true;
+    }
+
+    public bool ClearNodeFullFileViewOverride(string documentId)
+    {
+        var node = FindNode(documentId);
+        if (node is null || node.FullFileViewOverride is null)
+        {
+            return false;
+        }
+
+        node.ClearFullFileOverride();
+        geometryVersion++;
+        return true;
+    }
+
+    public bool ToggleNodeEditing(string documentId)
+    {
+        var node = FindNode(documentId);
+        if (node is null || !node.HasFullFileDocument)
+        {
+            return false;
+        }
+
+        var nextEditing = !node.IsEditingActive;
+        if (nextEditing && !node.IsShowingFullFile)
+        {
+            node.SetFullFileOverride(true);
+        }
+
+        node.SetEditingOverride(nextEditing);
+        geometryVersion++;
+        return true;
+    }
+
+    public bool ClearNodeEditingOverride(string documentId)
+    {
+        var node = FindNode(documentId);
+        if (node is null || node.EditingOverride is null)
+        {
+            return false;
+        }
+
+        node.ClearEditingOverride();
+        geometryVersion++;
+        return true;
+    }
+
+    public bool ToggleFoldAt(Point2 screenPoint)
+    {
+        var worldPoint = Camera.ScreenToWorld(screenPoint);
+        var node = HitTestNode(screenPoint);
+        if (node is null || !node.TryHitTestFold(worldPoint, out var startLineIndex))
+        {
+            return false;
+        }
+
+        var changed = node.ToggleFold(startLineIndex);
+        if (changed)
+        {
+            geometryVersion++;
+        }
+
+        return changed;
+    }
+
+    public bool TryFocusEditorAt(Point2 screenPoint)
+    {
+        var worldPoint = Camera.ScreenToWorld(screenPoint);
+        var targetNode = HitTestNode(screenPoint);
+        var changed = false;
+        foreach (var node in nodes)
+        {
+            var focus = ReferenceEquals(node, targetNode) && node.TrySetCaretFromWorldPoint(worldPoint);
+            if (node.IsEditorFocused != focus)
+            {
+                node.SetEditorFocus(focus);
+                changed = true;
+            }
+        }
+
+        if (changed || targetNode is not null)
+        {
+            geometryVersion++;
+            return targetNode?.IsEditorFocused == true;
+        }
+
+        return false;
+    }
+
+    public bool MoveFocusedEditorCaret(int lineDelta, int columnDelta)
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.MoveCaret(lineDelta, columnDelta) != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool MoveFocusedEditorCaretWord(int direction)
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.MoveCaretWord(direction) != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool SetFocusedEditorCaretColumn(int column)
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.SetCaretColumn(column) != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool MoveFocusedEditorCaretToDocumentStart()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.MoveCaretToDocumentStart() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool MoveFocusedEditorCaretToDocumentEnd()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.MoveCaretToDocumentEnd() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool MoveFocusedEditorCaretToSmartLineStart()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.MoveCaretToSmartLineStart() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool InsertTextInFocusedEditor(string text)
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.InsertText(text) != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool InsertNewLineInFocusedEditor()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.InsertNewLine() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool BackspaceInFocusedEditor()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.Backspace() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool BackspaceWordInFocusedEditor()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.BackspaceWord() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool DeleteInFocusedEditor()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.Delete() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool DeleteWordInFocusedEditor()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.DeleteWord() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool IndentFocusedEditorLine()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.IndentCurrentLine() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool OutdentFocusedEditorLine()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.OutdentCurrentLine() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool DuplicateFocusedEditorLine()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.DuplicateCurrentLine() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
+
+    public bool DeleteFocusedEditorLine()
+    {
+        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        if (node?.DeleteCurrentLine() != true)
+        {
+            return false;
+        }
+
+        geometryVersion++;
+        return true;
+    }
 
     public void HandleWheel(Point2 screenPoint, double wheelDelta, bool zoomCanvas)
     {
@@ -297,6 +1657,9 @@ public sealed class DiffCanvasScene
 
         return null;
     }
+
+    private DiffNode? FindNode(string documentId) =>
+        nodes.FirstOrDefault(node => string.Equals(node.DiffDocument.Id.Value, documentId, StringComparison.Ordinal));
 
     public bool TryHitTestResizeHandle(Point2 screenPoint, out DiffNode? node, out DiffNodeResizeHandle handle)
     {
@@ -439,6 +1802,11 @@ public sealed class DiffCanvasScene
         return false;
     }
 
+    public GraphGroup? FindGroupForNode(DiffNode node) => groups
+        .Where(group => GetGroupNodes(group).Contains(node))
+        .OrderBy(group => group.Bounds.Width * group.Bounds.Height)
+        .FirstOrDefault();
+
     public bool SetHoveredAnnotation(DiffAnnotation? annotation)
     {
         var nextId = annotation?.Id;
@@ -455,8 +1823,99 @@ public sealed class DiffCanvasScene
     {
         foreach (var node in nodes)
         {
-            node.IsSelected = ReferenceEquals(node, selectedNode);
+            SetNodeSelected(node, ReferenceEquals(node, selectedNode));
         }
+    }
+
+    public void ClearSelection() => SelectNode(null);
+
+    public void ClearSelectionAndEditorFocus()
+    {
+        foreach (var node in nodes)
+        {
+            node.IsSelected = false;
+            node.SetEditorFocus(false);
+        }
+    }
+
+    public void AddNodeToSelection(DiffNode node)
+    {
+        node.IsSelected = true;
+    }
+
+    public void ToggleNodeSelection(DiffNode node)
+    {
+        SetNodeSelected(node, !node.IsSelected);
+    }
+
+    public void SelectNodes(IEnumerable<DiffNode> selectedNodes)
+    {
+        var selected = selectedNodes.ToHashSet();
+        foreach (var node in nodes)
+        {
+            SetNodeSelected(node, selected.Contains(node));
+        }
+    }
+
+    public int SelectAllNodes()
+    {
+        foreach (var node in nodes)
+        {
+            node.IsSelected = true;
+        }
+
+        return nodes.Count;
+    }
+
+    public int InvertNodeSelection()
+    {
+        foreach (var node in nodes)
+        {
+            SetNodeSelected(node, !node.IsSelected);
+        }
+
+        return SelectedNodeCount;
+    }
+
+    public int SelectNodesInRect(Rect2 worldRect, DiffNodeSelectionMode mode)
+    {
+        var matchingNodes = nodes
+            .Where(node => node.Bounds.Intersects(worldRect))
+            .ToArray();
+
+        ApplySelection(matchingNodes, mode);
+        return matchingNodes.Length;
+    }
+
+    public int SelectGroupNodes(GraphGroup group, DiffNodeSelectionMode mode)
+    {
+        var groupNodes = GetGroupNodes(group).ToArray();
+        ApplySelection(groupNodes, mode);
+        return groupNodes.Length;
+    }
+
+    public int SelectConnectedNodes(DiffNode node, DiffNodeSelectionMode mode, DiffNodeSelectionScope scope = DiffNodeSelectionScope.Connected)
+    {
+        var documentId = node.DiffDocument.Id.Value;
+        var selectedIds = new HashSet<string>(StringComparer.Ordinal) { documentId };
+        foreach (var edge in edges)
+        {
+            var sourceMatches = string.Equals(edge.SourceNodeId, documentId, StringComparison.Ordinal);
+            var targetMatches = string.Equals(edge.TargetNodeId, documentId, StringComparison.Ordinal);
+            var includeOutgoing = scope is DiffNodeSelectionScope.Connected or DiffNodeSelectionScope.Outgoing;
+            var includeIncoming = scope is DiffNodeSelectionScope.Connected or DiffNodeSelectionScope.Incoming;
+            if ((includeOutgoing && sourceMatches) || (includeIncoming && targetMatches))
+            {
+                selectedIds.Add(edge.SourceNodeId);
+                selectedIds.Add(edge.TargetNodeId);
+            }
+        }
+
+        var connectedNodes = nodes
+            .Where(candidate => selectedIds.Contains(candidate.DiffDocument.Id.Value))
+            .ToArray();
+        ApplySelection(connectedNodes, mode);
+        return connectedNodes.Length;
     }
 
     public void MoveNode(DiffNode node, double deltaX, double deltaY)
@@ -464,6 +1923,31 @@ public sealed class DiffCanvasScene
         node.Bounds = node.Bounds.Translate(deltaX, deltaY);
         node.IsPinned = true;
         geometryVersion++;
+    }
+
+    public bool MoveSelectedNodes(double deltaX, double deltaY)
+    {
+        if (Math.Abs(deltaX) < double.Epsilon && Math.Abs(deltaY) < double.Epsilon)
+        {
+            return false;
+        }
+
+        var selectedNodes = nodes
+            .Where(node => node.IsSelected)
+            .ToArray();
+        if (selectedNodes.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var node in selectedNodes)
+        {
+            node.Bounds = node.Bounds.Translate(deltaX, deltaY);
+            node.IsPinned = true;
+        }
+
+        geometryVersion++;
+        return true;
     }
 
     public void MoveNodeTo(DiffNode node, double x, double y)
@@ -623,7 +2107,7 @@ public sealed class DiffCanvasScene
     public DiffCanvasSceneViewState CaptureViewState() => new(
         Camera,
         nodes
-            .Select(node => new DiffNodeViewState(node.Document.Id, node.Bounds, node.ScrollOffsetY, node.IsSelected, node.IsPinned, node.FontSize))
+            .Select(node => new DiffNodeViewState(node.DiffDocument.Id, node.Bounds, node.ScrollOffsetY, node.IsSelected, node.IsPinned, node.FontSize))
             .ToImmutableArray());
 
     public void ApplyViewState(DiffCanvasSceneViewState viewState)
@@ -675,13 +2159,46 @@ public sealed class DiffCanvasScene
         Math.Max(DiffNode.MinWidth, bounds.Width),
         Math.Max(DiffNode.MinHeight, bounds.Height));
 
+    private void ApplySelection(IReadOnlyCollection<DiffNode> selectedNodes, DiffNodeSelectionMode mode)
+    {
+        if (mode == DiffNodeSelectionMode.Replace)
+        {
+            SelectNodes(selectedNodes);
+            return;
+        }
+
+        if (mode == DiffNodeSelectionMode.Add)
+        {
+            foreach (var node in selectedNodes)
+            {
+                node.IsSelected = true;
+            }
+
+            return;
+        }
+
+        foreach (var node in selectedNodes)
+        {
+            SetNodeSelected(node, !node.IsSelected);
+        }
+    }
+
+    private static void SetNodeSelected(DiffNode node, bool isSelected)
+    {
+        node.IsSelected = isSelected;
+        if (!isSelected)
+        {
+            node.SetEditorFocus(false);
+        }
+    }
+
     public ImmutableArray<DiffNodeLayout> GetCurrentLayout() => nodes
-        .Select(node => new DiffNodeLayout(node.Document.Id, node.Bounds, node.IsPinned, node.FontSize))
+        .Select(node => new DiffNodeLayout(node.DiffDocument.Id, node.Bounds, node.IsPinned, node.FontSize))
         .ToImmutableArray();
 
     public ImmutableHashSet<DiffDocumentId> GetPinnedDocumentIds() => nodes
         .Where(node => node.IsPinned)
-        .Select(node => node.Document.Id)
+        .Select(node => node.DiffDocument.Id)
         .ToImmutableHashSet();
 
     private bool TryHitTestLineAnnotation(DiffNode node, Point2 worldPoint, out DiffAnnotation annotation)
@@ -693,12 +2210,14 @@ public sealed class DiffCanvasScene
             return false;
         }
 
-        var lineIndex = (int)Math.Floor((worldPoint.Y - body.Top + node.ScrollOffsetY) / node.LineHeight);
-        if (lineIndex < 0 || lineIndex >= node.Document.Lines.Length)
+        var rowIndex = (int)Math.Floor((worldPoint.Y - body.Top + node.ScrollOffsetY) / node.LineHeight);
+        var rows = node.GetVisibleRows(rowIndex, 1);
+        if (rows.Length == 0)
         {
             return false;
         }
 
+        var lineIndex = rows[0].LineIndex;
         var lineAnnotations = annotations
             .Where(candidate =>
                 candidate.DocumentId == node.Document.Id &&
@@ -712,7 +2231,7 @@ public sealed class DiffCanvasScene
             return false;
         }
 
-        var lineTop = body.Top + lineIndex * node.LineHeight - node.ScrollOffsetY;
+        var lineTop = body.Top + rows[0].RowIndex * node.LineHeight - node.ScrollOffsetY;
         var relativeY = worldPoint.Y - lineTop;
         var markerZoneLeft = body.Right - 132;
         var markerIndex = (int)Math.Floor((relativeY - 4) / 9);
@@ -786,7 +2305,10 @@ public sealed class DiffCanvasScene
         var nextScene = new DiffCanvasScene(nodes, edges, groups, nextAnnotations, annotationVisibility)
         {
             Camera = Camera,
-            HoveredAnnotationId = HoveredAnnotationId
+            HoveredAnnotationId = HoveredAnnotationId,
+            ShowFullFileNodes = ShowFullFileNodes,
+            EnableNodeEditing = EnableNodeEditing,
+            geometryVersion = geometryVersion
         };
         return nextScene;
     }
@@ -841,7 +2363,7 @@ public sealed class DiffCanvasScene
             .GroupBy(anchor => anchor.DocumentId)
             .ToDictionary(group => group.Key, group => group.ToArray()) ?? [];
         var groups = nodes
-            .Select(node => (Node: node, Key: CreateGroupKey(groupingMode, node.Document, anchorsByDocumentId.GetValueOrDefault(node.Document.Id) ?? [])))
+            .Select(node => (Node: node, Key: CreateGroupKey(groupingMode, node.DiffDocument, anchorsByDocumentId.GetValueOrDefault(node.DiffDocument.Id) ?? [])))
             .Where(item => !string.IsNullOrWhiteSpace(item.Key.Id))
             .GroupBy(item => item.Key)
             .Where(group => group.Count() >= 2)
@@ -861,10 +2383,10 @@ public sealed class DiffCanvasScene
             key.Label,
             bounds,
             nodes.Count,
-            nodes.Sum(node => node.Document.Metadata.AddedLines),
-            nodes.Sum(node => node.Document.Metadata.DeletedLines),
+            nodes.Sum(node => node.DiffDocument.Metadata.AddedLines),
+            nodes.Sum(node => node.DiffDocument.Metadata.DeletedLines),
             key.ColorIndex,
-            nodes.Select(node => node.Document.Id).ToImmutableArray());
+            nodes.Select(node => node.DiffDocument.Id).ToImmutableArray());
     }
 
     private static Rect2 ExpandGroupBounds(Rect2 bounds) => bounds.IsEmpty

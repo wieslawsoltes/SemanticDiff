@@ -1,6 +1,7 @@
 using SemanticDiff.Core;
 using SemanticDiff.Diff;
 using SemanticDiff.Rendering;
+using SemanticDiff.Workbench.FileDiff;
 
 namespace SemanticDiff.Tests;
 
@@ -63,6 +64,212 @@ public sealed class DiffCanvasSceneSemanticTests
     }
 
     [Fact]
+    public void FullFileNodeMode_SwitchesBetweenDiffAndFullDocuments()
+    {
+        var factory = new DiffDocumentFactory();
+        var diff = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 1, 0), "class A { }");
+        var full = factory.CreateFromText(diff.Metadata, "using System;\nclass A\n{\n}", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(diff.Id, full, [], full.ToSourceText())]);
+        scene.SetShowFullFileNodes(true);
+
+        Assert.True(scene.Nodes[0].IsShowingFullFile);
+        Assert.Equal(4, scene.Nodes[0].Document.LineCount);
+
+        scene.SetShowFullFileNodes(false);
+
+        Assert.False(scene.Nodes[0].IsShowingFullFile);
+        Assert.Equal(diff.LineCount, scene.Nodes[0].Document.LineCount);
+    }
+
+    [Fact]
+    public void FullFileNodeMode_CollapsedFoldsReduceVisibleRows()
+    {
+        var factory = new DiffDocumentFactory();
+        var diff = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 1, 0), "class A { }");
+        var full = factory.CreateFromText(diff.Metadata, "class A\n{\n    void M()\n    {\n    }\n}", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(diff.Id, full, [new CodeFoldRegion(0, 5, "class A")], full.ToSourceText())]);
+        scene.SetShowFullFileNodes(true);
+        var node = scene.Nodes[0];
+
+        var before = node.VisibleLineCount;
+        Assert.True(node.ToggleFold(0));
+
+        Assert.Equal(1, node.VisibleLineCount);
+        Assert.True(before > node.VisibleLineCount);
+    }
+
+    [Fact]
+    public void FullFileNodeMode_UsesAnnotatedFullFileLines()
+    {
+        var factory = new DiffDocumentFactory();
+        var metadata = new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 1, 0);
+        var diff = new DiffDocumentSnapshot(
+            metadata.Id,
+            metadata,
+            [
+                new DiffLine(0, 1, 1, DiffLineKind.Context, "class A", []),
+                new DiffLine(1, 2, 2, DiffLineKind.Modified, "{", []),
+                new DiffLine(2, 3, 3, DiffLineKind.Context, "}", [])
+            ]);
+        var full = factory.CreateFromText(metadata, "class A\n{\n}", DiffLineKind.Context);
+        var fullView = new FileDiffDocumentBuilder().Build(diff, full, full.ToSourceText(), []);
+        var annotatedFull = full with { Lines = fullView.AnnotatedFullFileLines };
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(diff.Id, annotatedFull, fullView.FoldRegions, fullView.FullText)]);
+        scene.SetShowFullFileNodes(true);
+
+        Assert.Equal(DiffLineKind.Modified, scene.Nodes[0].Document.Lines[1].Kind);
+    }
+
+    [Fact]
+    public void ToggleNodeEditing_ReEnablesEditingAfterFullFileViewWasHidden()
+    {
+        var factory = new DiffDocumentFactory();
+        var diff = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 1, 0), "class A { }");
+        var full = factory.CreateFromText(diff.Metadata, "class A\n{\n}", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(diff.Id, full, [], full.ToSourceText())]);
+        var node = scene.Nodes[0];
+
+        Assert.True(scene.ToggleNodeEditing(diff.Id.Value));
+        Assert.True(node.IsShowingFullFile);
+        Assert.True(node.IsEditingActive);
+        Assert.True(scene.ToggleNodeFullFileView(diff.Id.Value));
+        Assert.False(node.IsShowingFullFile);
+        Assert.False(node.IsEditingActive);
+
+        Assert.True(scene.ToggleNodeEditing(diff.Id.Value));
+
+        Assert.True(node.IsShowingFullFile);
+        Assert.True(node.IsEditingActive);
+    }
+
+    [Fact]
+    public void NodeEditing_UpdatesInMemoryFullFileDocument()
+    {
+        var factory = new DiffDocumentFactory();
+        var diff = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 1, 0), "class A { }");
+        var full = factory.CreateFromText(diff.Metadata, "class A\n{\n}", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(diff.Id, full, [], full.ToSourceText())]);
+        scene.SetShowFullFileNodes(true);
+        scene.SetNodeEditingEnabled(true);
+        var node = scene.Nodes[0];
+        node.SetEditorFocus(true);
+        node.MoveCaret(1, 0);
+        node.SetCaretColumn(0);
+
+        Assert.True(scene.InsertTextInFocusedEditor("// "));
+
+        Assert.StartsWith("// ", node.Document.Lines[1].Text, StringComparison.Ordinal);
+        Assert.Equal(node.Document.ToSourceText(), node.FullText);
+    }
+
+    [Fact]
+    public void NodeEditing_LineCommands_UpdateFullFileDocument()
+    {
+        var factory = new DiffDocumentFactory();
+        var diff = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 1, 0), "class A { }");
+        var full = factory.CreateFromText(diff.Metadata, "class A\n{\n    void M()\n    {\n    }\n}", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(diff.Id, full, [], full.ToSourceText())]);
+        scene.SetShowFullFileNodes(true);
+        scene.SetNodeEditingEnabled(true);
+        var node = scene.Nodes[0];
+        node.SetEditorFocus(true);
+        node.MoveCaret(2, 0);
+        node.SetCaretColumn(8);
+
+        Assert.True(scene.MoveFocusedEditorCaretToSmartLineStart());
+        Assert.Equal(4, node.CaretColumn);
+        Assert.True(scene.OutdentFocusedEditorLine());
+        Assert.Equal("void M()", node.Document.Lines[2].Text);
+        Assert.Equal(0, node.CaretColumn);
+        Assert.True(scene.DuplicateFocusedEditorLine());
+        Assert.Equal("void M()", node.Document.Lines[2].Text);
+        Assert.Equal("void M()", node.Document.Lines[3].Text);
+        Assert.True(scene.DeleteFocusedEditorLine());
+        Assert.Equal("    {", node.Document.Lines[3].Text);
+    }
+
+    [Fact]
+    public void NodeEditing_WordCommands_DeleteWordRanges()
+    {
+        var factory = new DiffDocumentFactory();
+        var diff = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 1, 0), "class A { }");
+        var full = factory.CreateFromText(diff.Metadata, "class A\n{\n    var valueName = nextValue;\n}", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(diff.Id, full, [], full.ToSourceText())]);
+        scene.SetShowFullFileNodes(true);
+        scene.SetNodeEditingEnabled(true);
+        var node = scene.Nodes[0];
+        node.SetEditorFocus(true);
+        node.MoveCaret(2, 0);
+        node.SetCaretColumn("    var valueName".Length);
+
+        Assert.True(scene.BackspaceWordInFocusedEditor());
+        Assert.Equal("    var  = nextValue;", node.Document.Lines[2].Text);
+        node.SetCaretColumn("    var  = ".Length);
+        Assert.True(scene.DeleteWordInFocusedEditor());
+        Assert.Equal("    var  = ;", node.Document.Lines[2].Text);
+        Assert.True(scene.MoveFocusedEditorCaretToDocumentEnd());
+        Assert.Equal(node.Document.LineCount - 1, node.CaretLineIndex);
+        Assert.True(scene.MoveFocusedEditorCaretToDocumentStart());
+        Assert.Equal(0, node.CaretLineIndex);
+        Assert.Equal(0, node.CaretColumn);
+        node.MoveCaret(2, 0);
+        node.SetCaretColumn(4);
+        Assert.True(scene.MoveFocusedEditorCaretWord(1));
+        Assert.True(node.CaretColumn > 4);
+    }
+
+    [Fact]
+    public void NodeEditing_CharacterNavigationCrossesLineBoundaries()
+    {
+        var factory = new DiffDocumentFactory();
+        var diff = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 1, 0), "class A { }");
+        var full = factory.CreateFromText(diff.Metadata, "a\nbc", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(diff.Id, full, [], full.ToSourceText())]);
+        scene.SetShowFullFileNodes(true);
+        scene.SetNodeEditingEnabled(true);
+        var node = scene.Nodes[0];
+        node.SetEditorFocus(true);
+
+        Assert.True(scene.MoveFocusedEditorCaret(0, 1));
+        Assert.Equal(0, node.CaretLineIndex);
+        Assert.Equal(1, node.CaretColumn);
+        Assert.True(scene.MoveFocusedEditorCaret(0, 1));
+        Assert.Equal(1, node.CaretLineIndex);
+        Assert.Equal(0, node.CaretColumn);
+        Assert.True(scene.MoveFocusedEditorCaret(0, -1));
+        Assert.Equal(0, node.CaretLineIndex);
+        Assert.Equal(1, node.CaretColumn);
+    }
+
+    [Fact]
+    public void NodeEditing_EmptyFullFileRemainsNavigable()
+    {
+        var metadata = new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0);
+        var diff = new DiffDocumentSnapshot(metadata.Id, metadata, []);
+        var full = new DiffDocumentSnapshot(metadata.Id, metadata, []);
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(diff.Id, full, [], string.Empty)]);
+        scene.SetShowFullFileNodes(true);
+        scene.SetNodeEditingEnabled(true);
+        var node = scene.Nodes[0];
+        node.SetEditorFocus(true);
+
+        Assert.True(scene.MoveFocusedEditorCaretToDocumentEnd());
+        Assert.True(scene.InsertTextInFocusedEditor("x"));
+        Assert.Equal("x", node.FullText);
+    }
+
+    [Fact]
     public void MoveNode_UpdatesBoundsAndPinsNode()
     {
         var factory = new DiffDocumentFactory();
@@ -111,6 +318,182 @@ public sealed class DiffCanvasSceneSemanticTests
         }
 
         Assert.True(node.IsPinned);
+    }
+
+    [Fact]
+    public void SelectNodesInRect_SupportsReplaceAddAndToggleModes()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("B.cs"), "B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var third = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("C.cs"), "C.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class C { }");
+        var layout = new GraphLayoutResult([
+            new DiffNodeLayout(first.Id, new Rect2(0, 0, 620, 420)),
+            new DiffNodeLayout(second.Id, new Rect2(700, 0, 620, 420)),
+            new DiffNodeLayout(third.Id, new Rect2(0, 600, 620, 420))
+        ]);
+        var scene = DiffCanvasScene.FromDocuments([first, second, third], layoutResult: layout);
+        var topRowSelection = new Rect2(0, 0, 780, 440);
+        var thirdSelection = new Rect2(0, 600, 620, 420);
+
+        var replacedCount = scene.SelectNodesInRect(topRowSelection, DiffNodeSelectionMode.Replace);
+        var selectedAfterReplace = scene.SelectedNodes.ToArray();
+        scene.SelectNodesInRect(thirdSelection, DiffNodeSelectionMode.Add);
+        var selectedAfterAdd = scene.SelectedNodes.ToArray();
+        scene.SelectNodesInRect(topRowSelection, DiffNodeSelectionMode.Toggle);
+        var selectedAfterToggle = scene.SelectedNodes.ToArray();
+
+        Assert.Equal(2, replacedCount);
+        Assert.Equal(new[] { first.Id, second.Id }, selectedAfterReplace.Select(node => node.Document.Id).ToArray());
+        Assert.Equal(new[] { first.Id, second.Id, third.Id }, selectedAfterAdd.Select(node => node.Document.Id).ToArray());
+        Assert.Equal(new[] { third.Id }, selectedAfterToggle.Select(node => node.Document.Id).ToArray());
+    }
+
+    [Fact]
+    public void SelectAllAndInvertSelection_UpdateSelectionSet()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("B.cs"), "B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var third = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("C.cs"), "C.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class C { }");
+        var scene = DiffCanvasScene.FromDocuments([first, second, third]);
+
+        var allCount = scene.SelectAllNodes();
+        var selectedAfterAll = scene.SelectedNodes.Select(node => node.DiffDocument.Id).ToArray();
+        scene.SelectNode(scene.Nodes[0]);
+        var invertedCount = scene.InvertNodeSelection();
+        var selectedAfterInvert = scene.SelectedNodes.Select(node => node.DiffDocument.Id).ToArray();
+
+        Assert.Equal(3, allCount);
+        Assert.Equal([first.Id, second.Id, third.Id], selectedAfterAll);
+        Assert.Equal(2, invertedCount);
+        Assert.Equal([second.Id, third.Id], selectedAfterInvert);
+    }
+
+    [Fact]
+    public void SelectNode_ClearsEditorFocusFromDeselectedNode()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("B.cs"), "B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var firstFull = factory.CreateFromText(first.Metadata, "class A\n{\n}", DiffLineKind.Context);
+        var secondFull = factory.CreateFromText(second.Metadata, "class B\n{\n}", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([first, second]);
+        scene.SetFullFileDocuments([
+            new DiffNodeFullFileContent(first.Id, firstFull, [], firstFull.ToSourceText()),
+            new DiffNodeFullFileContent(second.Id, secondFull, [], secondFull.ToSourceText())
+        ]);
+        scene.SetShowFullFileNodes(true);
+        scene.SetNodeEditingEnabled(true);
+        var firstNode = scene.Nodes.Single(node => node.DiffDocument.Id == first.Id);
+        var secondNode = scene.Nodes.Single(node => node.DiffDocument.Id == second.Id);
+        firstNode.SetEditorFocus(true);
+
+        scene.SelectNode(secondNode);
+
+        Assert.False(firstNode.IsEditorFocused);
+        Assert.True(secondNode.IsSelected);
+    }
+
+    [Fact]
+    public void ToggleNodeSelection_ClearsEditorFocusWhenNodeIsDeselected()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var full = factory.CreateFromText(document.Metadata, "class A\n{\n}", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([document]);
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(document.Id, full, [], full.ToSourceText())]);
+        scene.SetShowFullFileNodes(true);
+        scene.SetNodeEditingEnabled(true);
+        var node = scene.Nodes[0];
+        scene.SelectNode(node);
+        node.SetEditorFocus(true);
+
+        scene.ToggleNodeSelection(node);
+
+        Assert.False(node.IsSelected);
+        Assert.False(node.IsEditorFocused);
+    }
+
+    [Fact]
+    public void SelectConnectedNodes_SupportsDirectionAndSelectionMode()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("B.cs"), "B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var third = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("C.cs"), "C.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class C { }");
+        var firstNode = new DiffNode(first, new Rect2(0, 0, 620, 420));
+        var secondNode = new DiffNode(second, new Rect2(700, 0, 620, 420));
+        var thirdNode = new DiffNode(third, new Rect2(1400, 0, 620, 420));
+        var scene = new DiffCanvasScene(
+            [firstNode, secondNode, thirdNode],
+            [
+                new GraphEdge(first.Id.Value, second.Id.Value, SemanticEdgeKind.SymbolReference, 0.9, "A to B"),
+                new GraphEdge(third.Id.Value, first.Id.Value, SemanticEdgeKind.SymbolReference, 0.8, "C to A")
+            ]);
+
+        var outgoingCount = scene.SelectConnectedNodes(firstNode, DiffNodeSelectionMode.Replace, DiffNodeSelectionScope.Outgoing);
+        var outgoingSelection = scene.SelectedNodes.Select(node => node.DiffDocument.Id).ToArray();
+        scene.SelectConnectedNodes(firstNode, DiffNodeSelectionMode.Add, DiffNodeSelectionScope.Incoming);
+        var incomingAddedSelection = scene.SelectedNodes.Select(node => node.DiffDocument.Id).ToArray();
+
+        Assert.Equal(2, outgoingCount);
+        Assert.Equal([first.Id, second.Id], outgoingSelection);
+        Assert.Equal([first.Id, second.Id, third.Id], incomingAddedSelection);
+    }
+
+    [Fact]
+    public void SelectGroupNodes_SelectsOnlyGroupMembers()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/A.cs"), "src/App/A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("src/App/B.cs"), "src/App/B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var third = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("tests/App.Tests/A.cs"), "tests/App.Tests/A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class ATests { }");
+        var layout = new GraphLayoutResult([
+            new DiffNodeLayout(first.Id, new Rect2(0, 0, 620, 420)),
+            new DiffNodeLayout(second.Id, new Rect2(700, 0, 620, 420)),
+            new DiffNodeLayout(third.Id, new Rect2(0, 600, 620, 420))
+        ]);
+        var scene = DiffCanvasScene.FromDocuments([first, second, third], layoutResult: layout, groupingMode: GraphGroupingMode.Folder);
+        var group = Assert.Single(scene.Groups);
+
+        var count = scene.SelectGroupNodes(group, DiffNodeSelectionMode.Replace);
+        var selected = scene.SelectedNodes.Select(node => node.DiffDocument.Id).ToArray();
+
+        Assert.Equal(2, count);
+        Assert.Equal([first.Id, second.Id], selected);
+    }
+
+    [Fact]
+    public void MoveSelectedNodes_TranslatesOnlySelectedNodesAndPinsThem()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("B.cs"), "B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var third = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("C.cs"), "C.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class C { }");
+        var layout = new GraphLayoutResult([
+            new DiffNodeLayout(first.Id, new Rect2(0, 0, 620, 420)),
+            new DiffNodeLayout(second.Id, new Rect2(700, 0, 620, 420)),
+            new DiffNodeLayout(third.Id, new Rect2(0, 600, 620, 420))
+        ]);
+        var scene = DiffCanvasScene.FromDocuments([first, second, third], layoutResult: layout);
+        var firstNode = scene.Nodes.Single(node => node.Document.Id == first.Id);
+        var secondNode = scene.Nodes.Single(node => node.Document.Id == second.Id);
+        var thirdNode = scene.Nodes.Single(node => node.Document.Id == third.Id);
+        var firstBounds = firstNode.Bounds;
+        var secondBounds = secondNode.Bounds;
+        var thirdBounds = thirdNode.Bounds;
+        scene.SelectNodes([firstNode, thirdNode]);
+
+        var moved = scene.MoveSelectedNodes(42, -17);
+
+        Assert.True(moved);
+        Assert.Equal(firstBounds.Translate(42, -17), firstNode.Bounds);
+        Assert.Equal(secondBounds, secondNode.Bounds);
+        Assert.Equal(thirdBounds.Translate(42, -17), thirdNode.Bounds);
+        Assert.True(firstNode.IsPinned);
+        Assert.False(secondNode.IsPinned);
+        Assert.True(thirdNode.IsPinned);
     }
 
     [Fact]

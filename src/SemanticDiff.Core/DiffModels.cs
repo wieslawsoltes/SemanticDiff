@@ -140,7 +140,9 @@ public sealed record DiffDocumentSnapshot(
 public sealed record CodeFoldRegion(
     int StartLineIndex,
     int EndLineIndex,
-    string Title)
+    string Title,
+    int? GuideLineIndex = null,
+    int? GuideVisualColumn = null)
 {
     public int CollapsedLineCount => Math.Max(0, EndLineIndex - StartLineIndex);
 }

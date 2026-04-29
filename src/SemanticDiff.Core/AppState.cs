@@ -24,6 +24,7 @@ public sealed record SemanticDiffAppState(
     string? SelectedBranchRef = null,
     int? SelectedPullRequestNumber = null,
     bool UseInteractiveLevelOfDetail = true,
+    CodeCompletionMode CodeCompletionMode = CodeCompletionMode.LanguageServicesThenDocument,
     double LeftPaneWidth = 260)
 {
     public DiffNodeLayoutState[] EffectiveLayoutNodes => LayoutNodes ?? [];
@@ -35,6 +36,12 @@ public enum SemanticDiffThemeMode
 {
     Dark,
     Light
+}
+
+public enum CodeCompletionMode
+{
+    LanguageServicesThenDocument,
+    DocumentOnly
 }
 
 public sealed record DiffNodeLayoutState(

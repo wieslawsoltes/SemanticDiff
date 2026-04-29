@@ -1,5 +1,6 @@
 using System.Windows.Input;
 using DispatcherQueueTimer = Microsoft.UI.Dispatching.DispatcherQueueTimer;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
@@ -11,6 +12,7 @@ using SkiaSharp;
 using SkiaSharp.Views.Windows;
 using Windows.Foundation;
 using Windows.System;
+using Windows.UI.Core;
 
 namespace SemanticDiff.Controls.Uno;
 
@@ -18,16 +20,18 @@ public sealed class DiffCanvasControl : Grid
 {
     private const double DefaultViewportWidth = 960;
     private const double DefaultViewportHeight = 600;
+    private const double SelectionMarqueeMinimumScreenSize = 4;
     private static readonly TimeSpan WheelZoomSettleDelay = TimeSpan.FromMilliseconds(140);
 
     private enum ActiveInteraction
     {
         None,
         Pan,
-        DragNode,
+        DragSelection,
         DragGroup,
         ResizeNode,
-        DragScrollbar
+        DragScrollbar,
+        MarqueeSelection
     }
 
     private enum PanPointerButton
@@ -64,8 +68,10 @@ public sealed class DiffCanvasControl : Grid
     private DiffNode? activeNode;
     private GraphGroup? activeGroup;
     private DiffNodeResizeHandle activeResizeHandle;
-    private Point2 activeNodePointerOffset;
     private double activeScrollbarThumbOffsetY;
+    private Point2 marqueeStartCanvasPoint;
+    private Point2 marqueeCurrentCanvasPoint;
+    private DiffNodeSelectionMode marqueeSelectionMode = DiffNodeSelectionMode.Replace;
     private Point lastPointerPosition;
     private Size2 lastCanvasSize = Size2.Zero;
     private bool fitSceneWhenSizeAvailable;
@@ -79,6 +85,7 @@ public sealed class DiffCanvasControl : Grid
     {
         Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         ManipulationMode = ManipulationModes.None;
+        IsTabStop = true;
         canvas = new SKXamlCanvas
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -95,6 +102,8 @@ public sealed class DiffCanvasControl : Grid
         PointerCaptureLost += OnPointerReleased;
         PointerWheelChanged += OnPointerWheelChanged;
         PointerExited += OnPointerExited;
+        KeyDown += OnKeyDown;
+        CharacterReceived += OnCharacterReceived;
         DoubleTapped += OnDoubleTapped;
         SizeChanged += (_, _) =>
         {
@@ -170,9 +179,22 @@ public sealed class DiffCanvasControl : Grid
 
     public event EventHandler<DiffCanvasNodeSymbolGraphRequestedEventArgs>? NodeSymbolGraphRequested;
 
+    public event EventHandler<DiffCanvasNodeFullFileViewRequestedEventArgs>? NodeFullFileViewRequested;
+
+    public event EventHandler<DiffCanvasNodeFullFileViewResetRequestedEventArgs>? NodeFullFileViewResetRequested;
+
+    public event EventHandler<DiffCanvasNodeEditingRequestedEventArgs>? NodeEditingRequested;
+
+    public event EventHandler<DiffCanvasNodeEditingResetRequestedEventArgs>? NodeEditingResetRequested;
+
     public event EventHandler<DiffCanvasAnnotationInteractionRequestedEventArgs>? AnnotationInteractionRequested;
 
     public bool HasSelectedNode => GetSelectedNode() is not null;
+
+    public void InvalidateScene()
+    {
+        RequestRender();
+    }
 
     public void FitToScene()
     {
@@ -332,6 +354,7 @@ public sealed class DiffCanvasControl : Grid
             IsLightTheme ? DiffCanvasColorTheme.Light : DiffCanvasColorTheme.Dark,
             ShouldRenderDetailedDocumentBodies() ? DiffSceneRenderMode.Normal : DiffSceneRenderMode.Interactive,
             UseInteractiveLevelOfDetail);
+        DrawSelectionMarquee(args.Surface.Canvas);
     }
 
     private void OnPointerPressed(object sender, PointerRoutedEventArgs args)
@@ -343,7 +366,11 @@ public sealed class DiffCanvasControl : Grid
             var rightClickPoint = ToCanvasPoint(pointerPoint.Position);
             if (Scene.TryHitTestAnnotation(rightClickPoint, out var annotationHit) && annotationHit is not null)
             {
-                Scene.SelectNode(annotationHit.Node);
+                if (!annotationHit.Node.IsSelected)
+                {
+                    Scene.SelectNode(annotationHit.Node);
+                }
+
                 RequestRender();
                 ShowAnnotationContextMenu(annotationHit, pointerPoint.Position);
                 args.Handled = true;
@@ -353,7 +380,11 @@ public sealed class DiffCanvasControl : Grid
             var node = Scene.HitTestNode(rightClickPoint);
             if (node is not null)
             {
-                Scene.SelectNode(node);
+                if (!node.IsSelected)
+                {
+                    Scene.SelectNode(node);
+                }
+
                 RequestRender();
                 ShowNodeContextMenu(node, pointerPoint.Position);
                 args.Handled = true;
@@ -384,9 +415,10 @@ public sealed class DiffCanvasControl : Grid
         }
 
         var screenPoint = ToCanvasPoint(pointerPoint.Position);
+        var selectionMode = GetSelectionMode(args);
         if (Scene.TryHitTestAnnotation(screenPoint, out var hit) && hit is not null)
         {
-            Scene.SelectNode(hit.Node);
+            ApplyNodeClickSelection(hit.Node, selectionMode);
             RequestRender();
             RequestAnnotationInteraction(hit.Annotation);
             args.Handled = true;
@@ -412,6 +444,14 @@ public sealed class DiffCanvasControl : Grid
             return;
         }
 
+        if (Scene.ToggleFoldAt(screenPoint))
+        {
+            Focus(FocusState.Programmatic);
+            RequestRender();
+            args.Handled = true;
+            return;
+        }
+
         if (Scene.TryHitTestScrollbarThumb(screenPoint, out var scrollNode, out var thumbGrabOffsetY) && scrollNode is not null)
         {
             Scene.SelectNode(scrollNode);
@@ -424,31 +464,54 @@ public sealed class DiffCanvasControl : Grid
 
         if (Scene.TryHitTestTitleBar(screenPoint, out var titleNode) && titleNode is not null)
         {
-            var worldPoint = Scene.Camera.ScreenToWorld(screenPoint);
-            Scene.SelectNode(titleNode);
-            activeNode = titleNode;
-            activeNodePointerOffset = new Point2(worldPoint.X - titleNode.Bounds.X, worldPoint.Y - titleNode.Bounds.Y);
-            BeginInteraction(args, pointerPoint, ActiveInteraction.DragNode, pointerButton);
+            PrepareNodeDragSelection(titleNode, selectionMode);
+            BeginInteraction(args, pointerPoint, ActiveInteraction.DragSelection, pointerButton);
             RequestRender();
+            return;
+        }
+
+        if (Scene.TryFocusEditorAt(screenPoint))
+        {
+            var editorNode = Scene.HitTestNode(screenPoint);
+            if (editorNode is not null)
+            {
+                Scene.SelectNode(editorNode);
+            }
+
+            Focus(FocusState.Programmatic);
+            RequestRender();
+            args.Handled = true;
             return;
         }
 
         var selectedNode = Scene.HitTestNode(screenPoint);
         if (selectedNode is not null)
         {
-            Scene.SelectNode(selectedNode);
+            if (selectionMode == DiffNodeSelectionMode.Toggle && selectedNode.IsSelected)
+            {
+                ApplyNodeClickSelection(selectedNode, selectionMode);
+                RequestRender();
+                args.Handled = true;
+                return;
+            }
+
+            PrepareNodeDragSelection(selectedNode, selectionMode);
+            BeginInteraction(args, pointerPoint, ActiveInteraction.DragSelection, pointerButton);
             RequestRender();
-            args.Handled = true;
             return;
         }
 
-        if (Scene.TryHitTestGroup(screenPoint, out var group) && group is not null)
+        if (Scene.TryHitTestGroup(screenPoint, out var group) &&
+            group is not null)
         {
-            Scene.SelectNode(null);
+            Scene.SelectGroupNodes(group, selectionMode);
             activeGroup = group;
             BeginInteraction(args, pointerPoint, ActiveInteraction.DragGroup, pointerButton);
             RequestRender();
+            return;
         }
+
+        BeginMarqueeSelection(args, pointerPoint, screenPoint, selectionMode);
     }
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs args)
@@ -494,8 +557,8 @@ public sealed class DiffCanvasControl : Grid
             case ActiveInteraction.Pan:
                 Scene.Pan(currentCanvasPoint.X - lastCanvasPoint.X, currentCanvasPoint.Y - lastCanvasPoint.Y);
                 break;
-            case ActiveInteraction.DragNode when activeNode is not null:
-                Scene.MoveNodeTo(activeNode, currentWorldPoint.X - activeNodePointerOffset.X, currentWorldPoint.Y - activeNodePointerOffset.Y);
+            case ActiveInteraction.DragSelection:
+                Scene.MoveSelectedNodes(currentWorldPoint.X - lastWorldPoint.X, currentWorldPoint.Y - lastWorldPoint.Y);
                 break;
             case ActiveInteraction.DragGroup when activeGroup is not null:
                 activeGroup = Scene.MoveGroup(activeGroup, currentWorldPoint.X - lastWorldPoint.X, currentWorldPoint.Y - lastWorldPoint.Y);
@@ -505,6 +568,9 @@ public sealed class DiffCanvasControl : Grid
                 break;
             case ActiveInteraction.DragScrollbar when activeNode is not null:
                 Scene.DragScrollbarThumb(activeNode, currentWorldPoint.Y, activeScrollbarThumbOffsetY);
+                break;
+            case ActiveInteraction.MarqueeSelection:
+                marqueeCurrentCanvasPoint = currentCanvasPoint;
                 break;
         }
 
@@ -554,6 +620,79 @@ public sealed class DiffCanvasControl : Grid
         args.Handled = true;
     }
 
+    private void OnKeyDown(object sender, KeyRoutedEventArgs args)
+    {
+        if (Scene is null)
+        {
+            return;
+        }
+
+        var isCommand = IsCommandModifierDown();
+        var isShift = IsShiftModifierDown();
+        if (TryHandleSelectionShortcut(args.Key, isCommand, isShift))
+        {
+            RequestRender();
+            args.Handled = true;
+            return;
+        }
+
+        var handled = args.Key switch
+        {
+            VirtualKey.Left when isCommand => Scene.MoveFocusedEditorCaretWord(-1),
+            VirtualKey.Right when isCommand => Scene.MoveFocusedEditorCaretWord(1),
+            VirtualKey.Left => Scene.MoveFocusedEditorCaret(0, -1),
+            VirtualKey.Right => Scene.MoveFocusedEditorCaret(0, 1),
+            VirtualKey.Up => Scene.MoveFocusedEditorCaret(-1, 0),
+            VirtualKey.Down => Scene.MoveFocusedEditorCaret(1, 0),
+            VirtualKey.Home when isCommand => Scene.MoveFocusedEditorCaretToDocumentStart(),
+            VirtualKey.Home => Scene.MoveFocusedEditorCaretToSmartLineStart(),
+            VirtualKey.End when isCommand => Scene.MoveFocusedEditorCaretToDocumentEnd(),
+            VirtualKey.End => Scene.SetFocusedEditorCaretColumn(int.MaxValue),
+            VirtualKey.PageUp => Scene.MoveFocusedEditorCaret(-10, 0),
+            VirtualKey.PageDown => Scene.MoveFocusedEditorCaret(10, 0),
+            VirtualKey.Back when isCommand => Scene.BackspaceWordInFocusedEditor(),
+            VirtualKey.Back => Scene.BackspaceInFocusedEditor(),
+            VirtualKey.Delete when isCommand => Scene.DeleteWordInFocusedEditor(),
+            VirtualKey.Delete => Scene.DeleteInFocusedEditor(),
+            VirtualKey.Enter => Scene.InsertNewLineInFocusedEditor(),
+            VirtualKey.Tab when isShift => Scene.OutdentFocusedEditorLine(),
+            VirtualKey.Tab => Scene.InsertTextInFocusedEditor("    "),
+            VirtualKey.D when isCommand => Scene.DuplicateFocusedEditorLine(),
+            VirtualKey.K when isCommand && isShift => Scene.DeleteFocusedEditorLine(),
+            _ => false
+        };
+
+        if (!handled)
+        {
+            return;
+        }
+
+        RequestRender();
+        args.Handled = true;
+    }
+
+    private void OnCharacterReceived(UIElement sender, CharacterReceivedRoutedEventArgs args)
+    {
+        if (Scene is null || IsCommandModifierDown())
+        {
+            return;
+        }
+
+        var character = args.Character;
+        if (character is '\0' or '\b' or '\t' or '\r' or '\n' || char.IsControl(character))
+        {
+            return;
+        }
+
+        if (!Scene.InsertTextInFocusedEditor(character.ToString()))
+        {
+            return;
+        }
+
+        RequestRender();
+        args.Handled = true;
+    }
+
     private void OnDoubleTapped(object sender, DoubleTappedRoutedEventArgs args)
     {
         if (Scene is null)
@@ -594,6 +733,32 @@ public sealed class DiffCanvasControl : Grid
         openFullFileItem.Click += (_, _) => RequestDiffTab(node, showFullFile: true);
         menu.Items.Add(openFullFileItem);
 
+        var toggleFullInNodeItem = new MenuFlyoutItem
+        {
+            Text = node.IsShowingFullFile ? "Show diff in node" : "Show full code in node"
+        };
+        toggleFullInNodeItem.Click += (_, _) => RequestNodeFullFileView(node);
+        menu.Items.Add(toggleFullInNodeItem);
+        if (node.FullFileViewOverride is not null)
+        {
+            var resetFullInNodeItem = new MenuFlyoutItem { Text = "Use workspace code mode" };
+            resetFullInNodeItem.Click += (_, _) => RequestNodeFullFileViewReset(node);
+            menu.Items.Add(resetFullInNodeItem);
+        }
+
+        var toggleEditingItem = new MenuFlyoutItem
+        {
+            Text = node.IsEditingActive ? "Disable node editing" : "Enable node editing"
+        };
+        toggleEditingItem.Click += (_, _) => RequestNodeEditing(node);
+        menu.Items.Add(toggleEditingItem);
+        if (node.EditingOverride is not null)
+        {
+            var resetEditingItem = new MenuFlyoutItem { Text = "Use workspace edit mode" };
+            resetEditingItem.Click += (_, _) => RequestNodeEditingReset(node);
+            menu.Items.Add(resetEditingItem);
+        }
+
         var openBlameItem = new MenuFlyoutItem { Text = "Open blame tab" };
         openBlameItem.Click += (_, _) => RequestBlameTab(node);
         menu.Items.Add(openBlameItem);
@@ -601,6 +766,45 @@ public sealed class DiffCanvasControl : Grid
         var openSymbolsItem = new MenuFlyoutItem { Text = "Open semantic map" };
         openSymbolsItem.Click += (_, _) => RequestSymbolGraphTab(node);
         menu.Items.Add(openSymbolsItem);
+
+        menu.Items.Add(new MenuFlyoutSeparator());
+
+        var selectConnectedItem = new MenuFlyoutItem { Text = "Select connected nodes" };
+        selectConnectedItem.Click += (_, _) =>
+        {
+            Scene?.SelectConnectedNodes(node, DiffNodeSelectionMode.Replace);
+            RequestRender();
+        };
+        menu.Items.Add(selectConnectedItem);
+
+        var addConnectedItem = new MenuFlyoutItem { Text = "Add connected nodes to selection" };
+        addConnectedItem.Click += (_, _) =>
+        {
+            Scene?.SelectConnectedNodes(node, DiffNodeSelectionMode.Add);
+            RequestRender();
+        };
+        menu.Items.Add(addConnectedItem);
+
+        if (Scene?.FindGroupForNode(node) is { } group)
+        {
+            var selectGroupItem = new MenuFlyoutItem { Text = $"Select group: {group.SummaryText}" };
+            selectGroupItem.Click += (_, _) =>
+            {
+                Scene?.SelectGroupNodes(group, DiffNodeSelectionMode.Replace);
+                RequestRender();
+            };
+            menu.Items.Add(selectGroupItem);
+        }
+
+        var clearSelectionItem = new MenuFlyoutItem { Text = "Clear selection" };
+        clearSelectionItem.Click += (_, _) =>
+        {
+            Scene?.ClearSelection();
+            RequestRender();
+        };
+        menu.Items.Add(clearSelectionItem);
+
+        menu.Items.Add(new MenuFlyoutSeparator());
 
         var fitItem = new MenuFlyoutItem { Text = "Focus node" };
         fitItem.Click += (_, _) =>
@@ -652,6 +856,147 @@ public sealed class DiffCanvasControl : Grid
         menu.ShowAt(this, new FlyoutShowOptions { Position = position });
     }
 
+    private void ApplyNodeClickSelection(DiffNode node, DiffNodeSelectionMode selectionMode)
+    {
+        if (Scene is null)
+        {
+            return;
+        }
+
+        if (selectionMode == DiffNodeSelectionMode.Add)
+        {
+            Scene.AddNodeToSelection(node);
+        }
+        else if (selectionMode == DiffNodeSelectionMode.Toggle)
+        {
+            Scene.ToggleNodeSelection(node);
+        }
+        else
+        {
+            Scene.SelectNode(node);
+        }
+    }
+
+    private void PrepareNodeDragSelection(DiffNode node, DiffNodeSelectionMode selectionMode)
+    {
+        if (Scene is null)
+        {
+            return;
+        }
+
+        if (selectionMode == DiffNodeSelectionMode.Replace)
+        {
+            if (!node.IsSelected)
+            {
+                Scene.SelectNode(node);
+            }
+
+            return;
+        }
+
+        if (!node.IsSelected)
+        {
+            Scene.AddNodeToSelection(node);
+        }
+    }
+
+    private void BeginMarqueeSelection(
+        PointerRoutedEventArgs args,
+        Microsoft.UI.Input.PointerPoint pointerPoint,
+        Point2 screenPoint,
+        DiffNodeSelectionMode selectionMode)
+    {
+        ClearAnnotationHover();
+        marqueeStartCanvasPoint = screenPoint;
+        marqueeCurrentCanvasPoint = screenPoint;
+        marqueeSelectionMode = selectionMode;
+        BeginInteraction(args, pointerPoint, ActiveInteraction.MarqueeSelection, PanPointerButton.Primary);
+        RequestRender();
+    }
+
+    private void CompleteMarqueeSelection(PointerRoutedEventArgs args)
+    {
+        if (Scene is null)
+        {
+            return;
+        }
+
+        var pointerPoint = args.GetCurrentPoint(this);
+        marqueeCurrentCanvasPoint = ToCanvasPoint(pointerPoint.Position);
+        var screenBounds = GetMarqueeScreenBounds();
+        if (!IsMarqueeLargeEnough(screenBounds))
+        {
+            if (marqueeSelectionMode == DiffNodeSelectionMode.Replace)
+            {
+                Scene.ClearSelection();
+            }
+
+            return;
+        }
+
+        var worldBounds = GetMarqueeWorldBounds(screenBounds);
+        Scene.SelectNodesInRect(worldBounds, marqueeSelectionMode);
+    }
+
+    private void DrawSelectionMarquee(SKCanvas skCanvas)
+    {
+        if (activeInteraction != ActiveInteraction.MarqueeSelection)
+        {
+            return;
+        }
+
+        var bounds = GetMarqueeScreenBounds();
+        if (!IsMarqueeLargeEnough(bounds))
+        {
+            return;
+        }
+
+        var rect = new SKRect((float)bounds.Left, (float)bounds.Top, (float)bounds.Right, (float)bounds.Bottom);
+        using var fill = new SKPaint
+        {
+            IsAntialias = true,
+            Style = SKPaintStyle.Fill,
+            Color = IsLightTheme ? new SKColor(0, 120, 212, 36) : new SKColor(79, 156, 249, 42)
+        };
+        using var dash = SKPathEffect.CreateDash(new[] { 6f, 4f }, 0);
+        using var stroke = new SKPaint
+        {
+            IsAntialias = true,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 1.5f,
+            Color = IsLightTheme ? new SKColor(0, 120, 212, 210) : new SKColor(79, 156, 249, 230),
+            PathEffect = dash
+        };
+        skCanvas.DrawRect(rect, fill);
+        skCanvas.DrawRect(rect, stroke);
+    }
+
+    private Rect2 GetMarqueeScreenBounds() => CreateRect(marqueeStartCanvasPoint, marqueeCurrentCanvasPoint);
+
+    private Rect2 GetMarqueeWorldBounds(Rect2 screenBounds)
+    {
+        if (Scene is null)
+        {
+            return Rect2.Empty;
+        }
+
+        var topLeft = Scene.Camera.ScreenToWorld(new Point2(screenBounds.Left, screenBounds.Top));
+        var bottomRight = Scene.Camera.ScreenToWorld(new Point2(screenBounds.Right, screenBounds.Bottom));
+        return CreateRect(topLeft, bottomRight);
+    }
+
+    private static Rect2 CreateRect(Point2 first, Point2 second)
+    {
+        var left = Math.Min(first.X, second.X);
+        var top = Math.Min(first.Y, second.Y);
+        var right = Math.Max(first.X, second.X);
+        var bottom = Math.Max(first.Y, second.Y);
+        return new Rect2(left, top, right - left, bottom - top);
+    }
+
+    private static bool IsMarqueeLargeEnough(Rect2 bounds) =>
+        Math.Max(bounds.Width, bounds.Height) >= SelectionMarqueeMinimumScreenSize;
+
     private DiffNode? GetSelectedNode() => Scene?.Nodes.FirstOrDefault(node => node.IsSelected);
 
     private void RequestRevealNode(DiffNode node)
@@ -699,6 +1044,26 @@ public sealed class DiffCanvasControl : Grid
         NodeSymbolGraphRequested?.Invoke(this, new DiffCanvasNodeSymbolGraphRequestedEventArgs(documentId));
     }
 
+    private void RequestNodeFullFileView(DiffNode node)
+    {
+        NodeFullFileViewRequested?.Invoke(this, new DiffCanvasNodeFullFileViewRequestedEventArgs(node.DiffDocument.Id.Value));
+    }
+
+    private void RequestNodeFullFileViewReset(DiffNode node)
+    {
+        NodeFullFileViewResetRequested?.Invoke(this, new DiffCanvasNodeFullFileViewResetRequestedEventArgs(node.DiffDocument.Id.Value));
+    }
+
+    private void RequestNodeEditing(DiffNode node)
+    {
+        NodeEditingRequested?.Invoke(this, new DiffCanvasNodeEditingRequestedEventArgs(node.DiffDocument.Id.Value));
+    }
+
+    private void RequestNodeEditingReset(DiffNode node)
+    {
+        NodeEditingResetRequested?.Invoke(this, new DiffCanvasNodeEditingResetRequestedEventArgs(node.DiffDocument.Id.Value));
+    }
+
     private void RequestAnnotationInteraction(DiffAnnotation annotation)
     {
         if (TryExecuteCommand(AnnotationCommand, annotation))
@@ -726,6 +1091,33 @@ public sealed class DiffCanvasControl : Grid
         var fitGraphItem = new MenuFlyoutItem { Text = "Fit graph" };
         fitGraphItem.Click += (_, _) => FitToScene();
         menu.Items.Add(fitGraphItem);
+
+        menu.Items.Add(new MenuFlyoutSeparator());
+
+        var selectAllItem = new MenuFlyoutItem { Text = "Select all nodes" };
+        selectAllItem.Click += (_, _) =>
+        {
+            Scene?.SelectAllNodes();
+            RequestRender();
+        };
+        menu.Items.Add(selectAllItem);
+
+        var invertSelectionItem = new MenuFlyoutItem { Text = "Invert selection" };
+        invertSelectionItem.Click += (_, _) =>
+        {
+            Scene?.InvertNodeSelection();
+            RequestRender();
+        };
+        menu.Items.Add(invertSelectionItem);
+
+        var clearSelectionItem = new MenuFlyoutItem { Text = "Clear selection" };
+        clearSelectionItem.Click += (_, _) =>
+        {
+            Scene?.ClearSelection();
+            RequestRender();
+        };
+        menu.Items.Add(clearSelectionItem);
+
         menu.ShowAt(this, new FlyoutShowOptions { Position = position });
     }
 
@@ -849,10 +1241,100 @@ public sealed class DiffCanvasControl : Grid
 
     private static bool ShouldPanCanvas(PointerRoutedEventArgs args, PanPointerButton pointerButton) =>
         pointerButton == PanPointerButton.Middle ||
-        (pointerButton == PanPointerButton.Primary && IsCameraModifierDown(args));
+        (pointerButton == PanPointerButton.Primary && IsPanModifierDown(args));
+
+    private static bool IsPanModifierDown(PointerRoutedEventArgs args) =>
+        (args.KeyModifiers & VirtualKeyModifiers.Menu) != 0;
 
     private static bool IsCameraModifierDown(PointerRoutedEventArgs args) =>
         (args.KeyModifiers & (VirtualKeyModifiers.Control | VirtualKeyModifiers.Windows)) != 0;
+
+    private static bool IsCommandModifierDown() =>
+        IsKeyDown(VirtualKey.Control) ||
+        IsKeyDown(VirtualKey.LeftControl) ||
+        IsKeyDown(VirtualKey.RightControl) ||
+        IsKeyDown(VirtualKey.LeftWindows) ||
+        IsKeyDown(VirtualKey.RightWindows);
+
+    private static bool IsShiftModifierDown() =>
+        IsKeyDown(VirtualKey.Shift) ||
+        IsKeyDown(VirtualKey.LeftShift) ||
+        IsKeyDown(VirtualKey.RightShift);
+
+    private static bool IsKeyDown(VirtualKey key) =>
+        (InputKeyboardSource.GetKeyStateForCurrentThread(key) & CoreVirtualKeyStates.Down) == CoreVirtualKeyStates.Down;
+
+    private static DiffNodeSelectionMode GetSelectionMode(PointerRoutedEventArgs args)
+    {
+        if ((args.KeyModifiers & (VirtualKeyModifiers.Control | VirtualKeyModifiers.Windows)) != 0)
+        {
+            return DiffNodeSelectionMode.Toggle;
+        }
+
+        if ((args.KeyModifiers & VirtualKeyModifiers.Shift) != 0)
+        {
+            return DiffNodeSelectionMode.Add;
+        }
+
+        return DiffNodeSelectionMode.Replace;
+    }
+
+    private bool TryHandleSelectionShortcut(VirtualKey key, bool isCommand, bool isShift)
+    {
+        if (Scene is null)
+        {
+            return false;
+        }
+
+        if (key == VirtualKey.Escape)
+        {
+            Scene.ClearSelectionAndEditorFocus();
+            return true;
+        }
+
+        if (Scene.HasFocusedEditor)
+        {
+            return false;
+        }
+
+        if (key == VirtualKey.A && isCommand && isShift)
+        {
+            Scene.ClearSelection();
+            return true;
+        }
+
+        if (key == VirtualKey.A && isCommand)
+        {
+            Scene.SelectAllNodes();
+            return true;
+        }
+
+        if (key == VirtualKey.I && isCommand)
+        {
+            Scene.InvertNodeSelection();
+            return true;
+        }
+
+        if (isCommand)
+        {
+            return false;
+        }
+
+        if (Scene.SelectedNodeCount == 0)
+        {
+            return false;
+        }
+
+        var nudge = isShift ? 50 : 10;
+        return key switch
+        {
+            VirtualKey.Left => Scene.MoveSelectedNodes(-nudge, 0),
+            VirtualKey.Right => Scene.MoveSelectedNodes(nudge, 0),
+            VirtualKey.Up => Scene.MoveSelectedNodes(0, -nudge),
+            VirtualKey.Down => Scene.MoveSelectedNodes(0, nudge),
+            _ => false
+        };
+    }
 
     private void BeginInteraction(PointerRoutedEventArgs args, Microsoft.UI.Input.PointerPoint pointerPoint, ActiveInteraction interaction, PanPointerButton pointerButton)
     {
@@ -867,14 +1349,21 @@ public sealed class DiffCanvasControl : Grid
 
     private void EndInteraction(PointerRoutedEventArgs args)
     {
+        if (activeInteraction == ActiveInteraction.MarqueeSelection)
+        {
+            CompleteMarqueeSelection(args);
+        }
+
         activeInteraction = ActiveInteraction.None;
         activePointerButton = PanPointerButton.None;
         activePointerId = null;
         activeNode = null;
         activeGroup = null;
         activeResizeHandle = DiffNodeResizeHandle.None;
-        activeNodePointerOffset = Point2.Zero;
         activeScrollbarThumbOffsetY = 0;
+        marqueeStartCanvasPoint = Point2.Zero;
+        marqueeCurrentCanvasPoint = Point2.Zero;
+        marqueeSelectionMode = DiffNodeSelectionMode.Replace;
         StopInteractiveRenderLoop();
         ReleasePointerCaptures();
         args.Handled = true;
@@ -1058,6 +1547,46 @@ public sealed class DiffCanvasNodeBlameTabRequestedEventArgs : EventArgs
 public sealed class DiffCanvasNodeSymbolGraphRequestedEventArgs : EventArgs
 {
     public DiffCanvasNodeSymbolGraphRequestedEventArgs(string documentId)
+    {
+        DocumentId = documentId;
+    }
+
+    public string DocumentId { get; }
+}
+
+public sealed class DiffCanvasNodeFullFileViewRequestedEventArgs : EventArgs
+{
+    public DiffCanvasNodeFullFileViewRequestedEventArgs(string documentId)
+    {
+        DocumentId = documentId;
+    }
+
+    public string DocumentId { get; }
+}
+
+public sealed class DiffCanvasNodeFullFileViewResetRequestedEventArgs : EventArgs
+{
+    public DiffCanvasNodeFullFileViewResetRequestedEventArgs(string documentId)
+    {
+        DocumentId = documentId;
+    }
+
+    public string DocumentId { get; }
+}
+
+public sealed class DiffCanvasNodeEditingRequestedEventArgs : EventArgs
+{
+    public DiffCanvasNodeEditingRequestedEventArgs(string documentId)
+    {
+        DocumentId = documentId;
+    }
+
+    public string DocumentId { get; }
+}
+
+public sealed class DiffCanvasNodeEditingResetRequestedEventArgs : EventArgs
+{
+    public DiffCanvasNodeEditingResetRequestedEventArgs(string documentId)
     {
         DocumentId = documentId;
     }
