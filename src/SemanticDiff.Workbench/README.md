@@ -8,6 +8,7 @@ UI-framework-free orchestration and builder services extracted from `SemanticDif
 | --- | --- | --- |
 | File diffs | `FileDiffDocumentBuilder` | Builds changed-hunk, full-diff, annotated full-file, and fold-aware file views from diff/full-file snapshots. |
 | Symbol graphs | `SymbolBrowserModel`, `SymbolGraphSceneBuilder` | Owns symbol filtering/facets and builds symbol-only or file+symbol graph scenes. |
+| Query canvas | `QueryCanvasEngine`, `QueryCanvasCompletionProvider` | Executes a safe LINQ-style query subset over files, workspace files, and semantic symbols, then builds file-node, symbol-only, or hybrid semantic-map scenes. |
 | Blame | `BlameChangeGraphBuilder` | Builds diff-node style blame history graphs from file blame commits. |
 | Git history | `GitHistoryLaneLayout` | Computes reusable visual lanes for merge/split history rendering. |
 | Workspace loading | `RepositoryDiffLoader` | Loads Git diff documents and applies review/noise/context/inline annotation preparation. |
@@ -51,6 +52,25 @@ var result = await loader.LoadAsync(
 var cache = new DiffWorkspaceCache(capacity: 12);
 var symbols = new SymbolBrowserModel();
 symbols.SetItems(new SemanticNavigationIndex().Build(semanticGraph, result.Documents));
+```
+
+Query Canvas example:
+
+```csharp
+var queryContext = new QueryCanvasContext(
+    DiffDocuments: result.Documents,
+    WorkspaceDocuments: result.Documents,
+    Symbols: symbols.AllItems,
+    SemanticGraph: semanticGraph,
+    LayoutMode: GraphLayoutMode.Layered,
+    GroupingMode: GraphGroupingMode.Semantic,
+    EdgeOptions: EdgeProjectionOptions.Default,
+    AnnotationVisibility: DiffAnnotationVisibilityState.Default);
+
+var queryResult = new QueryCanvasEngine().Execute(
+    "ChangedSymbols.Where(s => s.Links > 2).Map().Take(120)",
+    queryContext,
+    QueryCanvasScope.Diff);
 ```
 
 ## NuGet Packaging
