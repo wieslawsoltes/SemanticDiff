@@ -2,11 +2,13 @@ using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using SemanticDiff.Core;
+using SemanticDiff.Diff;
 using SemanticDiff.Rendering;
 using SemanticDiff.Semantics;
 using SemanticDiff.Workbench.Blame;
 using SemanticDiff.Workbench.FileDiff;
 using SemanticDiff.Workbench.History;
+using SemanticDiff.Workbench.Query;
 using SemanticDiff.Workbench.Symbols;
 using Windows.Foundation;
 using Windows.UI;
@@ -19,7 +21,9 @@ public enum WorkspaceTabKind
     GitHistory,
     FileDiff,
     Blame,
-    SymbolGraph
+    SymbolGraph,
+    EditorCanvas,
+    QueryCanvas
 }
 
 public enum FileDiffDisplayMode
@@ -70,7 +74,7 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
 
     public bool IsClosable { get; }
 
-    public Visibility IconVisibility => Kind is WorkspaceTabKind.Graph or WorkspaceTabKind.GitHistory or WorkspaceTabKind.Blame or WorkspaceTabKind.SymbolGraph
+    public Visibility IconVisibility => Kind is WorkspaceTabKind.Graph or WorkspaceTabKind.GitHistory or WorkspaceTabKind.Blame or WorkspaceTabKind.SymbolGraph or WorkspaceTabKind.EditorCanvas or WorkspaceTabKind.QueryCanvas
         ? Visibility.Visible
         : Visibility.Collapsed;
 
@@ -85,6 +89,10 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
     public Visibility BlameVisibility => Kind == WorkspaceTabKind.Blame ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility SymbolGraphVisibility => Kind == WorkspaceTabKind.SymbolGraph ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility EditorCanvasVisibility => Kind == WorkspaceTabKind.EditorCanvas ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility QueryCanvasVisibility => Kind == WorkspaceTabKind.QueryCanvas ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility LoadingVisibility => IsLoading ? Visibility.Visible : Visibility.Collapsed;
 
@@ -106,6 +114,12 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
 
     [ObservableProperty]
     private SymbolGraphTabViewModel? symbolGraph;
+
+    [ObservableProperty]
+    private EditorCanvasTabViewModel? editorCanvas;
+
+    [ObservableProperty]
+    private QueryCanvasTabViewModel? queryCanvas;
 
     [ObservableProperty]
     private GitDiffRequest? graphRequest;
@@ -196,6 +210,216 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
         SymbolGraph = symbolGraph,
         StatusText = symbolGraph.StatusText
     };
+
+    public static WorkspaceTabViewModel CreateEditorCanvas(string id, string header, string detailText, EditorCanvasTabViewModel editorCanvas) => new(
+        id,
+        WorkspaceTabKind.EditorCanvas,
+        header,
+        detailText,
+        "\uE70F",
+        isClosable: true)
+    {
+        EditorCanvas = editorCanvas,
+        StatusText = editorCanvas.StatusText
+    };
+
+    public static WorkspaceTabViewModel CreateQueryCanvas(string id, string header, string detailText, QueryCanvasTabViewModel queryCanvas) => new(
+        id,
+        WorkspaceTabKind.QueryCanvas,
+        header,
+        detailText,
+        "\uE946",
+        isClosable: true)
+    {
+        QueryCanvas = queryCanvas,
+        StatusText = queryCanvas.StatusText
+    };
+}
+
+public sealed partial class QueryCanvasTabViewModel : ObservableObject
+{
+    public static string DefaultQuery => QueryCanvasSampleCatalog.Default.Query;
+
+    private readonly DiffDocumentFactory documentFactory = new();
+
+    public QueryCanvasTabViewModel(string title, string description, ICodeCompletionProvider completionProvider)
+    {
+        Title = title;
+        Description = description;
+        CompletionProvider = completionProvider;
+        ScopeOptions =
+        [
+            new QueryCanvasScopeOption(QueryCanvasScope.Diff, "Current diff", "Query files and symbols from the active diff workspace"),
+            new QueryCanvasScopeOption(QueryCanvasScope.Workspace, "MSBuild workspace", "Query files from the loaded MSBuild workspace and current semantic symbols")
+        ];
+        SampleOptions = QueryCanvasSampleCatalog.All;
+        selectedScopeOption = ScopeOptions[0];
+        selectedSampleOption = QueryCanvasSampleCatalog.Default;
+        queryText = selectedSampleOption.Query;
+        queryLines = CreateQueryLines(queryText);
+        queryRefreshKey = Guid.NewGuid().ToString("N");
+    }
+
+    public event EventHandler? QueryChanged;
+
+    public string Title { get; }
+
+    public string Description { get; }
+
+    public ImmutableArray<QueryCanvasScopeOption> ScopeOptions { get; }
+
+    public ImmutableArray<QueryCanvasSample> SampleOptions { get; }
+
+    public ICodeCompletionProvider CompletionProvider { get; }
+
+    public QueryCanvasScope Scope => SelectedScopeOption?.Scope ?? QueryCanvasScope.Diff;
+
+    public Visibility ContentVisibility => Scene.Nodes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility EmptyVisibility => Scene.Nodes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility ErrorVisibility => HasError ? Visibility.Visible : Visibility.Collapsed;
+
+    [ObservableProperty]
+    private QueryCanvasScopeOption? selectedScopeOption;
+
+    [ObservableProperty]
+    private QueryCanvasSample? selectedSampleOption;
+
+    [ObservableProperty]
+    private string queryText;
+
+    [ObservableProperty]
+    private ImmutableArray<DiffLine> queryLines;
+
+    [ObservableProperty]
+    private string queryRefreshKey;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ContentVisibility))]
+    [NotifyPropertyChangedFor(nameof(EmptyVisibility))]
+    private DiffCanvasScene scene = DiffCanvasScene.FromDocuments([]);
+
+    [ObservableProperty]
+    private string statusText = "Query canvas ready";
+
+    [ObservableProperty]
+    private string resultText = "Write a LINQ query over Files, WorkspaceFiles, Symbols, ChangedSymbols, or LinkedSymbols.";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ErrorVisibility))]
+    private bool hasError;
+
+    partial void OnSelectedScopeOptionChanged(QueryCanvasScopeOption? value) => RaiseQueryChanged();
+
+    partial void OnSelectedSampleOptionChanged(QueryCanvasSample? value)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        var preferredScope = ScopeOptions.FirstOrDefault(option => option.Scope == value.PreferredScope);
+        if (preferredScope is not null && SelectedScopeOption != preferredScope)
+        {
+            SelectedScopeOption = preferredScope;
+        }
+
+        if (!string.Equals(QueryText, value.Query, StringComparison.Ordinal))
+        {
+            QueryText = value.Query;
+        }
+    }
+
+    partial void OnQueryTextChanged(string value)
+    {
+        QueryLines = CreateQueryLines(value);
+        QueryRefreshKey = Guid.NewGuid().ToString("N");
+        RaiseQueryChanged();
+    }
+
+    public void SetResult(QueryCanvasExecutionResult result)
+    {
+        Scene = result.Scene;
+        StatusText = result.StatusText;
+        ResultText = result.DetailText;
+        HasError = result.HasError;
+    }
+
+    public void SetExecuting()
+    {
+        StatusText = "Running query...";
+        HasError = false;
+    }
+
+    private void RaiseQueryChanged() => QueryChanged?.Invoke(this, EventArgs.Empty);
+
+    private ImmutableArray<DiffLine> CreateQueryLines(string text)
+    {
+        var metadata = new DiffDocumentMetadata(
+            new DiffDocumentId("query://canvas.csx"),
+            "query.csx",
+            null,
+            DiffFileStatus.Modified,
+            "C#",
+            0,
+            0);
+        return documentFactory.CreateFromText(metadata, text ?? string.Empty, DiffLineKind.Context).Lines;
+    }
+}
+
+public sealed record EditorCanvasDocument(
+    DiffDocumentSnapshot Document,
+    string FullText,
+    ImmutableArray<CodeFoldRegion> FoldRegions);
+
+public sealed partial class EditorCanvasTabViewModel : ObservableObject
+{
+    public EditorCanvasTabViewModel(string title, string description, DiffCanvasScene scene)
+    {
+        Title = title;
+        Description = description;
+        this.scene = scene;
+        UpdateStatus();
+    }
+
+    public string Title { get; }
+
+    public string Description { get; }
+
+    public ImmutableArray<EditorCanvasDocument> Documents { get; private set; } = [];
+
+    public Visibility EmptyVisibility => Documents.IsDefaultOrEmpty ? Visibility.Visible : Visibility.Collapsed;
+
+    public string SummaryText => Documents.IsDefaultOrEmpty
+        ? "Empty editor canvas | drag files here to create editable code nodes"
+        : $"{Documents.Length:N0} editable file nodes | drag more files here to add nodes";
+
+    [ObservableProperty]
+    private DiffCanvasScene scene;
+
+    [ObservableProperty]
+    private string statusText = string.Empty;
+
+    public bool ContainsDocument(string documentId) =>
+        Documents.Any(document => string.Equals(document.Document.Id.Value, documentId, StringComparison.OrdinalIgnoreCase));
+
+    public void SetDocuments(ImmutableArray<EditorCanvasDocument> documents, DiffCanvasScene nextScene)
+    {
+        Documents = documents.IsDefault ? [] : documents;
+        Scene = nextScene;
+        UpdateStatus();
+        OnPropertyChanged(nameof(Documents));
+        OnPropertyChanged(nameof(EmptyVisibility));
+        OnPropertyChanged(nameof(SummaryText));
+    }
+
+    private void UpdateStatus()
+    {
+        StatusText = Documents.IsDefaultOrEmpty
+            ? "Editor canvas ready for file drops"
+            : $"{Documents.Length:N0} editable files in canvas";
+    }
 }
 
 public sealed partial class SymbolGraphTabViewModel : ObservableObject
@@ -1156,7 +1380,9 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         ImmutableArray<DiffLine> annotatedFullFileLines,
         ImmutableArray<CodeFoldRegion> foldRegions,
         SemanticDocumentInsight semanticInsight,
-        FileDiffDisplayMode displayMode)
+        FileDiffDisplayMode displayMode,
+        string? repositoryPath = null,
+        ICodeCompletionProvider? completionProvider = null)
     {
         DocumentId = documentId;
         Path = path;
@@ -1171,6 +1397,8 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         this.semanticInsight = semanticInsight;
         this.fullText = fullText;
         this.displayMode = displayMode;
+        RepositoryPath = repositoryPath ?? string.Empty;
+        CompletionProvider = completionProvider;
     }
 
     public string DocumentId { get; }
@@ -1178,6 +1406,14 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
     public string Path { get; }
 
     public string Language { get; }
+
+    public string RepositoryPath { get; }
+
+    public ICodeCompletionProvider? CompletionProvider { get; private set; }
+
+    public string LineCommentPrefix => GetLineCommentTokens(Language, Path).Prefix;
+
+    public string LineCommentSuffix => GetLineCommentTokens(Language, Path).Suffix;
 
     public DiffFileStatus Status { get; }
 
@@ -1223,13 +1459,13 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
 
     public string FullFileHeader => string.IsNullOrWhiteSpace(FullText)
         ? "Full file content unavailable"
-        : $"{Path} | {FullFileLines.Length:N0} lines | {FoldRegions.Length:N0} fold regions | diff annotations {(IsDiffAnnotationEnabled ? "on" : "off")} | {SemanticSummaryText}";
+        : $"{Path} | {DisplayFullFileLineCount:N0} lines | {FoldRegions.Length:N0} fold regions | diff annotations {(IsDiffAnnotationEnabled ? "on" : "off")} | editing {(IsEditingEnabled ? "on" : "off")} | {SemanticSummaryText}";
 
     public string DiffOnlyHeader => DiffScopeMode == FileDiffScopeMode.FullFileDiff
         ? $"{Path} | full file diff | {CurrentDiffOnlyLines.Length:N0} lines | {SemanticSummaryText}"
         : $"{Path} | changed hunks | {CurrentDiffOnlyLines.Length:N0} lines | {SemanticSummaryText}";
 
-    public string RefreshKey => $"{DisplayMode}:{DiffScopeMode}:{IsDiffAnnotationEnabled}:{CodeFontSize:0.##}:{SemanticLineInsights.Length}";
+    public string RefreshKey => $"{DisplayMode}:{DiffScopeMode}:{IsDiffAnnotationEnabled}:{SemanticLineInsights.Length}";
 
     public ImmutableArray<double> CodeFontSizeOptions { get; } = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
 
@@ -1238,6 +1474,49 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
     public bool CanDecreaseCodeFontSize => CodeFontSize > CodeFontSizeOptions[0];
 
     public bool CanIncreaseCodeFontSize => CodeFontSize < CodeFontSizeOptions[^1];
+
+    private int DisplayFullFileLineCount =>
+        string.IsNullOrEmpty(FullText) ? FullFileLines.Length : CountLines(FullText);
+
+    private static int CountLines(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return 0;
+        }
+
+        var count = 1;
+        foreach (var character in text)
+        {
+            if (character == '\n')
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static (string Prefix, string Suffix) GetLineCommentTokens(string language, string path)
+    {
+        var normalizedLanguage = (language ?? string.Empty).Trim().ToLowerInvariant();
+        var extension = System.IO.Path.GetExtension(path ?? string.Empty).ToLowerInvariant();
+        return normalizedLanguage switch
+        {
+            "xml" or "xaml" or "html" or "svg" or "markdown" when extension is ".xaml" or ".xml" or ".html" or ".htm" or ".svg" or ".md" or ".markdown" => ("<!-- ", " -->"),
+            "css" or "scss" or "sass" or "less" => ("/* ", " */"),
+            "python" or "py" or "ruby" or "rb" or "shell" or "bash" or "sh" or "yaml" or "yml" or "toml" or "powershell" => ("# ", string.Empty),
+            "sql" or "lua" or "haskell" => ("-- ", string.Empty),
+            _ => extension switch
+            {
+                ".xaml" or ".xml" or ".html" or ".htm" or ".svg" or ".md" or ".markdown" => ("<!-- ", " -->"),
+                ".css" or ".scss" or ".sass" or ".less" => ("/* ", " */"),
+                ".py" or ".rb" or ".sh" or ".bash" or ".zsh" or ".yaml" or ".yml" or ".toml" or ".ps1" => ("# ", string.Empty),
+                ".sql" or ".lua" or ".hs" => ("-- ", string.Empty),
+                _ => ("// ", string.Empty)
+            }
+        };
+    }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(DiffOnlyVisibility))]
@@ -1265,6 +1544,10 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(FullFileHeader))]
+    private bool isEditingEnabled;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(FullFileHeader))]
     private string fullText;
 
     [ObservableProperty]
@@ -1282,7 +1565,6 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(CodeFontSizeText))]
     [NotifyPropertyChangedFor(nameof(CanDecreaseCodeFontSize))]
     [NotifyPropertyChangedFor(nameof(CanIncreaseCodeFontSize))]
-    [NotifyPropertyChangedFor(nameof(RefreshKey))]
     private double codeFontSize = 15;
 
     public void SetDisplayMode(FileDiffDisplayMode mode) => DisplayMode = mode;
@@ -1291,7 +1573,15 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
 
     public void SetDiffAnnotationVisibility(bool isEnabled) => IsDiffAnnotationEnabled = isEnabled;
 
+    public void SetEditingEnabled(bool isEnabled) => IsEditingEnabled = isEnabled;
+
     public void SetSemanticInsight(SemanticDocumentInsight insight) => SemanticInsight = insight;
+
+    public void SetCompletionProvider(ICodeCompletionProvider completionProvider)
+    {
+        CompletionProvider = completionProvider;
+        OnPropertyChanged(nameof(CompletionProvider));
+    }
 
     public SemanticLineInsight? FindSemanticLineInsight(int? lineNumber)
     {
@@ -1326,7 +1616,9 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         string fullText,
         ImmutableArray<CodeFoldRegion> foldRegions,
         SemanticDocumentInsight semanticInsight,
-        FileDiffDisplayMode displayMode)
+        FileDiffDisplayMode displayMode,
+        string? repositoryPath = null,
+        ICodeCompletionProvider? completionProvider = null)
     {
         var view = new FileDiffDocumentBuilder().Build(document, fullFileDocument, fullText, foldRegions);
         return new FileDiffTabViewModel(
@@ -1342,7 +1634,9 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
             view.AnnotatedFullFileLines,
             view.FoldRegions,
             semanticInsight,
-            displayMode);
+            displayMode,
+            repositoryPath,
+            completionProvider);
     }
 }
 

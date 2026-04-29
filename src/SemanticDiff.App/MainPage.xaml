@@ -154,7 +154,7 @@
                   <TextBlock Text="{Binding FileDiff.Path}" Foreground="{ThemeResource PrimaryTextBrush}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                   <TextBlock Text="{Binding FileDiff.SummaryText}" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
-                <Grid Grid.Column="1" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="6" VerticalAlignment="Center">
+                <Grid Grid.Column="1" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="6" VerticalAlignment="Center">
                   <ToggleButton Content="Diff only" Tag="DiffOnly" IsChecked="{Binding FileDiff.IsDiffOnlyMode, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnFileDiffModeClicked" />
                   <ToggleButton Grid.Column="1" Content="Full file" Tag="FullFile" IsChecked="{Binding FileDiff.IsFullFileMode, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnFileDiffModeClicked" />
                   <ToggleButton Grid.Column="2" Content="Changes" Tag="Changes" IsChecked="{Binding FileDiff.IsChangesDiffScopeMode, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnFileDiffScopeModeClicked" />
@@ -190,7 +190,14 @@
                           IsEnabled="{Binding FileDiff.CanIncreaseCodeFontSize}"
                           Style="{StaticResource ChromeButtonStyle}"
                           Click="OnFileDiffIncreaseFontSizeClicked" />
-                  <Button Grid.Column="9"
+                  <ToggleButton Grid.Column="9"
+                                Content="Edit"
+                                Tag="{Binding}"
+                                IsChecked="{Binding FileDiff.IsEditingEnabled, Mode=OneWay}"
+                                IsEnabled="{Binding FileDiff.IsFullFileMode}"
+                                Style="{StaticResource CompactToggleStyle}"
+                                Click="OnFileDiffEditToggleClicked" />
+                  <Button Grid.Column="10"
                           Content="Blame"
                           Tag="{Binding}"
                           Style="{StaticResource ChromeButtonStyle}"
@@ -211,6 +218,10 @@
                                            ShowSemanticInsights="{Binding FileDiff.IsDiffAnnotationEnabled}"
                                            SemanticLineInsights="{Binding FileDiff.SemanticLineInsights}"
                                            CodeFontSize="{Binding FileDiff.CodeFontSize, Mode=TwoWay}"
+                                           CompletionProvider="{Binding FileDiff.CompletionProvider}"
+                                           CompletionLanguage="{Binding FileDiff.Language}"
+                                           CompletionPath="{Binding FileDiff.Path}"
+                                           CompletionRepositoryPath="{Binding FileDiff.RepositoryPath}"
                                            RefreshKey="{Binding FileDiff.RefreshKey}"
                                            LineContextRequested="OnFileViewerLineContextRequested" />
             </Grid>
@@ -223,6 +234,14 @@
                                            ShowSemanticInsights="{Binding FileDiff.IsDiffAnnotationEnabled}"
                                            SemanticLineInsights="{Binding FileDiff.SemanticLineInsights}"
                                            CodeFontSize="{Binding FileDiff.CodeFontSize, Mode=TwoWay}"
+                                           IsEditable="{Binding FileDiff.IsEditingEnabled}"
+                                           Text="{Binding FileDiff.FullText, Mode=TwoWay}"
+                                           LineCommentPrefix="{Binding FileDiff.LineCommentPrefix}"
+                                           LineCommentSuffix="{Binding FileDiff.LineCommentSuffix}"
+                                           CompletionProvider="{Binding FileDiff.CompletionProvider}"
+                                           CompletionLanguage="{Binding FileDiff.Language}"
+                                           CompletionPath="{Binding FileDiff.Path}"
+                                           CompletionRepositoryPath="{Binding FileDiff.RepositoryPath}"
                                            RefreshKey="{Binding FileDiff.RefreshKey}"
                                            LineContextRequested="OnFileViewerLineContextRequested" />
             </Grid>
@@ -435,6 +454,171 @@
             </Border>
           </Grid>
         </Grid>
+
+        <Grid Visibility="{Binding EditorCanvasVisibility}" RowDefinitions="Auto,*">
+          <Border Background="{ThemeResource ChromeBrush}"
+                  BorderBrush="{ThemeResource BorderBrush}"
+                  BorderThickness="0,0,0,1"
+                  Padding="16,10">
+            <Grid RowDefinitions="Auto,Auto" RowSpacing="5">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{Binding EditorCanvas.Title}"
+                             Foreground="{ThemeResource PrimaryTextBrush}"
+                             FontSize="15"
+                             FontWeight="SemiBold"
+                             TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding EditorCanvas.SummaryText}"
+                             Foreground="{ThemeResource TertiaryTextBrush}"
+                             FontSize="10"
+                             TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+                <TextBlock Grid.Column="1"
+                           Text="{Binding EditorCanvas.Description}"
+                           Foreground="{ThemeResource SecondaryTextBrush}"
+                           FontSize="11"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+              </Grid>
+            </Grid>
+          </Border>
+          <Grid Grid.Row="1">
+            <views:DiffCanvasControl HorizontalAlignment="Stretch"
+                                     VerticalAlignment="Stretch"
+                                     AllowDrop="True"
+                                     Scene="{Binding EditorCanvas.Scene}"
+                                     IsLightTheme="{Binding IsLightTheme}"
+                                     UseInteractiveLevelOfDetail="{Binding UseInteractiveLevelOfDetail}"
+                                     DragOver="OnEditorCanvasDragOver"
+                                     Drop="OnEditorCanvasDrop"
+                                     NodeNavigationRequested="OnEditorCanvasNodeNavigationRequested"
+                                     NodeDiffTabRequested="OnDiffCanvasNodeDiffTabRequested"
+                                     NodeBlameTabRequested="OnDiffCanvasNodeBlameTabRequested"
+                                     NodeSymbolGraphRequested="OnDiffCanvasNodeSymbolGraphRequested" />
+            <Border HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    MaxWidth="460"
+                    Background="{ThemeResource ChromeBrush}"
+                    BorderBrush="{ThemeResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="18"
+                    IsHitTestVisible="False"
+                    Visibility="{Binding EditorCanvas.EmptyVisibility}">
+              <StackPanel Spacing="8">
+                <TextBlock Text="Drop files to create editable code nodes"
+                           Foreground="{ThemeResource PrimaryTextBrush}"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           TextAlignment="Center" />
+                <TextBlock Text="Each file becomes a movable full-code editor node. Use the Files panel context menu or drag files from the OS onto this canvas."
+                           Foreground="{ThemeResource SecondaryTextBrush}"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           TextAlignment="Center" />
+              </StackPanel>
+            </Border>
+          </Grid>
+        </Grid>
+
+        <Grid Visibility="{Binding QueryCanvasVisibility}" RowDefinitions="Auto,210,*">
+          <Border Background="{ThemeResource ChromeBrush}"
+                  BorderBrush="{ThemeResource BorderBrush}"
+                  BorderThickness="0,0,0,1"
+                  Padding="16,10">
+            <Grid RowDefinitions="Auto,Auto" RowSpacing="7">
+              <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="8">
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{Binding QueryCanvas.Title}"
+                             Foreground="{ThemeResource PrimaryTextBrush}"
+                             FontSize="15"
+                             FontWeight="SemiBold"
+                             TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding QueryCanvas.StatusText}"
+                             Foreground="{ThemeResource TertiaryTextBrush}"
+                             FontSize="10"
+                             TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+                <ComboBox Grid.Column="1"
+                          Width="170"
+                          ItemsSource="{Binding QueryCanvas.ScopeOptions}"
+                          SelectedItem="{Binding QueryCanvas.SelectedScopeOption, Mode=TwoWay}"
+                          DisplayMemberPath="DisplayName"
+                          Style="{StaticResource CompactComboBoxStyle}" />
+                <ComboBox Grid.Column="2"
+                          Width="260"
+                          ItemsSource="{Binding QueryCanvas.SampleOptions}"
+                          SelectedItem="{Binding QueryCanvas.SelectedSampleOption, Mode=TwoWay}"
+                          DisplayMemberPath="DisplayName"
+                          Style="{StaticResource CompactComboBoxStyle}"
+                          ToolTipService.ToolTip="{Binding QueryCanvas.SelectedSampleOption.Description}" />
+                <Button Grid.Column="3"
+                        Content="Run"
+                        Style="{StaticResource ChromeButtonStyle}"
+                        Click="OnRunQueryCanvasClicked" />
+                <Button Grid.Column="4"
+                        Content="Reset"
+                        Style="{StaticResource ChromeButtonStyle}"
+                        Click="OnResetQueryCanvasClicked" />
+              </Grid>
+              <TextBlock Grid.Row="1"
+                         Text="{Binding QueryCanvas.ResultText}"
+                         Foreground="{ThemeResource SecondaryTextBrush}"
+                         FontSize="10"
+                         TextTrimming="CharacterEllipsis" />
+            </Grid>
+          </Border>
+          <Border Grid.Row="1"
+                  Background="{ThemeResource PanelBrush}"
+                  BorderBrush="{ThemeResource BorderBrush}"
+                  BorderThickness="0,0,0,1"
+                  Padding="14">
+            <views:CodeFileViewerControl Lines="{Binding QueryCanvas.QueryLines}"
+                                         IsEditable="True"
+                                         Text="{Binding QueryCanvas.QueryText, Mode=TwoWay}"
+                                         CodeFontSize="13"
+                                         CompletionProvider="{Binding QueryCanvas.CompletionProvider}"
+                                         CompletionLanguage="C#"
+                                         CompletionPath="query.csx"
+                                         CompletionTriggerLength="0"
+                                         CompletionMaxItemCount="120"
+                                         RefreshKey="{Binding QueryCanvas.QueryRefreshKey}" />
+          </Border>
+          <Grid Grid.Row="2">
+            <views:DiffCanvasControl HorizontalAlignment="Stretch"
+                                     VerticalAlignment="Stretch"
+                                     Visibility="{Binding QueryCanvas.ContentVisibility}"
+                                     Scene="{Binding QueryCanvas.Scene}"
+                                     IsLightTheme="{Binding IsLightTheme}"
+                                     UseInteractiveLevelOfDetail="{Binding UseInteractiveLevelOfDetail}"
+                                     NodeNavigationRequested="OnDiffCanvasNodeNavigationRequested"
+                                     NodeDiffTabRequested="OnDiffCanvasNodeDiffTabRequested"
+                                     NodeBlameTabRequested="OnDiffCanvasNodeBlameTabRequested"
+                                     NodeSymbolGraphRequested="OnDiffCanvasNodeSymbolGraphRequested" />
+            <Border HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    MaxWidth="520"
+                    Background="{ThemeResource ChromeBrush}"
+                    BorderBrush="{ThemeResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="18"
+                    Visibility="{Binding QueryCanvas.EmptyVisibility}">
+              <StackPanel Spacing="8">
+                <TextBlock Text="No query results"
+                           Foreground="{ThemeResource PrimaryTextBrush}"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           TextAlignment="Center" />
+                <TextBlock Text="Query Files, WorkspaceFiles, ChangedFiles, Symbols, ChangedSymbols, or LinkedSymbols. Use Where, OrderBy, Take, Map, Graph, and SymbolsOnly to shape the canvas."
+                           Foreground="{ThemeResource SecondaryTextBrush}"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           TextAlignment="Center" />
+              </StackPanel>
+            </Border>
+          </Grid>
+        </Grid>
       </Grid>
     </DataTemplate>
 
@@ -492,6 +676,8 @@
       <Grid MinHeight="30"
             Padding="0,1"
             Tag="{Binding}"
+            CanDrag="{Binding IsFile}"
+            DragStarting="OnExplorerTreeNodeDragStarting"
             RightTapped="OnExplorerTreeNodeRightTapped">
         <Grid Margin="{Binding IndentMargin}" ColumnDefinitions="18,Auto,*,Auto" ColumnSpacing="7">
           <Button Content="{Binding DisclosureGlyph}"
@@ -765,6 +951,14 @@
                     <ToggleButton Content="MSBuild" IsChecked="{x:Bind IsSemanticWorkspaceModeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnSemanticWorkspaceModeClicked" />
                     <ToggleButton Grid.Column="1" Content="Fast syntax" IsChecked="{x:Bind IsSemanticFastModeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnSemanticFastModeClicked" />
                   </Grid>
+                  <Grid ColumnDefinitions="*,Auto" Margin="0,4,0,0">
+                    <TextBlock Text="Code Completion" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="1" Text="{x:Bind CodeCompletionModeText, Mode=OneWay}" Foreground="{ThemeResource AccentBrush}" FontSize="10" />
+                  </Grid>
+                  <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
+                    <ToggleButton Content="Language services" IsChecked="{x:Bind IsCompletionLanguageServicesModeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnCompletionLanguageServicesModeClicked" />
+                    <ToggleButton Grid.Column="1" Content="Document" IsChecked="{x:Bind IsCompletionDocumentModeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnCompletionDocumentModeClicked" />
+                  </Grid>
                 </StackPanel>
 
                 <StackPanel Spacing="8">
@@ -955,19 +1149,38 @@
                  CanReorderTabs="False"
                  SelectedIndex="{x:Bind ViewModel.SelectedRailTabIndex, Mode=TwoWay}">
           <TabViewItem Header="Files" IsClosable="False">
-            <Grid RowDefinitions="Auto,Auto,*" Padding="0,8,0,0">
+            <Grid RowDefinitions="Auto,Auto,Auto,*" Padding="0,8,0,0">
               <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,7">
-                <TextBlock Text="Changed Files" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
+                <TextBlock Text="{x:Bind ViewModel.FileExplorerTitleText, Mode=OneWay}" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
                 <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.ExplorerCountText, Mode=OneWay}" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="10" />
               </Grid>
+              <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="6" Margin="0,0,0,7">
+                <ToggleButton Content="Diff"
+                              Tag="Diff"
+                              IsChecked="{x:Bind ViewModel.IsDiffFileExplorerModeSelected, Mode=OneWay}"
+                              Style="{StaticResource CompactToggleStyle}"
+                              Click="OnFileExplorerModeClicked" />
+                <ToggleButton Grid.Column="1"
+                              Content="Workspace"
+                              Tag="Workspace"
+                              IsChecked="{x:Bind ViewModel.IsWorkspaceFileExplorerModeSelected, Mode=OneWay}"
+                              Style="{StaticResource CompactToggleStyle}"
+                              Click="OnFileExplorerModeClicked" />
+                <TextBlock Grid.Column="2"
+                           Text="{x:Bind ViewModel.FileExplorerModeStatusText, Mode=OneWay}"
+                           Foreground="{ThemeResource TertiaryTextBrush}"
+                           FontSize="10"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+              </Grid>
               <TextBox x:Name="FileSearchBox"
-                       Grid.Row="1"
+                       Grid.Row="2"
                        Text="{x:Bind ViewModel.FileSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                        Style="{StaticResource CompactTextBoxStyle}"
-                       PlaceholderText="Find file"
+                       PlaceholderText="{x:Bind ViewModel.FileExplorerSearchPlaceholderText, Mode=OneWay}"
                        Margin="0,0,0,7" />
               <ListView x:Name="ExplorerTreeList"
-                        Grid.Row="2"
+                        Grid.Row="3"
                         ItemsSource="{x:Bind ViewModel.ExplorerTreeItems, Mode=OneWay}"
                         SelectedItem="{x:Bind ViewModel.SelectedExplorerTreeNode, Mode=TwoWay}"
                         ItemTemplate="{StaticResource ExplorerTreeItemTemplate}"
@@ -1212,7 +1425,7 @@
       <Border Background="{ThemeResource ChromeBrush}"
               BorderBrush="{ThemeResource BorderBrush}"
               BorderThickness="0,0,0,1">
-        <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
+        <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto">
           <Grid ColumnDefinitions="Auto,*,Auto">
             <Button x:Name="WorkspaceTabsScrollLeftButton"
                     Content="&lt;"
@@ -1265,7 +1478,39 @@
                     AutomationProperties.Name="Scroll workspace tabs right" />
           </Grid>
 
-          <Grid Grid.Column="1"
+          <Button Grid.Column="1"
+                  Content="Editor canvas"
+                  Style="{StaticResource ChromeButtonStyle}"
+                  Margin="8,4,0,4"
+                  VerticalAlignment="Center"
+                  Click="OnNewEditorCanvasClicked"
+                  AutomationProperties.Name="Open empty editor canvas" />
+
+          <Button Grid.Column="2"
+                  Content="Query"
+                  Style="{StaticResource ChromeButtonStyle}"
+                  Margin="4,4,0,4"
+                  VerticalAlignment="Center"
+                  Click="OnNewQueryCanvasClicked"
+                  AutomationProperties.Name="Open query canvas" />
+
+          <ToggleButton Grid.Column="3"
+                        Content="Code nodes"
+                        IsChecked="{x:Bind ViewModel.IsFullCodeWorkspaceEnabled, Mode=OneWay}"
+                        Margin="4,4,0,4"
+                        VerticalAlignment="Center"
+                        Click="OnFullCodeNodesClicked"
+                        AutomationProperties.Name="Toggle full-code workspace nodes" />
+
+          <ToggleButton Grid.Column="4"
+                        Content="Edit nodes"
+                        IsChecked="{x:Bind ViewModel.IsNodeEditingWorkspaceEnabled, Mode=OneWay}"
+                        Margin="4,4,0,4"
+                        VerticalAlignment="Center"
+                        Click="OnNodeEditingWorkspaceClicked"
+                        AutomationProperties.Name="Toggle node editing" />
+
+          <Grid Grid.Column="5"
                 ColumnDefinitions="Auto,Auto"
                 ColumnSpacing="6"
                 Margin="4,4,0,4"
@@ -1285,7 +1530,7 @@
                       AutomationProperties.Name="Workspace layout mode" />
           </Grid>
 
-          <Grid Grid.Column="2"
+          <Grid Grid.Column="6"
                 ColumnDefinitions="Auto,Auto"
                 ColumnSpacing="6"
                 Margin="10,4,0,4"
@@ -1305,7 +1550,7 @@
                       AutomationProperties.Name="Workspace grouping mode" />
           </Grid>
 
-          <Button Grid.Column="3"
+          <Button Grid.Column="7"
                   Content="Export"
                   Style="{StaticResource ChromeButtonStyle}"
                   Margin="10,4,0,4"
@@ -1320,7 +1565,7 @@
             </Button.Flyout>
           </Button>
 
-          <Button Grid.Column="4"
+          <Button Grid.Column="8"
                   Content="Settings"
                   Style="{StaticResource ChromeButtonStyle}"
                   Margin="4,4,8,4"

@@ -10,6 +10,7 @@ using SemanticDiff.Rendering;
 using SemanticDiff.Semantics;
 using SemanticDiff.Semantics.Roslyn;
 using SemanticDiff.Semantics.Xaml;
+using SemanticDiff.Workbench.FileDiff;
 using SemanticDiff.Workbench.Review;
 using SemanticDiff.Workbench.Symbols;
 using SemanticDiff.Workbench.Workspace;
@@ -53,12 +54,7 @@ public sealed partial class MainViewModel
         CancellationToken cancellationToken)
     {
         const int tokenPageSize = 128;
-        var metadata = sourceDocument.Metadata with
-        {
-            AddedLines = 0,
-            DeletedLines = 0
-        };
-        var document = new DiffDocumentFactory().CreateFromText(metadata, fullText, DiffLineKind.Context);
+        var document = new DiffDocumentFactory().CreateFromText(sourceDocument.Metadata, fullText, DiffLineKind.Context);
         var tokenizer = new TextMateDocumentTokenizer(tokenPageSize);
         var lineBuilder = ImmutableArray.CreateBuilder<DiffLine>(document.LineCount);
 
@@ -72,8 +68,19 @@ public sealed partial class MainViewModel
         return document with { Lines = lineBuilder.ToImmutable() };
     }
 
-    private DiffCanvasScene CreateScene(ImmutableArray<DiffDocumentSnapshot> documents, SemanticGraph semanticGraph, GraphLayoutResult? layout) =>
-        DiffCanvasScene.FromDocuments(
+    private static ImmutableArray<CodeFoldRegion> CreateFoldRegions(DiffDocumentSnapshot document, CancellationToken cancellationToken = default)
+    {
+        if (RoslynCSharpCodeFoldingService.CanFold(document))
+        {
+            return new RoslynCSharpCodeFoldingService().CreateFoldRegions(document, cancellationToken);
+        }
+
+        return new CodeFoldingService().CreateFoldRegions(document);
+    }
+
+    private DiffCanvasScene CreateScene(ImmutableArray<DiffDocumentSnapshot> documents, SemanticGraph semanticGraph, GraphLayoutResult? layout)
+    {
+        var scene = DiffCanvasScene.FromDocuments(
             documents,
             semanticGraph,
             layout,
@@ -81,6 +88,121 @@ public sealed partial class MainViewModel
             CreateAnnotations(documents, semanticGraph),
             appState.EffectiveAnnotationVisibility,
             appState.GroupingMode);
+        scene.SetShowFullFileNodes(IsFullCodeWorkspaceEnabled);
+        scene.SetNodeEditingEnabled(IsNodeEditingWorkspaceEnabled);
+        return scene;
+    }
+
+    public async Task SetFullCodeWorkspaceAsync(bool enabled)
+    {
+        if (enabled)
+        {
+            await EnsureSceneFullFileDocumentsAsync(null, CancellationToken.None);
+        }
+
+        IsFullCodeWorkspaceEnabled = enabled;
+        Scene.SetShowFullFileNodes(enabled);
+        OnPropertyChanged(nameof(Scene));
+        AddDiagnostic("Info", enabled ? "Workspace nodes now show full file code" : "Workspace nodes now show diff hunks");
+    }
+
+    public async Task SetNodeEditingWorkspaceAsync(bool enabled)
+    {
+        if (enabled && !IsFullCodeWorkspaceEnabled)
+        {
+            await EnsureSceneFullFileDocumentsAsync(null, CancellationToken.None);
+            IsFullCodeWorkspaceEnabled = true;
+            Scene.SetShowFullFileNodes(true);
+        }
+
+        IsNodeEditingWorkspaceEnabled = enabled;
+        Scene.SetNodeEditingEnabled(enabled);
+        OnPropertyChanged(nameof(Scene));
+        AddDiagnostic("Info", enabled ? "Node editing enabled for full-code nodes" : "Node editing disabled");
+    }
+
+    public async Task ToggleNodeFullFileViewAsync(string documentId)
+    {
+        if (string.IsNullOrWhiteSpace(documentId))
+        {
+            return;
+        }
+
+        await EnsureSceneFullFileDocumentsAsync(documentId, CancellationToken.None);
+        if (Scene.ToggleNodeFullFileView(documentId))
+        {
+            OnPropertyChanged(nameof(Scene));
+        }
+    }
+
+    public void ClearNodeFullFileViewOverride(string documentId)
+    {
+        if (string.IsNullOrWhiteSpace(documentId))
+        {
+            return;
+        }
+
+        if (Scene.ClearNodeFullFileViewOverride(documentId))
+        {
+            OnPropertyChanged(nameof(Scene));
+        }
+    }
+
+    public async Task ToggleNodeEditingAsync(string documentId)
+    {
+        if (string.IsNullOrWhiteSpace(documentId))
+        {
+            return;
+        }
+
+        await EnsureSceneFullFileDocumentsAsync(documentId, CancellationToken.None);
+        if (Scene.ToggleNodeEditing(documentId))
+        {
+            OnPropertyChanged(nameof(Scene));
+        }
+    }
+
+    public void ClearNodeEditingOverride(string documentId)
+    {
+        if (string.IsNullOrWhiteSpace(documentId))
+        {
+            return;
+        }
+
+        if (Scene.ClearNodeEditingOverride(documentId))
+        {
+            OnPropertyChanged(nameof(Scene));
+        }
+    }
+
+    private async Task EnsureSceneFullFileDocumentsAsync(string? documentId, CancellationToken cancellationToken)
+    {
+        var missingNodes = Scene.Nodes
+            .Where(node =>
+                (documentId is null || string.Equals(node.DiffDocument.Id.Value, documentId, StringComparison.Ordinal)) &&
+                !node.HasFullFileDocument)
+            .ToArray();
+        if (missingNodes.Length == 0)
+        {
+            return;
+        }
+
+        var builder = ImmutableArray.CreateBuilder<DiffNodeFullFileContent>(missingNodes.Length);
+        var fileDiffDocumentBuilder = new FileDiffDocumentBuilder();
+        foreach (var node in missingNodes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var fullText = await LoadFullFileTextAsync(node.DiffDocument, cancellationToken);
+            var fullDocument = await CreateTokenizedFullFileDocumentAsync(node.DiffDocument, fullText, cancellationToken);
+            var foldRegions = CreateFoldRegions(fullDocument, cancellationToken);
+            var fileView = fileDiffDocumentBuilder.Build(node.DiffDocument, fullDocument, fullText, foldRegions);
+            var annotatedFullDocument = fullDocument with { Lines = fileView.AnnotatedFullFileLines };
+            builder.Add(new DiffNodeFullFileContent(node.DiffDocument.Id, annotatedFullDocument, fileView.FoldRegions, fileView.FullText));
+        }
+
+        Scene.SetFullFileDocuments(builder.ToImmutable());
+        OnPropertyChanged(nameof(Scene));
+    }
 
     private void RefreshSceneAnnotations()
     {

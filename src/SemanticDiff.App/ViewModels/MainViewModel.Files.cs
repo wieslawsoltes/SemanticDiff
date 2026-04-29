@@ -53,6 +53,13 @@ public sealed partial class MainViewModel
             return null;
         }
 
+        if (!HasCurrentDiffDocument(node.Path))
+        {
+            SelectExplorerItem(item);
+            AddDiagnostic("Info", $"Selected workspace file {node.Path}");
+            return null;
+        }
+
         return FocusExplorerItem(item);
     }
 
@@ -69,7 +76,7 @@ public sealed partial class MainViewModel
             return Task.CompletedTask;
         }
 
-        return string.IsNullOrWhiteSpace(node.DocumentId)
+        return string.IsNullOrWhiteSpace(node.DocumentId) || !HasCurrentDiffDocument(node.Path)
             ? OpenFileDiffTabByPathAsync(node.Path, displayMode)
             : OpenFileDiffTabAsync(node.DocumentId, displayMode);
     }
@@ -87,7 +94,7 @@ public sealed partial class MainViewModel
             return Task.CompletedTask;
         }
 
-        return string.IsNullOrWhiteSpace(node.DocumentId)
+        return string.IsNullOrWhiteSpace(node.DocumentId) || !HasCurrentDiffDocument(node.Path)
             ? OpenBlameTabByPathAsync(node.Path)
             : OpenBlameTabAsync(node.DocumentId);
     }
@@ -137,8 +144,12 @@ public sealed partial class MainViewModel
                 string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedPath, StringComparison.OrdinalIgnoreCase)));
         if (document is null)
         {
-            AddDiagnostic("Warning", $"No document node for {path}");
-            return;
+            document = await CreateWorkspaceFileDocumentAsync(normalizedPath, CancellationToken.None);
+            if (document is null)
+            {
+                AddDiagnostic("Warning", $"No document node for {path}");
+                return;
+            }
         }
 
         await OpenFileDiffTabAsync(document, displayMode);
@@ -153,11 +164,118 @@ public sealed partial class MainViewModel
                 string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedPath, StringComparison.OrdinalIgnoreCase)));
         if (document is null)
         {
-            AddDiagnostic("Warning", $"No document node for {path}");
-            return;
+            if (!await HasRepositoryFileAsync(normalizedPath, CancellationToken.None))
+            {
+                AddDiagnostic("Warning", $"No document node for {path}");
+                return;
+            }
+
+            document = CreateWorkspaceFilePlaceholderDocument(normalizedPath);
         }
 
         await OpenBlameTabAsync(document);
+    }
+
+    private static DiffDocumentSnapshot CreateWorkspaceFilePlaceholderDocument(string path)
+    {
+        var metadata = new DiffDocumentMetadata(
+            new DiffDocumentId(NormalizeRepositoryPath(path)),
+            NormalizeRepositoryPath(path),
+            null,
+            DiffFileStatus.Unchanged,
+            LanguageFromPath(path),
+            0,
+            0);
+        return new DiffDocumentFactory().CreateFromText(metadata, string.Empty, DiffLineKind.Context);
+    }
+
+    private bool HasCurrentDiffDocument(string path)
+    {
+        var normalizedPath = NormalizeRepositoryPath(path);
+        return currentDocuments.Any(document =>
+            string.Equals(NormalizeRepositoryPath(document.Metadata.Path), normalizedPath, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(document.Metadata.OldPath) &&
+                string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedPath, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private async Task<DiffDocumentSnapshot?> CreateWorkspaceFileDocumentAsync(string path, CancellationToken cancellationToken)
+    {
+        if (currentGitSnapshot is null || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            return null;
+        }
+
+        var normalizedPath = NormalizeRepositoryPath(path);
+        var language = LanguageFromPath(normalizedPath);
+        var fileChange = new GitFileChange(normalizedPath, null, DiffFileStatus.Unchanged, 0, 0, language);
+        string text;
+        try
+        {
+            text = await new GitDiffService().GetFileContentAsync(currentGitSnapshot.Request, fileChange, cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            AddDiagnostic("Warning", $"Workspace file load failed: {exception.Message}");
+            return null;
+        }
+
+        if (string.IsNullOrEmpty(text) && !await HasRepositoryFileAsync(normalizedPath, cancellationToken))
+        {
+            return null;
+        }
+
+        var metadata = new DiffDocumentMetadata(
+            new DiffDocumentId(normalizedPath),
+            normalizedPath,
+            null,
+            DiffFileStatus.Unchanged,
+            language,
+            0,
+            0);
+        var document = new DiffDocumentFactory().CreateFromText(metadata, text, DiffLineKind.Context);
+        return await CreateTokenizedFullFileDocumentAsync(document, text, cancellationToken);
+    }
+
+    private async Task<bool> HasRepositoryFileAsync(string path, CancellationToken cancellationToken)
+    {
+        if (currentGitSnapshot is null || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            return false;
+        }
+
+        if (File.Exists(Path.Combine(currentRepositoryPath, path)))
+        {
+            return true;
+        }
+
+        var result = await new GitCommandRunner()
+            .RunAsync(currentRepositoryPath, ["cat-file", "-e", $"{ResolveRepositoryContentRevision()}:{path}"], cancellationToken)
+            .ConfigureAwait(false);
+        return result.Succeeded;
+    }
+
+    private string ResolveRepositoryContentRevision()
+    {
+        var headRef = currentGitSnapshot?.Request.HeadRef;
+        return string.IsNullOrWhiteSpace(headRef) ? "HEAD" : headRef;
+    }
+
+    private static string LanguageFromPath(string path)
+    {
+        var extension = Path.GetExtension(path).ToLowerInvariant();
+        return extension switch
+        {
+            ".cs" => "C#",
+            ".xaml" => "XAML",
+            ".axaml" => "AXAML",
+            ".xml" => "XML",
+            ".json" => "JSON",
+            ".md" or ".markdown" => "Markdown",
+            ".sln" or ".slnx" => "Solution",
+            ".csproj" or ".fsproj" or ".vbproj" or ".props" or ".targets" => "MSBuild",
+            "" => "Text",
+            _ => extension.TrimStart('.').ToUpperInvariant()
+        };
     }
 
     private async Task OpenFileDiffTabAsync(DiffDocumentSnapshot document, FileDiffDisplayMode displayMode)
@@ -172,14 +290,16 @@ public sealed partial class MainViewModel
 
         var fullText = await LoadFullFileTextAsync(document, CancellationToken.None);
         var fullFileDocument = await CreateTokenizedFullFileDocumentAsync(document, fullText, CancellationToken.None);
-        var foldRegions = new CodeFoldingService().CreateFoldRegions(fullFileDocument);
+        var foldRegions = CreateFoldRegions(fullFileDocument, CancellationToken.None);
         var fileDiff = FileDiffTabViewModel.FromDocument(
             document,
             fullFileDocument,
             fullText,
             foldRegions,
             GetSemanticDocumentInsight(document.Id),
-            displayMode);
+            displayMode,
+            currentRepositoryPath,
+            CodeCompletionProvider);
         var tab = WorkspaceTabViewModel.CreateFileDiff(tabId, Path.GetFileName(document.Metadata.Path), document.Metadata.Path, fileDiff);
         AddWorkspaceTab(tab);
         AddDiagnostic("Info", $"Opened file diff tab for {document.Metadata.Path}");
@@ -198,6 +318,14 @@ public sealed partial class MainViewModel
             {
                 fileDiff.SetSemanticInsight(GetSemanticDocumentInsight(new DiffDocumentId(fileDiff.DocumentId)));
             }
+        }
+    }
+
+    private void UpdateOpenFileDiffCompletionProviders()
+    {
+        foreach (var tab in WorkspaceTabs)
+        {
+            tab.FileDiff?.SetCompletionProvider(CodeCompletionProvider);
         }
     }
 

@@ -31,6 +31,7 @@ public sealed partial class MainViewModel
             return;
         }
 
+        CancelQueryCanvasOperation(tab.Id);
         var fallback = WorkspaceTabs.FirstOrDefault(candidate => candidate.Kind == WorkspaceTabKind.Graph)
             ?? WorkspaceTabs.FirstOrDefault()
             ?? WorkspaceTabViewModel.Graph();
@@ -163,6 +164,8 @@ public sealed partial class MainViewModel
 
         ApplyGraphWorkspaceReferenceState(tab, state);
         Scene = state.Scene.WithAnnotations(CreateAnnotations(state.Documents, state.SemanticGraph), appState.EffectiveAnnotationVisibility);
+        IsFullCodeWorkspaceEnabled = Scene.ShowFullFileNodes;
+        IsNodeEditingWorkspaceEnabled = Scene.EnableNodeEditing;
         UpdateChangeNavigation(state.Documents);
         SetExplorerItems(state.Documents.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
         RestoreSelectedExplorerItem(state.SelectedDocumentId);
@@ -275,6 +278,12 @@ public sealed partial class MainViewModel
     {
         SemanticAnalysisMode.FastSyntaxOnly => "Fast syntax",
         _ => "MSBuild"
+    };
+
+    private static string FormatCodeCompletionMode(CodeCompletionMode completionMode) => completionMode switch
+    {
+        CodeCompletionMode.DocumentOnly => "Document",
+        _ => "Language services"
     };
 
     private static string FormatLayoutMode(GraphLayoutMode layoutMode) => layoutMode switch

@@ -11,6 +11,7 @@ using SemanticDiff.Semantics;
 using SemanticDiff.Semantics.Roslyn;
 using SemanticDiff.Semantics.Xaml;
 using SemanticDiff.Workbench.Review;
+using SemanticDiff.Workbench.Query;
 using SemanticDiff.Workbench.Symbols;
 using SemanticDiff.Workbench.Workspace;
 using Windows.UI;
@@ -31,6 +32,12 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly DiffWorkspaceCache diffViewCache = new(MaxCachedDiffViews);
     private readonly RepositoryDiffLoader repositoryDiffLoader = new();
     private readonly SymbolBrowserModel symbolBrowser = new();
+    private readonly DocumentCodeCompletionProvider documentCompletionProvider = new();
+    private readonly RoslynCSharpCodeCompletionProvider roslynCompletionProvider = new();
+    private readonly MSBuildWorkspaceFileDiscoveryService workspaceFileDiscoveryService = new();
+    private readonly QueryCanvasEngine queryCanvasEngine = new();
+    private readonly QueryCanvasCompletionProvider queryCanvasCompletionProvider = new();
+    private readonly Dictionary<string, CancellationTokenSource> queryCanvasOperations = new(StringComparer.Ordinal);
     private readonly GitReferenceBrowserModel<GitBranchOptionViewModel, GitPullRequestOptionViewModel> gitReferenceBrowser = new(
         branch => branch.SearchText,
         reviewRequest => reviewRequest.SearchText);
@@ -44,6 +51,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private ImmutableArray<DiffDocumentSnapshot> currentDocuments = [];
     private SemanticGraph currentSemanticGraph = SemanticGraph.Empty;
     private ImmutableArray<ExplorerItemViewModel> allExplorerItems = [];
+    private ImmutableArray<ExplorerItemViewModel> diffExplorerItems = [];
+    private ImmutableArray<ExplorerItemViewModel> workspaceExplorerItems = [];
     private ImmutableHashSet<string> collapsedExplorerNodePaths = ImmutableHashSet<string>.Empty;
     private ImmutableArray<SemanticNavigationItem> allSemanticNavigationItems => symbolBrowser.AllItems;
     private SemanticSymbolInsightSummary currentSymbolInsight => symbolBrowser.Insight;
@@ -57,11 +66,14 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private CancellationTokenSource? currentOperation;
     private CancellationTokenSource? currentSemanticRefinementOperation;
     private CancellationTokenSource? currentBlameOperation;
+    private CancellationTokenSource? currentWorkspaceExplorerOperation;
     private CancellationTokenSource? pendingAutoReload;
     private IRepositoryFileWatcher? repositoryFileWatcher;
     private ExplorerItemViewModel? selectedExplorerItem;
     private bool currentDocumentsAreRepositoryDocuments;
     private bool isUpdatingReferenceSelection;
+    private string? workspaceExplorerRepositoryPath;
+    private string? workspaceExplorerWorkspacePath;
 
     public MainViewModel()
         : this(JsonAppStateStore.CreateDefault())
@@ -120,6 +132,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         this.gitHistoryService = gitHistoryService;
         synchronizationContext = SynchronizationContext.Current;
         workspaceDocumentManager = new WorkspaceDocumentManager<WorkspaceTabViewModel>(WorkspaceTabs, tab => tab.Id, tab => tab.IsClosable);
+        CodeCompletionProvider = CreateCodeCompletionProvider(appState.CodeCompletionMode);
         WorkspaceTabs.Add(WorkspaceTabViewModel.Graph());
         SelectedWorkspaceTab = WorkspaceTabs[0];
         InitializeSampleDocuments(SampleDiffDocuments.Create());
@@ -130,6 +143,12 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private DiffCanvasScene scene = DiffCanvasScene.FromDocuments([]);
+
+    [ObservableProperty]
+    private bool isFullCodeWorkspaceEnabled;
+
+    [ObservableProperty]
+    private bool isNodeEditingWorkspaceEnabled;
 
     [ObservableProperty]
     private WorkspaceTabViewModel? selectedWorkspaceTab;
@@ -292,6 +311,18 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string semanticAnalysisModeText = "MSBuild";
 
+    [ObservableProperty]
+    private ICodeCompletionProvider codeCompletionProvider = new DocumentCodeCompletionProvider();
+
+    [ObservableProperty]
+    private string codeCompletionModeText = "Language services";
+
+    [ObservableProperty]
+    private bool isCompletionLanguageServicesModeSelected = true;
+
+    [ObservableProperty]
+    private bool isCompletionDocumentModeSelected;
+
     public ImmutableArray<LayoutModeOptionViewModel> LayoutModeOptions { get; } = LayoutModeOptionViewModel.All;
 
     [ObservableProperty]
@@ -349,6 +380,24 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private string explorerCountText = "0 files";
+
+    [ObservableProperty]
+    private FileExplorerMode fileExplorerMode = FileExplorerMode.Diff;
+
+    [ObservableProperty]
+    private bool isDiffFileExplorerModeSelected = true;
+
+    [ObservableProperty]
+    private bool isWorkspaceFileExplorerModeSelected;
+
+    [ObservableProperty]
+    private string fileExplorerTitleText = "Changed Files";
+
+    [ObservableProperty]
+    private string fileExplorerSearchPlaceholderText = "Find changed file";
+
+    [ObservableProperty]
+    private string fileExplorerModeStatusText = "Diff files";
 
     [ObservableProperty]
     private string symbolSearchText = string.Empty;

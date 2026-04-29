@@ -152,6 +152,21 @@ public sealed partial class MainViewModel
         await LoadRepositoryAsync(loadAppState: false, operationMessage: "Reloading semantic analysis");
     }
 
+    public async Task SetCodeCompletionModeAsync(CodeCompletionMode completionMode)
+    {
+        if (appState.CodeCompletionMode == completionMode)
+        {
+            ApplyAppStateToPresentation();
+            return;
+        }
+
+        appState = appState with { CodeCompletionMode = completionMode };
+        ApplyAppStateToPresentation();
+        UpdateOpenFileDiffCompletionProviders();
+        await SaveOptionsAsync(CancellationToken.None);
+        AddDiagnostic("Info", $"Completion mode changed to {FormatCodeCompletionMode(completionMode)}");
+    }
+
     public async Task SetLayoutModeAsync(GraphLayoutMode layoutMode, DiffCanvasScene? currentScene)
     {
         if (appState.LayoutMode == layoutMode)
@@ -247,4 +262,9 @@ public sealed partial class MainViewModel
         appState = appState with { LeftPaneWidth = normalizedWidth };
         await SaveOptionsAsync(CancellationToken.None);
     }
+
+    private ICodeCompletionProvider CreateCodeCompletionProvider(CodeCompletionMode completionMode) =>
+        completionMode == CodeCompletionMode.DocumentOnly
+            ? documentCompletionProvider
+            : new CodeCompletionProviderChain(roslynCompletionProvider, documentCompletionProvider);
 }

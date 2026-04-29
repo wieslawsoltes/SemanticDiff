@@ -9,6 +9,12 @@ using Windows.UI;
 
 namespace SemanticDiff.App.ViewModels;
 
+public enum FileExplorerMode
+{
+    Diff,
+    Workspace
+}
+
 public sealed record ExplorerItemViewModel(string Path, DiffFileStatus Status, string Language)
 {
     public string DocumentId => Path;
@@ -35,6 +41,7 @@ public sealed record ExplorerItemViewModel(string Path, DiffFileStatus Status, s
         DiffFileStatus.Renamed => "R",
         DiffFileStatus.Untracked => "?",
         DiffFileStatus.Conflicted => "!",
+        DiffFileStatus.Unchanged => "=",
         _ => "M"
     };
 }

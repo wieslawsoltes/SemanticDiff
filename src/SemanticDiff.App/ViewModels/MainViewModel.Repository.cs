@@ -550,6 +550,7 @@ public sealed partial class MainViewModel
             SelectedBranchRef = appState.SelectedBranchRef,
             SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
             UseInteractiveLevelOfDetail = UseInteractiveLevelOfDetail,
+            CodeCompletionMode = appState.CodeCompletionMode,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth),
             LayoutNodes = currentDocumentsAreRepositoryDocuments ? layoutNodes : appState.LayoutNodes
         };
@@ -578,6 +579,7 @@ public sealed partial class MainViewModel
             SelectedBranchRef = appState.SelectedBranchRef,
             SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
             UseInteractiveLevelOfDetail = UseInteractiveLevelOfDetail,
+            CodeCompletionMode = appState.CodeCompletionMode,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth)
         };
         await appStateStore.SaveAsync(appState, cancellationToken);
@@ -683,6 +685,10 @@ public sealed partial class MainViewModel
         SemanticEdgesText = appState.ShowSemanticEdges ? "Edges on" : "Edges off";
         UseInteractiveLevelOfDetail = appState.UseInteractiveLevelOfDetail;
         SemanticAnalysisModeText = FormatSemanticAnalysisMode(appState.SemanticAnalysisMode);
+        CodeCompletionProvider = CreateCodeCompletionProvider(appState.CodeCompletionMode);
+        CodeCompletionModeText = FormatCodeCompletionMode(appState.CodeCompletionMode);
+        IsCompletionLanguageServicesModeSelected = appState.CodeCompletionMode == CodeCompletionMode.LanguageServicesThenDocument;
+        IsCompletionDocumentModeSelected = appState.CodeCompletionMode == CodeCompletionMode.DocumentOnly;
         LayoutModeText = FormatLayoutMode(appState.LayoutMode);
         SelectedLayoutModeOption = LayoutModeOptions.FirstOrDefault(option => option.Mode == appState.LayoutMode) ?? LayoutModeOptions[1];
         GroupingModeText = FormatGroupingMode(appState.GroupingMode);
@@ -753,7 +759,15 @@ public sealed partial class MainViewModel
 
     private void SetExplorerItems(ImmutableArray<ExplorerItemViewModel> items)
     {
-        allExplorerItems = items;
-        ApplyExplorerFilter();
+        diffExplorerItems = items.IsDefault ? ImmutableArray<ExplorerItemViewModel>.Empty : items;
+        InvalidateWorkspaceExplorerCache();
+        UpdateFileExplorerModeLabels();
+        if (FileExplorerMode == FileExplorerMode.Workspace)
+        {
+            _ = LoadWorkspaceExplorerAsync(CancellationToken.None);
+            return;
+        }
+
+        SetActiveExplorerItems(diffExplorerItems);
     }
 }

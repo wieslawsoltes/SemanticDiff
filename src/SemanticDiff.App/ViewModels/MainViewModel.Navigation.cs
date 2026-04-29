@@ -60,6 +60,7 @@ public sealed partial class MainViewModel
         ExplorerCountText = string.IsNullOrWhiteSpace(query)
             ? FormatCount(allExplorerItems.Length, "file", "files")
             : $"{filtered.Length:N0}/{allExplorerItems.Length:N0} files";
+        UpdateFileExplorerModeStatus(filtered.Length);
     }
 
     private void UpdateSelectedExplorerTreeNode()
@@ -84,6 +85,174 @@ public sealed partial class MainViewModel
             folderPath = string.IsNullOrWhiteSpace(folderPath) ? segments[index] : $"{folderPath}/{segments[index]}";
             collapsedExplorerNodePaths = collapsedExplorerNodePaths.Remove(folderPath);
         }
+    }
+
+    public async Task SetFileExplorerModeAsync(FileExplorerMode mode)
+    {
+        if (FileExplorerMode == mode && (mode == FileExplorerMode.Diff || !workspaceExplorerItems.IsDefaultOrEmpty))
+        {
+            return;
+        }
+
+        FileExplorerMode = mode;
+        IsDiffFileExplorerModeSelected = mode == FileExplorerMode.Diff;
+        IsWorkspaceFileExplorerModeSelected = mode == FileExplorerMode.Workspace;
+        UpdateFileExplorerModeLabels();
+
+        if (mode == FileExplorerMode.Diff)
+        {
+            SetActiveExplorerItems(diffExplorerItems);
+            return;
+        }
+
+        if (IsWorkspaceExplorerCacheValid())
+        {
+            SetActiveExplorerItems(workspaceExplorerItems);
+            return;
+        }
+
+        await LoadWorkspaceExplorerAsync(CancellationToken.None);
+    }
+
+    private async Task LoadWorkspaceExplorerAsync(CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            workspaceExplorerItems = [];
+            workspaceExplorerRepositoryPath = null;
+            workspaceExplorerWorkspacePath = null;
+            SetActiveExplorerItems(workspaceExplorerItems);
+            FileExplorerModeStatusText = "Open a repository to load the MSBuild workspace";
+            return;
+        }
+
+        var repositoryPath = currentRepositoryPath;
+        var operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var previousOperation = Interlocked.Exchange(ref currentWorkspaceExplorerOperation, operation);
+        previousOperation?.Cancel();
+        previousOperation?.Dispose();
+
+        try
+        {
+            if (FileExplorerMode == FileExplorerMode.Workspace)
+            {
+                SetActiveExplorerItems([]);
+            }
+
+            FileExplorerModeStatusText = "Loading MSBuild workspace...";
+            var result = await workspaceFileDiscoveryService.LoadFilesAsync(repositoryPath, operation.Token).ConfigureAwait(false);
+            var items = result.Files
+                .Select(file => new ExplorerItemViewModel(file.Path, file.Status, file.Language))
+                .ToImmutableArray();
+
+            PostToCapturedContext(() =>
+            {
+                if (operation.IsCancellationRequested ||
+                    !string.Equals(currentRepositoryPath, repositoryPath, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                workspaceExplorerItems = items;
+                workspaceExplorerRepositoryPath = repositoryPath;
+                workspaceExplorerWorkspacePath = result.WorkspacePath;
+                if (FileExplorerMode == FileExplorerMode.Workspace)
+                {
+                    SetActiveExplorerItems(workspaceExplorerItems);
+                }
+
+                var workspaceName = string.IsNullOrWhiteSpace(result.WorkspacePath)
+                    ? "MSBuild workspace"
+                    : Path.GetFileName(result.WorkspacePath);
+                if (workspaceExplorerItems.IsDefaultOrEmpty)
+                {
+                    FileExplorerModeStatusText = "No MSBuild workspace files found";
+                }
+                else if (FileExplorerMode != FileExplorerMode.Workspace)
+                {
+                    FileExplorerModeStatusText = $"{workspaceName} | {workspaceExplorerItems.Length:N0} files";
+                }
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            PostToCapturedContext(() =>
+            {
+                if (!string.Equals(currentRepositoryPath, repositoryPath, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                workspaceExplorerItems = [];
+                workspaceExplorerRepositoryPath = repositoryPath;
+                workspaceExplorerWorkspacePath = null;
+                if (FileExplorerMode == FileExplorerMode.Workspace)
+                {
+                    SetActiveExplorerItems(workspaceExplorerItems);
+                }
+
+                FileExplorerModeStatusText = $"MSBuild workspace unavailable: {exception.Message}";
+                AddDiagnostic("Warning", FileExplorerModeStatusText);
+            });
+        }
+        finally
+        {
+            if (ReferenceEquals(currentWorkspaceExplorerOperation, operation))
+            {
+                currentWorkspaceExplorerOperation = null;
+            }
+
+            operation.Dispose();
+        }
+    }
+
+    private void SetActiveExplorerItems(ImmutableArray<ExplorerItemViewModel> items)
+    {
+        allExplorerItems = items.IsDefault ? ImmutableArray<ExplorerItemViewModel>.Empty : items;
+        ApplyExplorerFilter();
+    }
+
+    private bool IsWorkspaceExplorerCacheValid() =>
+        !workspaceExplorerItems.IsDefaultOrEmpty &&
+        !string.IsNullOrWhiteSpace(currentRepositoryPath) &&
+        string.Equals(workspaceExplorerRepositoryPath, currentRepositoryPath, StringComparison.Ordinal);
+
+    private void InvalidateWorkspaceExplorerCache()
+    {
+        var operation = Interlocked.Exchange(ref currentWorkspaceExplorerOperation, null);
+        operation?.Cancel();
+        operation?.Dispose();
+        workspaceExplorerItems = [];
+        workspaceExplorerRepositoryPath = null;
+        workspaceExplorerWorkspacePath = null;
+    }
+
+    private void UpdateFileExplorerModeLabels()
+    {
+        FileExplorerTitleText = FileExplorerMode == FileExplorerMode.Workspace ? "MSBuild Workspace" : "Changed Files";
+        FileExplorerSearchPlaceholderText = FileExplorerMode == FileExplorerMode.Workspace
+            ? "Find workspace file"
+            : "Find changed file";
+        UpdateFileExplorerModeStatus(allExplorerItems.Length);
+    }
+
+    private void UpdateFileExplorerModeStatus(int visibleCount)
+    {
+        if (FileExplorerMode == FileExplorerMode.Workspace)
+        {
+            var workspaceName = string.IsNullOrWhiteSpace(workspaceExplorerWorkspacePath)
+                ? "MSBuild workspace"
+                : Path.GetFileName(workspaceExplorerWorkspacePath);
+            FileExplorerModeStatusText = workspaceExplorerItems.IsDefaultOrEmpty
+                ? "MSBuild workspace"
+                : $"{workspaceName} | {visibleCount:N0}/{workspaceExplorerItems.Length:N0} files";
+            return;
+        }
+
+        FileExplorerModeStatusText = $"{visibleCount:N0}/{diffExplorerItems.Length:N0} changed files";
     }
 
     private void UpdateSemanticNavigation(SemanticGraph semanticGraph, ImmutableArray<DiffDocumentSnapshot> documents)

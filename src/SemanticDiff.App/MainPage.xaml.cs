@@ -11,6 +11,7 @@ using SemanticDiff.Core;
 using SemanticDiff.Rendering;
 using SemanticDiff.Rendering.Export;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
 using Windows.Storage.Pickers;
 using Windows.System;
 
@@ -31,6 +32,7 @@ public sealed partial class MainPage : Page
     private const double DefaultSymbolFacetsHeight = 220;
     private const double MinimumSymbolFacetsHeight = 140;
     private const double MaximumSymbolFacetsHeight = 420;
+    private const string EditorCanvasDragPathPrefix = "semanticdiff-file:";
 
     private bool isPaneSplitterDragging;
     private bool isPaneSplitterPointerOver;
@@ -55,6 +57,10 @@ public sealed partial class MainPage : Page
         DiffCanvas.NodeDiffTabRequested += OnDiffCanvasNodeDiffTabRequested;
         DiffCanvas.NodeBlameTabRequested += OnDiffCanvasNodeBlameTabRequested;
         DiffCanvas.NodeSymbolGraphRequested += OnDiffCanvasNodeSymbolGraphRequested;
+        DiffCanvas.NodeFullFileViewRequested += OnDiffCanvasNodeFullFileViewRequested;
+        DiffCanvas.NodeFullFileViewResetRequested += OnDiffCanvasNodeFullFileViewResetRequested;
+        DiffCanvas.NodeEditingRequested += OnDiffCanvasNodeEditingRequested;
+        DiffCanvas.NodeEditingResetRequested += OnDiffCanvasNodeEditingResetRequested;
         DiffCanvas.AnnotationInteractionRequested += OnDiffCanvasAnnotationInteractionRequested;
         ApplyRequestedTheme();
         ApplyLeftPaneWidth(ViewModel.LeftPaneWidth);
@@ -193,6 +199,10 @@ public sealed partial class MainPage : Page
         DiffCanvas.NodeDiffTabRequested -= OnDiffCanvasNodeDiffTabRequested;
         DiffCanvas.NodeBlameTabRequested -= OnDiffCanvasNodeBlameTabRequested;
         DiffCanvas.NodeSymbolGraphRequested -= OnDiffCanvasNodeSymbolGraphRequested;
+        DiffCanvas.NodeFullFileViewRequested -= OnDiffCanvasNodeFullFileViewRequested;
+        DiffCanvas.NodeFullFileViewResetRequested -= OnDiffCanvasNodeFullFileViewResetRequested;
+        DiffCanvas.NodeEditingRequested -= OnDiffCanvasNodeEditingRequested;
+        DiffCanvas.NodeEditingResetRequested -= OnDiffCanvasNodeEditingResetRequested;
         DiffCanvas.AnnotationInteractionRequested -= OnDiffCanvasAnnotationInteractionRequested;
         RootShellGrid.SizeChanged -= OnRootShellGridSizeChanged;
         if (workspaceTabsScrollViewer is not null)
@@ -740,6 +750,40 @@ public sealed partial class MainPage : Page
         await ExportWorkspaceGraphAsync(format);
     }
 
+    private async void OnFullCodeNodesClicked(object sender, RoutedEventArgs args)
+    {
+        var enabled = sender is ToggleButton { IsChecked: true };
+        await ViewModel.SetFullCodeWorkspaceAsync(enabled);
+        DiffCanvas.InvalidateScene();
+    }
+
+    private async void OnNodeEditingWorkspaceClicked(object sender, RoutedEventArgs args)
+    {
+        var enabled = sender is ToggleButton { IsChecked: true };
+        await ViewModel.SetNodeEditingWorkspaceAsync(enabled);
+        DiffCanvas.InvalidateScene();
+    }
+
+    private void OnNewEditorCanvasClicked(object sender, RoutedEventArgs args)
+    {
+        ViewModel.OpenEditorCanvasTab();
+    }
+
+    private void OnNewQueryCanvasClicked(object sender, RoutedEventArgs args)
+    {
+        ViewModel.OpenQueryCanvasTab();
+    }
+
+    private void OnRunQueryCanvasClicked(object sender, RoutedEventArgs args)
+    {
+        ViewModel.RunSelectedQueryCanvas();
+    }
+
+    private void OnResetQueryCanvasClicked(object sender, RoutedEventArgs args)
+    {
+        ViewModel.ResetSelectedQueryCanvas();
+    }
+
     private void OnCancelClicked(object sender, RoutedEventArgs args)
     {
         ViewModel.CancelCurrentOperation();
@@ -833,6 +877,18 @@ public sealed partial class MainPage : Page
     {
         KeepSelectedToggleChecked(sender);
         await ViewModel.SetSemanticAnalysisModeAsync(SemanticAnalysisMode.FastSyntaxOnly);
+    }
+
+    private async void OnCompletionLanguageServicesModeClicked(object sender, RoutedEventArgs args)
+    {
+        KeepSelectedToggleChecked(sender);
+        await ViewModel.SetCodeCompletionModeAsync(CodeCompletionMode.LanguageServicesThenDocument);
+    }
+
+    private async void OnCompletionDocumentModeClicked(object sender, RoutedEventArgs args)
+    {
+        KeepSelectedToggleChecked(sender);
+        await ViewModel.SetCodeCompletionModeAsync(CodeCompletionMode.DocumentOnly);
     }
 
     private async void OnLayoutModeSelectionChanged(object sender, SelectionChangedEventArgs args)
@@ -932,6 +988,14 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private void OnFileDiffEditToggleClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is ToggleButton { DataContext: ViewModels.WorkspaceTabViewModel { FileDiff: { } fileDiff } } toggle)
+        {
+            fileDiff.SetEditingEnabled(toggle.IsChecked == true);
+        }
+    }
+
     private async void OnFileDiffOpenBlameClicked(object sender, RoutedEventArgs args)
     {
         if (sender is FrameworkElement { Tag: ViewModels.WorkspaceTabViewModel { FileDiff: { } fileDiff } })
@@ -974,6 +1038,11 @@ public sealed partial class MainPage : Page
         var documentId = fileDiff.DocumentId;
         var symbol = ViewModel.FindSemanticItemForLineContext(documentId, args.LineNumber, args.SymbolText);
         var menu = new MenuFlyout();
+
+        if (sender is CodeFileViewerControl viewer)
+        {
+            AddFileEditorContextMenuItems(menu, viewer, fileDiff);
+        }
 
         var focusLineItem = new MenuFlyoutItem { Text = $"Focus line {args.LineNumber} in graph" };
         focusLineItem.Click += (_, _) => FocusCanvas(new ViewModels.FocusRequest(documentId, args.LineNumber));
@@ -1044,6 +1113,51 @@ public sealed partial class MainPage : Page
         menu.Items.Add(copyLineItem);
 
         menu.ShowAt(element, new FlyoutShowOptions { Position = args.Position });
+    }
+
+    private static void AddFileEditorContextMenuItems(
+        MenuFlyout menu,
+        CodeFileViewerControl viewer,
+        ViewModels.FileDiffTabViewModel fileDiff)
+    {
+        var canEdit = fileDiff.IsFullFileMode && fileDiff.IsEditingEnabled;
+        menu.Items.Add(CreateMenuItem("Copy selection", () => viewer.CopySelection()));
+        menu.Items.Add(CreateMenuItem("Select all", () => viewer.SelectAll()));
+
+        if (fileDiff.IsFullFileMode)
+        {
+            menu.Items.Add(CreateMenuItem("Cut selection", () => viewer.CutSelection(), canEdit));
+            menu.Items.Add(CreateMenuItem("Paste", () => viewer.PasteFromClipboard(), canEdit));
+            menu.Items.Add(CreateMenuItem("Undo edit (Ctrl+Z)", () => viewer.UndoEdit(), canEdit));
+            menu.Items.Add(CreateMenuItem("Redo edit (Ctrl+Y)", () => viewer.RedoEdit(), canEdit));
+            menu.Items.Add(new MenuFlyoutSeparator());
+            menu.Items.Add(CreateMenuItem("Toggle line comment (Ctrl+/)", () => viewer.ToggleLineComment(), canEdit));
+            menu.Items.Add(CreateMenuItem("Move line or selection up (Alt+Up)", () => viewer.MoveSelectionUp(), canEdit));
+            menu.Items.Add(CreateMenuItem("Move line or selection down (Alt+Down)", () => viewer.MoveSelectionDown(), canEdit));
+            menu.Items.Add(CreateMenuItem("Copy line or selection up (Alt+Shift+Up)", () => viewer.CopySelectionUp(), canEdit));
+            menu.Items.Add(CreateMenuItem("Copy line or selection down (Alt+Shift+Down)", () => viewer.CopySelectionDown(), canEdit));
+        }
+
+        menu.Items.Add(new MenuFlyoutSeparator());
+
+        MenuFlyoutItem CreateMenuItem(string text, Action action, bool isEnabled = true)
+        {
+            var item = new MenuFlyoutItem
+            {
+                Text = text,
+                IsEnabled = isEnabled
+            };
+            if (isEnabled)
+            {
+                item.Click += (_, _) =>
+                {
+                    viewer.Focus(FocusState.Programmatic);
+                    action();
+                };
+            }
+
+            return item;
+        }
     }
 
     private void OnBlameTimelineToggleClicked(object sender, RoutedEventArgs args)
@@ -1208,6 +1322,17 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private async void OnFileExplorerModeClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: string mode })
+        {
+            await ViewModel.SetFileExplorerModeAsync(
+                string.Equals(mode, "Workspace", StringComparison.OrdinalIgnoreCase)
+                    ? ViewModels.FileExplorerMode.Workspace
+                    : ViewModels.FileExplorerMode.Diff);
+        }
+    }
+
     private void OnExplorerTreeKeyDown(object sender, KeyRoutedEventArgs args)
     {
         if (sender is not ListView { SelectedItem: ViewModels.FileExplorerNodeViewModel item })
@@ -1284,6 +1409,14 @@ public sealed partial class MainPage : Page
             };
             openBlameItem.Click += OnExplorerNodeOpenBlameTabClicked;
             menu.Items.Add(openBlameItem);
+
+            var addToEditorCanvasItem = new MenuFlyoutItem
+            {
+                Text = "Add to editor canvas",
+                Tag = item
+            };
+            addToEditorCanvasItem.Click += OnExplorerNodeAddToEditorCanvasClicked;
+            menu.Items.Add(addToEditorCanvasItem);
         }
 
         var openSymbolsItem = new MenuFlyoutItem
@@ -1296,6 +1429,20 @@ public sealed partial class MainPage : Page
 
         menu.ShowAt(element, new FlyoutShowOptions { Position = args.GetPosition(element) });
         args.Handled = true;
+    }
+
+    private void OnExplorerTreeNodeDragStarting(UIElement sender, DragStartingEventArgs args)
+    {
+        if (sender is not FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel { IsFile: true } item })
+        {
+            return;
+        }
+
+        args.AllowedOperations = DataPackageOperation.Copy;
+        args.Data.RequestedOperation = DataPackageOperation.Copy;
+        args.Data.Properties.Title = Path.GetFileName(item.Path);
+        args.Data.Properties.Description = item.Path;
+        args.Data.SetText(EditorCanvasDragPathPrefix + item.Path);
     }
 
     private async void OnExplorerNodeOpenDiffTabClicked(object sender, RoutedEventArgs args)
@@ -1311,6 +1458,14 @@ public sealed partial class MainPage : Page
         if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
         {
             await ViewModel.OpenFileDiffTabAsync(item, ViewModels.FileDiffDisplayMode.FullFile);
+        }
+    }
+
+    private async void OnExplorerNodeAddToEditorCanvasClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
+        {
+            await ViewModel.AddFileToEditorCanvasAsync(item);
         }
     }
 
@@ -1452,6 +1607,30 @@ public sealed partial class MainPage : Page
         ViewModel.OpenSemanticMapForDocumentId(args.DocumentId);
     }
 
+    private async void OnDiffCanvasNodeFullFileViewRequested(object? sender, DiffCanvasNodeFullFileViewRequestedEventArgs args)
+    {
+        await ViewModel.ToggleNodeFullFileViewAsync(args.DocumentId);
+        DiffCanvas.InvalidateScene();
+    }
+
+    private void OnDiffCanvasNodeFullFileViewResetRequested(object? sender, DiffCanvasNodeFullFileViewResetRequestedEventArgs args)
+    {
+        ViewModel.ClearNodeFullFileViewOverride(args.DocumentId);
+        DiffCanvas.InvalidateScene();
+    }
+
+    private async void OnDiffCanvasNodeEditingRequested(object? sender, DiffCanvasNodeEditingRequestedEventArgs args)
+    {
+        await ViewModel.ToggleNodeEditingAsync(args.DocumentId);
+        DiffCanvas.InvalidateScene();
+    }
+
+    private void OnDiffCanvasNodeEditingResetRequested(object? sender, DiffCanvasNodeEditingResetRequestedEventArgs args)
+    {
+        ViewModel.ClearNodeEditingOverride(args.DocumentId);
+        DiffCanvas.InvalidateScene();
+    }
+
     private async void OnDiffCanvasAnnotationInteractionRequested(object? sender, DiffCanvasAnnotationInteractionRequestedEventArgs args)
     {
         if (args.Annotation.Kind == DiffAnnotationKind.HistoryBlame)
@@ -1461,6 +1640,87 @@ public sealed partial class MainPage : Page
         }
 
         FocusCanvas(ViewModel.FocusAnnotation(args.Annotation));
+    }
+
+    private void OnEditorCanvasDragOver(object sender, DragEventArgs args)
+    {
+        if (args.DataView.Contains(StandardDataFormats.StorageItems) ||
+            args.DataView.Contains(StandardDataFormats.Text))
+        {
+            args.AcceptedOperation = DataPackageOperation.Copy;
+            args.DragUIOverride.Caption = "Add files to editor canvas";
+            args.DragUIOverride.IsCaptionVisible = true;
+            args.Handled = true;
+        }
+    }
+
+    private async void OnEditorCanvasDrop(object sender, DragEventArgs args)
+    {
+        if (!args.DataView.Contains(StandardDataFormats.StorageItems) &&
+            !args.DataView.Contains(StandardDataFormats.Text))
+        {
+            return;
+        }
+
+        args.Handled = true;
+        var deferral = args.GetDeferral();
+        try
+        {
+            var paths = new List<string>();
+            if (args.DataView.Contains(StandardDataFormats.StorageItems))
+            {
+                var items = await args.DataView.GetStorageItemsAsync();
+                paths.AddRange(items
+                    .OfType<StorageFile>()
+                    .Select(file => file.Path)
+                    .Where(path => !string.IsNullOrWhiteSpace(path)));
+            }
+
+            if (args.DataView.Contains(StandardDataFormats.Text))
+            {
+                paths.AddRange(ParseEditorCanvasDragPaths(await args.DataView.GetTextAsync()));
+            }
+
+            if (paths.Count == 0)
+            {
+                ViewModel.ReportInteractionError("Drop one or more files onto the editor canvas");
+                return;
+            }
+
+            var tab = sender is FrameworkElement { DataContext: ViewModels.WorkspaceTabViewModel workspaceTab }
+                ? workspaceTab
+                : ViewModel.SelectedWorkspaceTab;
+            Point2? dropPoint = null;
+            if (sender is DiffCanvasControl canvas && tab?.EditorCanvas?.Scene is { } scene)
+            {
+                var position = args.GetPosition(canvas);
+                dropPoint = scene.Camera.ScreenToWorld(new Point2(position.X, position.Y));
+            }
+
+            await ViewModel.AddFilesToEditorCanvasAsync(paths, tab, dropPoint, CancellationToken.None);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            ViewModel.ReportInteractionError(exception.Message);
+        }
+        finally
+        {
+            deferral.Complete();
+        }
+    }
+
+    private void OnEditorCanvasNodeNavigationRequested(object? sender, DiffCanvasNodeNavigationRequestedEventArgs args)
+    {
+        ViewModel.RevealDocumentInExplorer(args.DocumentId);
+    }
+
+    private static IEnumerable<string> ParseEditorCanvasDragPaths(string text)
+    {
+        return text
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => line.StartsWith(EditorCanvasDragPathPrefix, StringComparison.Ordinal))
+            .Select(line => line[EditorCanvasDragPathPrefix.Length..])
+            .Where(path => !string.IsNullOrWhiteSpace(path));
     }
 
     private void OnSemanticSelectionChanged(object sender, SelectionChangedEventArgs args)

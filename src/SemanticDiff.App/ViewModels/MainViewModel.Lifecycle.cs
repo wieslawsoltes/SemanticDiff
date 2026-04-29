@@ -28,14 +28,19 @@ public sealed partial class MainViewModel
         currentOperation?.Cancel();
         currentSemanticRefinementOperation?.Cancel();
         currentBlameOperation?.Cancel();
+        currentWorkspaceExplorerOperation?.Cancel();
         pendingAutoReload?.Cancel();
+        CancelQueryCanvasOperations();
         await StopRepositoryWatcherAsync();
         currentOperation?.Dispose();
         currentSemanticRefinementOperation?.Dispose();
         currentBlameOperation?.Dispose();
+        currentWorkspaceExplorerOperation?.Dispose();
+        roslynCompletionProvider.Dispose();
         currentOperation = null;
         currentSemanticRefinementOperation = null;
         currentBlameOperation = null;
+        currentWorkspaceExplorerOperation = null;
     }
 
     public void CancelCurrentOperation()
