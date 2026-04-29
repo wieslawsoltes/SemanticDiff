@@ -56,6 +56,7 @@ Reusable SemanticDiff packages are published independently so apps can consume t
 | File diff tabs | Open file-specific diff/full-file tabs with syntax coloring, line numbers, folding metadata, text selection, font controls, annotation toggles, and diff-only/full-file switching. |
 | Semantic analysis | Roslyn-backed C# analysis, XAML semantic analysis, syntax fallback, semantic edge projection, symbol navigation, symbol graph workspaces, hybrid semantic maps, and impact signals. |
 | Symbol and semantic map workspaces | Open filtered symbol graphs, symbol-neighborhood graphs, file/folder semantic maps, and grouped node/edge views from the Symbols panel, file tree, or graph nodes. |
+| LINQ-style query canvas | Opens a live query workspace where C#-style LINQ expressions filter files, workspace files, diff nodes, and semantic symbols, then render the result as file nodes, symbol graphs, or hybrid semantic maps. |
 | Rich token rendering | TextMate tokenization plus language-service metadata for languages that are not covered by semantic diff providers. |
 | Review assistance | Noise filtering, inline change markup, moved-code signals, conflict/context annotations, stage/unstage actions, blame summary, and review status feedback. |
 | Cross-platform UI foundation | Uno Platform desktop target with Skia rendering and MVVM-oriented app state. |
@@ -80,6 +81,7 @@ Reusable SemanticDiff packages are published independently so apps can consume t
 | Canvas | Annotations | Hoverable/clickable annotations can focus related code, open review threads, or open blame/history context depending on the annotation type. |
 | Canvas | Viewport | Smooth drag, pan, zoom, and fit-to-scene interaction. |
 | Canvas | Export | Saves the current workspace graph as SVG, PNG, or PDF using Skia-backed rendering for full-fidelity output. |
+| Query Canvas | Live code-like queries | Query button opens an editable LINQ-style query tab with autocomplete, sample query picker, current-diff/MSBuild-workspace scope selector, live debounced execution, and canvas rendering. |
 | Status bar | Diagnostics | Shows current operation, review signals, cache state, watch state, and navigation status. |
 
 ### Files Tab
@@ -157,6 +159,161 @@ Reusable SemanticDiff packages are published independently so apps can consume t
 | Provider fallback | Uses fast syntax analysis when full MSBuild semantic workspace analysis is not selected or unavailable. |
 | File fallback | Files without navigable type/member/resource anchors still appear as file-level symbols so unsupported file types are not hidden. |
 
+### LINQ-Style Query Canvas
+
+Query Canvas is an analysis workspace for ad hoc questions that are faster to express as a query than by repeatedly changing panel filters. It behaves like a constrained LINQPad-style query surface: the input is C#-style LINQ over SemanticDiff's current file, workspace, and semantic-symbol models, and the result is rendered directly into the same graph canvas used by diff, symbol, and semantic-map tabs.
+
+Open it with the workspace toolbar `Query` button. The tab contains:
+
+| Area | Purpose |
+| --- | --- |
+| Scope selector | Chooses whether `Files` and `Nodes` resolve against the current diff graph or the loaded MSBuild workspace. |
+| Sample selector | Inserts ready-made examples such as changed C# files, workspace tests, changed symbol maps, and linked symbol graphs. |
+| Query editor | Editable C#-style query text with autocomplete for roots, operations, file properties, symbol properties, and sample snippets. |
+| Run and Reset | `Run` executes immediately; `Reset` restores the default changed-C#-files query. Editing also schedules a short debounced live refresh. |
+| Canvas result | Renders file nodes, symbol-only graphs, or hybrid file + symbol semantic maps depending on the query root and view operation. |
+
+The query engine intentionally supports a safe, deterministic LINQ-like subset instead of arbitrary C# execution. This keeps live rendering predictable and avoids running untrusted code from the query editor.
+
+#### Query Roots
+
+| Root | Scope | Result Type | Description |
+| --- | --- | --- | --- |
+| `Files` | Selected scope | Files | Files from the selected Query Canvas scope. In current-diff scope this is the active diff graph; in MSBuild-workspace scope this is the loaded workspace file set when available. |
+| `ChangedFiles` | Selected scope | Files | Files with a changed diff status or changed line counts. |
+| `DiffFiles` | Current diff | Files | Always uses files from the active diff graph, even when the selected scope is MSBuild workspace. |
+| `WorkspaceFiles` | MSBuild workspace | Files | Files discovered from the loaded MSBuild workspace. If the cache is not ready, selecting workspace scope triggers workspace file discovery. |
+| `Nodes` | Selected scope | Files | Alias for `Files` when thinking in canvas-node terms. |
+| `Symbols` | Current semantic model | Symbols | Semantic anchors from Roslyn, XAML, and syntax fallback providers. |
+| `ChangedSymbols` | Current semantic model | Symbols | Symbols marked as touched by the current diff. |
+| `LinkedSymbols` | Current semantic model | Symbols | Symbols with one or more semantic graph edges. |
+
+#### Supported Operations
+
+| Operation | Example | Notes |
+| --- | --- | --- |
+| `Where` | `Where(f => f.Path.Contains("Controls"))` | Supports boolean expressions, comparisons, negation, `&&`, `||`, and string methods. |
+| `OrderBy` | `OrderBy(f => f.Path)` | Sorts ascending by a file or symbol property. |
+| `OrderByDescending` | `OrderByDescending(s => s.Links)` | Sorts descending by a file or symbol property. |
+| `ThenBy` / `ThenByDescending` | `ThenBy(f => f.Name)` | Accepted for LINQ familiarity; each sort operation reapplies ordering to the current result. |
+| `Take` | `Take(120)` | Limits rendered rows. Without an explicit `Take`, large result sets are capped for responsiveness. |
+| `Skip` | `Skip(20)` | Skips initial rows before rendering. |
+| `Map` | `ChangedSymbols.Map()` | Renders symbols connected to their owning file nodes. |
+| `Graph` | `LinkedSymbols.Graph()` | Alias-style graph rendering for file + symbol graph output. |
+| `SymbolsOnly` | `LinkedSymbols.SymbolsOnly()` | Renders semantic symbols without file nodes. |
+| `Select`, `Count`, `ToList`, `ToArray`, `Dump` | `Files.Take(20).Dump();` | Accepted as no-op compatibility helpers so LINQPad-style muscle memory still renders the current result. |
+
+Supported string filters are case-insensitive:
+
+```csharp
+Files.Where(f => f.Path.Contains("Controls"))
+Files.Where(f => f.Name.StartsWith("Test"))
+Symbols.Where(s => s.Path.EndsWith(".xaml"))
+```
+
+#### File Properties
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `Id` | string | Internal document id. |
+| `Path` | string | Repository-relative path. |
+| `Name` | string | File name. |
+| `Directory` | string | Repository-relative containing directory. |
+| `OldPath` | string | Previous path for renames when available. |
+| `Language` | string | Detected language label, such as `C#` or `XAML`. |
+| `Status` | string | Diff status, such as `Added`, `Modified`, `Deleted`, or `Unchanged`. |
+| `AddedLines` / `Added` | number | Added line count. |
+| `DeletedLines` / `Deleted` | number | Deleted line count. |
+| `LineCount` / `Lines` | number | Rendered line count. |
+| `IsChanged` | bool | True when the file has a changed status or changed line counts. |
+| `IsAdded` | bool | True when the file is added. |
+| `IsDeleted` | bool | True when the file is deleted. |
+
+#### Symbol Properties
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `Id` / `AnchorId` | string | Semantic anchor id. |
+| `DocumentId` | string | Declaring document id. |
+| `Path` / `File` | string | Declaring file path. |
+| `Name` / `DisplayName` | string | Symbol display name. |
+| `Kind` / `KindText` | string | Symbol kind, such as type, member, binding, resource, or provider-specific anchor kind. |
+| `Line` | number | Declaration line. |
+| `Column` | number | Declaration column. |
+| `Links` / `IncidentEdgeCount` | number | Number of incident semantic graph edges. |
+| `IsChanged` | bool | True when the symbol is touched by the current diff. |
+| `IsLinked` | bool | True when the symbol participates in semantic graph edges. |
+
+#### Rendering Modes
+
+| Query Shape | Canvas Output |
+| --- | --- |
+| File roots without symbol operations | File diff/code nodes using the active graph grouping mode and annotation visibility. |
+| Symbol roots with no explicit view operation | Hybrid file + symbol map by default. |
+| `Map()` / `Graph()` | File nodes plus selected symbols and semantic edges. |
+| `SymbolsOnly()` | Symbol nodes and semantic edges without file nodes. |
+| Mixed file + symbol results | File nodes remain real diff/workspace file nodes; selected symbols are attached as semantic nodes. |
+
+#### Sample Queries
+
+```csharp
+ChangedFiles.Where(f => f.Language == "C#").OrderByDescending(f => f.AddedLines).Take(80)
+```
+
+```csharp
+ChangedFiles.OrderByDescending(f => f.LineCount).Take(60)
+```
+
+```csharp
+ChangedFiles.Where(f => f.IsAdded && f.Path.Contains("Tests")).OrderBy(f => f.Path).Take(100)
+```
+
+```csharp
+ChangedFiles.Where(f => f.IsDeleted).OrderBy(f => f.Path).Take(80)
+```
+
+```csharp
+ChangedFiles.Where(f => f.Directory.Contains("Controls") || f.Directory.Contains("Rendering")).OrderBy(f => f.Directory).Take(120)
+```
+
+```csharp
+WorkspaceFiles.Where(f => f.Language == "C#").OrderBy(f => f.Path).Take(160)
+```
+
+```csharp
+WorkspaceFiles.Where(f => f.Language == "XAML" || f.Path.EndsWith(".xaml")).OrderBy(f => f.Path).Take(160)
+```
+
+```csharp
+WorkspaceFiles.Where(f => f.Path.Contains("Tests") || f.Name.EndsWith("Tests.cs")).OrderBy(f => f.Path).Take(180)
+```
+
+```csharp
+ChangedSymbols.Where(s => s.Kind == "Type").Map().Take(120)
+```
+
+```csharp
+ChangedSymbols.Where(s => s.Kind == "Member").Map().Take(160)
+```
+
+```csharp
+LinkedSymbols.Where(s => s.Links > 1).OrderByDescending(s => s.Links).SymbolsOnly().Take(160)
+```
+
+```csharp
+LinkedSymbols.Where(s => s.Links > 2).OrderByDescending(s => s.Links).Map().Take(160)
+```
+
+```csharp
+Symbols.Where(s => s.Path.Contains("Controls") && s.Line > 0).Map().Take(180)
+```
+
+```csharp
+ChangedSymbols.Where(s => s.File.EndsWith(".xaml") || s.Path.EndsWith(".xaml")).Map().Take(120)
+```
+
+Use explicit `Take(...)` values when experimenting on large repositories. Query Canvas has a hard render cap to protect graph interaction and a lower implicit cap when no `Take` is provided.
+
 ### Settings Tab
 
 | Section | Feature | Options |
@@ -207,6 +364,7 @@ Reusable SemanticDiff packages are published independently so apps can consume t
 | Workspace tabs | Git history tabs | Opens timeline tabs for branches, PRs, and MRs without replacing the graph. |
 | Workspace tabs | Blame tabs | Opens file-focused blame tabs with commit grouping, connected change graph view, coverage bars, and file-history timeline. |
 | Workspace tabs | Symbol graph and semantic map tabs | Opens symbol-only graph workspaces and hybrid file + symbol semantic maps from filters, symbol list items, file/folder items, and graph nodes. |
+| Workspace tabs | Query canvas tabs | Opens live LINQ-style query tabs with scope selection, sample queries, autocomplete, debounced execution, and file/symbol/semantic-map canvas rendering. |
 | Diff parsing | Unified diff model | Converts Git diffs into document/line snapshots. |
 | Diff parsing | Context modes | Supports changed-only, full-file, and current-file contexts. |
 | Diff parsing | Noise filtering | Can hide or de-emphasize whitespace-only review noise. |
@@ -218,6 +376,7 @@ Reusable SemanticDiff packages are published independently so apps can consume t
 | Semantics | Symbol insights | Provides searchable symbol results, scope filters, kind/file facets, hot symbols, changed/linked counts, and file-level fallback symbols. |
 | Semantics | Symbol graph visualization | Builds symbol-only node/edge graphs with search, scope, kind, file, edge-kind, view-mode, layout, and grouping filters. |
 | Semantics | Hybrid semantic maps | Builds file + symbol workspaces that connect actual diff file nodes to contained symbol nodes, then overlays filtered semantic edges between those symbols. |
+| Query analysis | LINQ-style query engine | Provides a safe query subset over diff files, workspace files, and semantic symbols with graph rendering results. |
 | Graph layout | MSAGL layout | Lays out semantic graph structures. |
 | Graph layout | Grouping modes | Groups nodes by folder, semantic structure, language, status, or no grouping. |
 | Rendering | Skia canvas | Uses SkiaSharp rendering through Uno desktop. |
@@ -302,7 +461,7 @@ Notes:
 | --- | --- |
 | `SemanticDiff.App` | Uno desktop app, XAML views, view models, keyboard accelerators, app composition. |
 | `SemanticDiff.Controls.Uno` | Reusable Uno controls, resource dictionaries, graph canvas, code viewer, and UI primitives consumable without `SemanticDiff.App`. |
-| `SemanticDiff.Workbench` | UI-framework-free builders/controllers for file diff tabs, symbol graphs, blame graphs, history lanes, reference browsing, review workflow state, repository loading, and workspace caching. |
+| `SemanticDiff.Workbench` | UI-framework-free builders/controllers for file diff tabs, symbol graphs, query canvas execution, blame graphs, history lanes, reference browsing, review workflow state, repository loading, and workspace caching. |
 | `SemanticDiff.Core` | Shared models, app state, service contracts, annotations. |
 | `SemanticDiff.Git` | Git command integration, diff loading, branch/PR/MR discovery, blame, review discussions. |
 | `SemanticDiff.Diff` | Diff document construction, tokenization, language registry, sample documents. |
@@ -397,10 +556,11 @@ CI publishes unsigned app archives for `linux-x64`, `win-x64`, and `osx-arm64`. 
 9. Open blame tabs from files or graph nodes when line ownership/history is part of the review.
 10. Use Files and Symbols tabs to jump between files, file-level fallbacks, and semantic items.
 11. Open symbol graphs or hybrid semantic maps from Symbols, file facets, file tree folders/files, or graph nodes to inspect how changed files contain and connect through symbols.
-12. Use the Review tab to load discussion threads, search comments, add overview comments, reply to threads, or resolve supported threads.
-13. Click comment annotations in nodes to select the linked Review item and focus the related code.
-14. Stage or unstage selected files from Settings when reviewing local changes.
-15. Tune layout, grouping, semantic mode, context, annotation layers, and graph export options for the review task.
+12. Open Query Canvas from the workspace toolbar when a review question is easier to express as LINQ-style filtering, such as "changed C# files under Controls" or "linked symbols with more than two semantic edges."
+13. Use the Review tab to load discussion threads, search comments, add overview comments, reply to threads, or resolve supported threads.
+14. Click comment annotations in nodes to select the linked Review item and focus the related code.
+15. Stage or unstage selected files from Settings when reviewing local changes.
+16. Tune layout, grouping, semantic mode, context, annotation layers, and graph export options for the review task.
 
 ## App State
 
