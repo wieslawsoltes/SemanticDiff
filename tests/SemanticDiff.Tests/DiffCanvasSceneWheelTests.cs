@@ -58,10 +58,39 @@ public sealed class DiffCanvasSceneWheelTests
     {
         var scene = CreateScrollableScene();
         var initialScale = scene.Camera.Scale;
+        var initialOffsetY = scene.Camera.OffsetY;
 
         scene.HandleWheel(new Point2(10_000, 10_000), 120, zoomCanvas: false);
 
         Assert.Equal(initialScale, scene.Camera.Scale);
+        Assert.Equal(initialOffsetY, scene.Camera.OffsetY);
+    }
+
+    [Fact]
+    public void HandleWheel_PansCanvasWhenUnhandledWheelPanIsEnabled()
+    {
+        var scene = CreateScrollableScene();
+        var initialScale = scene.Camera.Scale;
+        var initialOffsetY = scene.Camera.OffsetY;
+
+        scene.HandleWheel(new Point2(10_000, 10_000), -120, zoomCanvas: false, panCanvasWhenUnhandled: true);
+
+        Assert.Equal(initialScale, scene.Camera.Scale);
+        Assert.True(scene.Camera.OffsetY < initialOffsetY);
+    }
+
+    [Fact]
+    public void HandleWheel_PrefersNodeScrollOverCanvasPan()
+    {
+        var scene = CreateScrollableScene();
+        var node = scene.Nodes[0];
+        var screenPoint = scene.Camera.WorldToScreen(new Point2(node.BodyBounds.X + 24, node.BodyBounds.Y + 24));
+        var initialOffsetY = scene.Camera.OffsetY;
+
+        scene.HandleWheel(screenPoint, -120, zoomCanvas: false, panCanvasWhenUnhandled: true);
+
+        Assert.True(node.ScrollOffsetY > 0);
+        Assert.Equal(initialOffsetY, scene.Camera.OffsetY);
     }
 
     private static DiffCanvasScene CreateScrollableScene()

@@ -21,6 +21,7 @@ public sealed class DiffCanvasControl : Grid
     private const double DefaultViewportWidth = 960;
     private const double DefaultViewportHeight = 600;
     private const double SelectionMarqueeMinimumScreenSize = 4;
+    private const double WheelCanvasPanFactor = 0.6;
     private static readonly TimeSpan WheelZoomSettleDelay = TimeSpan.FromMilliseconds(140);
 
     private enum ActiveInteraction
@@ -31,6 +32,8 @@ public sealed class DiffCanvasControl : Grid
         DragGroup,
         ResizeNode,
         DragScrollbar,
+        DragViewportHorizontalScrollbar,
+        DragViewportVerticalScrollbar,
         MarqueeSelection
     }
 
@@ -69,6 +72,7 @@ public sealed class DiffCanvasControl : Grid
     private GraphGroup? activeGroup;
     private DiffNodeResizeHandle activeResizeHandle;
     private double activeScrollbarThumbOffsetY;
+    private double activeViewportScrollbarThumbOffset;
     private Point2 marqueeStartCanvasPoint;
     private Point2 marqueeCurrentCanvasPoint;
     private DiffNodeSelectionMode marqueeSelectionMode = DiffNodeSelectionMode.Replace;
@@ -354,6 +358,7 @@ public sealed class DiffCanvasControl : Grid
             IsLightTheme ? DiffCanvasColorTheme.Light : DiffCanvasColorTheme.Dark,
             ShouldRenderDetailedDocumentBodies() ? DiffSceneRenderMode.Normal : DiffSceneRenderMode.Interactive,
             UseInteractiveLevelOfDetail);
+        DrawViewportScrollbars(args.Surface.Canvas);
         DrawSelectionMarquee(args.Surface.Canvas);
     }
 
@@ -415,6 +420,11 @@ public sealed class DiffCanvasControl : Grid
         }
 
         var screenPoint = ToCanvasPoint(pointerPoint.Position);
+        if (TryBeginViewportScrollbarInteraction(args, pointerPoint, screenPoint, pointerButton))
+        {
+            return;
+        }
+
         var selectionMode = GetSelectionMode(args);
         if (Scene.TryHitTestAnnotation(screenPoint, out var hit) && hit is not null)
         {
@@ -569,6 +579,12 @@ public sealed class DiffCanvasControl : Grid
             case ActiveInteraction.DragScrollbar when activeNode is not null:
                 Scene.DragScrollbarThumb(activeNode, currentWorldPoint.Y, activeScrollbarThumbOffsetY);
                 break;
+            case ActiveInteraction.DragViewportHorizontalScrollbar:
+                DragViewportScrollbar(CanvasViewportScrollbarOrientation.Horizontal, currentCanvasPoint.X);
+                break;
+            case ActiveInteraction.DragViewportVerticalScrollbar:
+                DragViewportScrollbar(CanvasViewportScrollbarOrientation.Vertical, currentCanvasPoint.Y);
+                break;
             case ActiveInteraction.MarqueeSelection:
                 marqueeCurrentCanvasPoint = currentCanvasPoint;
                 break;
@@ -614,7 +630,19 @@ public sealed class DiffCanvasControl : Grid
             ClearAnnotationHover();
         }
 
-        Scene.HandleWheel(screenPoint, wheelDelta, zoomCanvas);
+        if (zoomCanvas)
+        {
+            Scene.HandleWheel(screenPoint, wheelDelta, zoomCanvas: true);
+        }
+        else if (IsHorizontalWheel(pointerPoint, args))
+        {
+            ClearAnnotationHover();
+            Scene.Pan(wheelDelta * WheelCanvasPanFactor, 0);
+        }
+        else
+        {
+            Scene.HandleWheel(screenPoint, wheelDelta, zoomCanvas: false, panCanvasWhenUnhandled: true);
+        }
 
         RequestRender();
         args.Handled = true;
@@ -971,6 +999,257 @@ public sealed class DiffCanvasControl : Grid
         skCanvas.DrawRect(rect, stroke);
     }
 
+    private void DrawViewportScrollbars(SKCanvas skCanvas)
+    {
+        if (Scene is null)
+        {
+            return;
+        }
+
+        var scrollbars = Scene.GetViewportScrollbars(GetCanvasSize());
+        DrawViewportScrollbar(skCanvas, scrollbars.Horizontal);
+        DrawViewportScrollbar(skCanvas, scrollbars.Vertical);
+    }
+
+    private void DrawViewportScrollbar(SKCanvas skCanvas, CanvasViewportScrollbarMetrics metrics)
+    {
+        if (!metrics.IsVisible)
+        {
+            return;
+        }
+
+        var isActive = activeInteraction switch
+        {
+            ActiveInteraction.DragViewportHorizontalScrollbar => metrics.Orientation == CanvasViewportScrollbarOrientation.Horizontal,
+            ActiveInteraction.DragViewportVerticalScrollbar => metrics.Orientation == CanvasViewportScrollbarOrientation.Vertical,
+            _ => false
+        };
+
+        var trackColor = IsLightTheme
+            ? new SKColor(74, 104, 140, 38)
+            : new SKColor(148, 163, 184, 42);
+        var thumbColor = isActive
+            ? (IsLightTheme ? new SKColor(0, 120, 212, 230) : new SKColor(96, 165, 250, 235))
+            : (IsLightTheme ? new SKColor(83, 105, 130, 168) : new SKColor(148, 163, 184, 168));
+
+        using var trackPaint = new SKPaint
+        {
+            IsAntialias = true,
+            Style = SKPaintStyle.Fill,
+            Color = trackColor
+        };
+        using var thumbPaint = new SKPaint
+        {
+            IsAntialias = true,
+            Style = SKPaintStyle.Fill,
+            Color = thumbColor
+        };
+
+        DrawRoundRect(skCanvas, metrics.TrackBounds, CanvasViewportScrollbarCalculator.Thickness / 2, trackPaint);
+        DrawRoundRect(skCanvas, metrics.ThumbBounds, CanvasViewportScrollbarCalculator.Thickness / 2, thumbPaint);
+    }
+
+    private static void DrawRoundRect(SKCanvas skCanvas, Rect2 bounds, double radius, SKPaint paint)
+    {
+        var rect = new SKRect((float)bounds.Left, (float)bounds.Top, (float)bounds.Right, (float)bounds.Bottom);
+        skCanvas.DrawRoundRect(rect, (float)radius, (float)radius, paint);
+    }
+
+    private bool TryBeginViewportScrollbarInteraction(
+        PointerRoutedEventArgs args,
+        Microsoft.UI.Input.PointerPoint pointerPoint,
+        Point2 screenPoint,
+        PanPointerButton pointerButton)
+    {
+        if (Scene is null || pointerButton != PanPointerButton.Primary)
+        {
+            return false;
+        }
+
+        if (TryHitTestViewportScrollbarThumb(screenPoint, out var thumbMetrics, out var thumbGrabOffset))
+        {
+            activeViewportScrollbarThumbOffset = thumbGrabOffset;
+            BeginInteraction(args, pointerPoint, GetViewportScrollbarInteraction(thumbMetrics.Orientation), pointerButton);
+            RequestRender();
+            return true;
+        }
+
+        if (!TryHitTestViewportScrollbarTrack(screenPoint, out var trackMetrics, out var coordinate))
+        {
+            return false;
+        }
+
+        PageViewportScrollbar(trackMetrics, coordinate);
+        var nextMetrics = GetViewportScrollbar(trackMetrics.Orientation);
+        var thumbLength = GetViewportScrollbarThumbLength(nextMetrics);
+        activeViewportScrollbarThumbOffset = thumbLength * 0.5;
+        BeginInteraction(args, pointerPoint, GetViewportScrollbarInteraction(trackMetrics.Orientation), pointerButton);
+        RequestRender();
+        return true;
+    }
+
+    private bool TryHitTestViewportScrollbarThumb(
+        Point2 screenPoint,
+        out CanvasViewportScrollbarMetrics metrics,
+        out double thumbGrabOffset)
+    {
+        metrics = default;
+        thumbGrabOffset = 0;
+
+        if (Scene is null)
+        {
+            return false;
+        }
+
+        var scrollbars = Scene.GetViewportScrollbars(GetCanvasSize());
+        if (scrollbars.Vertical.IsVisible && scrollbars.Vertical.ThumbBounds.Contains(screenPoint))
+        {
+            metrics = scrollbars.Vertical;
+            thumbGrabOffset = screenPoint.Y - metrics.ThumbBounds.Top;
+            return true;
+        }
+
+        if (scrollbars.Horizontal.IsVisible && scrollbars.Horizontal.ThumbBounds.Contains(screenPoint))
+        {
+            metrics = scrollbars.Horizontal;
+            thumbGrabOffset = screenPoint.X - metrics.ThumbBounds.Left;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryHitTestViewportScrollbarTrack(
+        Point2 screenPoint,
+        out CanvasViewportScrollbarMetrics metrics,
+        out double coordinate)
+    {
+        metrics = default;
+        coordinate = 0;
+
+        if (Scene is null)
+        {
+            return false;
+        }
+
+        var scrollbars = Scene.GetViewportScrollbars(GetCanvasSize());
+        if (scrollbars.Vertical.IsVisible && scrollbars.Vertical.TrackBounds.Contains(screenPoint))
+        {
+            metrics = scrollbars.Vertical;
+            coordinate = screenPoint.Y;
+            return true;
+        }
+
+        if (scrollbars.Horizontal.IsVisible && scrollbars.Horizontal.TrackBounds.Contains(screenPoint))
+        {
+            metrics = scrollbars.Horizontal;
+            coordinate = screenPoint.X;
+            return true;
+        }
+
+        return false;
+    }
+
+    private void PageViewportScrollbar(CanvasViewportScrollbarMetrics metrics, double coordinate)
+    {
+        var thumbStart = GetViewportScrollbarThumbStart(metrics);
+        var thumbEnd = thumbStart + GetViewportScrollbarThumbLength(metrics);
+        var direction = coordinate < thumbStart ? -1 : coordinate > thumbEnd ? 1 : 0;
+        if (direction == 0)
+        {
+            return;
+        }
+
+        ScrollViewportToOffset(metrics, metrics.ScrollOffset + direction * metrics.ViewportSize * 0.85);
+    }
+
+    private void DragViewportScrollbar(CanvasViewportScrollbarOrientation orientation, double pointerCoordinate)
+    {
+        if (Scene is null)
+        {
+            return;
+        }
+
+        var metrics = GetViewportScrollbar(orientation);
+        if (!metrics.IsVisible)
+        {
+            return;
+        }
+
+        var trackStart = GetViewportScrollbarTrackStart(metrics);
+        var trackLength = GetViewportScrollbarTrackLength(metrics);
+        var thumbLength = GetViewportScrollbarThumbLength(metrics);
+        var travel = Math.Max(0, trackLength - thumbLength);
+        if (travel <= 0)
+        {
+            ScrollViewportToOffset(metrics, 0);
+            return;
+        }
+
+        var thumbStart = Math.Clamp(
+            pointerCoordinate - activeViewportScrollbarThumbOffset,
+            trackStart,
+            trackStart + travel);
+        var ratio = (thumbStart - trackStart) / travel;
+        ScrollViewportToOffset(metrics, metrics.MaxScrollOffset * ratio);
+    }
+
+    private CanvasViewportScrollbarMetrics GetViewportScrollbar(CanvasViewportScrollbarOrientation orientation)
+    {
+        if (Scene is null)
+        {
+            return default;
+        }
+
+        var scrollbars = Scene.GetViewportScrollbars(GetCanvasSize());
+        return orientation == CanvasViewportScrollbarOrientation.Horizontal
+            ? scrollbars.Horizontal
+            : scrollbars.Vertical;
+    }
+
+    private void ScrollViewportToOffset(CanvasViewportScrollbarMetrics metrics, double scrollOffset)
+    {
+        if (Scene is null || !metrics.IsVisible)
+        {
+            return;
+        }
+
+        var target = metrics.ContentStart + Math.Clamp(scrollOffset, 0, metrics.MaxScrollOffset);
+        if (metrics.Orientation == CanvasViewportScrollbarOrientation.Horizontal)
+        {
+            Scene.SetViewportWorldOrigin(target, null);
+        }
+        else
+        {
+            Scene.SetViewportWorldOrigin(null, target);
+        }
+    }
+
+    private static ActiveInteraction GetViewportScrollbarInteraction(CanvasViewportScrollbarOrientation orientation) =>
+        orientation == CanvasViewportScrollbarOrientation.Horizontal
+            ? ActiveInteraction.DragViewportHorizontalScrollbar
+            : ActiveInteraction.DragViewportVerticalScrollbar;
+
+    private static double GetViewportScrollbarTrackStart(CanvasViewportScrollbarMetrics metrics) =>
+        metrics.Orientation == CanvasViewportScrollbarOrientation.Horizontal
+            ? metrics.TrackBounds.Left
+            : metrics.TrackBounds.Top;
+
+    private static double GetViewportScrollbarTrackLength(CanvasViewportScrollbarMetrics metrics) =>
+        metrics.Orientation == CanvasViewportScrollbarOrientation.Horizontal
+            ? metrics.TrackBounds.Width
+            : metrics.TrackBounds.Height;
+
+    private static double GetViewportScrollbarThumbStart(CanvasViewportScrollbarMetrics metrics) =>
+        metrics.Orientation == CanvasViewportScrollbarOrientation.Horizontal
+            ? metrics.ThumbBounds.Left
+            : metrics.ThumbBounds.Top;
+
+    private static double GetViewportScrollbarThumbLength(CanvasViewportScrollbarMetrics metrics) =>
+        metrics.Orientation == CanvasViewportScrollbarOrientation.Horizontal
+            ? metrics.ThumbBounds.Width
+            : metrics.ThumbBounds.Height;
+
     private Rect2 GetMarqueeScreenBounds() => CreateRect(marqueeStartCanvasPoint, marqueeCurrentCanvasPoint);
 
     private Rect2 GetMarqueeWorldBounds(Rect2 screenBounds)
@@ -1249,6 +1528,10 @@ public sealed class DiffCanvasControl : Grid
     private static bool IsCameraModifierDown(PointerRoutedEventArgs args) =>
         (args.KeyModifiers & (VirtualKeyModifiers.Control | VirtualKeyModifiers.Windows)) != 0;
 
+    private static bool IsHorizontalWheel(Microsoft.UI.Input.PointerPoint pointerPoint, PointerRoutedEventArgs args) =>
+        pointerPoint.Properties.IsHorizontalMouseWheel ||
+        (args.KeyModifiers & VirtualKeyModifiers.Shift) != 0;
+
     private static bool IsCommandModifierDown() =>
         IsKeyDown(VirtualKey.Control) ||
         IsKeyDown(VirtualKey.LeftControl) ||
@@ -1361,6 +1644,7 @@ public sealed class DiffCanvasControl : Grid
         activeGroup = null;
         activeResizeHandle = DiffNodeResizeHandle.None;
         activeScrollbarThumbOffsetY = 0;
+        activeViewportScrollbarThumbOffset = 0;
         marqueeStartCanvasPoint = Point2.Zero;
         marqueeCurrentCanvasPoint = Point2.Zero;
         marqueeSelectionMode = DiffNodeSelectionMode.Replace;
@@ -1489,23 +1773,31 @@ public sealed class DiffCanvasControl : Grid
     private bool ShouldRenderDetailedDocumentBodies() =>
         !UseInteractiveLevelOfDetail ||
         (!wheelZoomActive &&
-         activeInteraction is ActiveInteraction.None or ActiveInteraction.DragScrollbar);
+         activeInteraction is
+             ActiveInteraction.None or
+             ActiveInteraction.DragScrollbar or
+             ActiveInteraction.DragViewportHorizontalScrollbar or
+             ActiveInteraction.DragViewportVerticalScrollbar);
 
     private static PanPointerButton GetPanButton(Microsoft.UI.Input.PointerPoint pointerPoint)
     {
-        if (pointerPoint.Properties.IsMiddleButtonPressed)
+        var properties = pointerPoint.Properties;
+        if (properties.IsMiddleButtonPressed ||
+            properties.PointerUpdateKind == PointerUpdateKind.MiddleButtonPressed)
         {
             return PanPointerButton.Middle;
         }
 
-        return pointerPoint.Properties.IsLeftButtonPressed
+        return properties.IsLeftButtonPressed ||
+               properties.PointerUpdateKind == PointerUpdateKind.LeftButtonPressed
             ? PanPointerButton.Primary
             : PanPointerButton.None;
     }
 
     private static bool IsPointerButtonStillPressed(Microsoft.UI.Input.PointerPoint pointerPoint, PanPointerButton panButton) => panButton switch
     {
-        PanPointerButton.Middle => pointerPoint.Properties.IsMiddleButtonPressed,
+        PanPointerButton.Middle => pointerPoint.Properties.IsMiddleButtonPressed ||
+                                   pointerPoint.Properties.PointerUpdateKind != PointerUpdateKind.MiddleButtonReleased,
         PanPointerButton.Primary => pointerPoint.Properties.IsLeftButtonPressed,
         _ => false
     };

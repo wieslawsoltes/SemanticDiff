@@ -1276,6 +1276,21 @@ public sealed class DiffCanvasScene
 
     public void ZoomAt(Point2 screenPoint, double zoomFactor) => Camera = Camera.ZoomAt(screenPoint, zoomFactor);
 
+    public Rect2 GetViewportWorldBounds(Size2 viewportSize) =>
+        CanvasViewportScrollbarCalculator.GetWorldViewport(Camera, viewportSize);
+
+    public CanvasViewportScrollbarSet GetViewportScrollbars(Size2 viewportSize) =>
+        CanvasViewportScrollbarCalculator.Calculate(GraphBounds, Camera, viewportSize);
+
+    public void SetViewportWorldOrigin(double? worldLeft, double? worldTop)
+    {
+        Camera = Camera with
+        {
+            OffsetX = worldLeft is double left ? -left * Camera.Scale : Camera.OffsetX,
+            OffsetY = worldTop is double top ? -top * Camera.Scale : Camera.OffsetY
+        };
+    }
+
     public void SetFullFileDocuments(IEnumerable<DiffNodeFullFileContent> fullFileContents)
     {
         var contentsByDocumentId = fullFileContents.ToDictionary(content => content.DocumentId, content => content);
@@ -1623,6 +1638,9 @@ public sealed class DiffCanvasScene
     }
 
     public void HandleWheel(Point2 screenPoint, double wheelDelta, bool zoomCanvas)
+        => HandleWheel(screenPoint, wheelDelta, zoomCanvas, panCanvasWhenUnhandled: false);
+
+    public void HandleWheel(Point2 screenPoint, double wheelDelta, bool zoomCanvas, bool panCanvasWhenUnhandled)
     {
         if (!zoomCanvas && TryScrollNodeAt(screenPoint, -wheelDelta * 0.6))
         {
@@ -1631,6 +1649,11 @@ public sealed class DiffCanvasScene
 
         if (!zoomCanvas)
         {
+            if (panCanvasWhenUnhandled)
+            {
+                Pan(0, wheelDelta * 0.6);
+            }
+
             return;
         }
 
@@ -2196,6 +2219,31 @@ public sealed class DiffCanvasScene
         .Select(node => new DiffNodeLayout(node.DiffDocument.Id, node.Bounds, node.IsPinned, node.FontSize))
         .ToImmutableArray();
 
+    public void ApplyLayout(GraphLayoutResult layoutResult)
+    {
+        if (layoutResult.Nodes.IsDefaultOrEmpty)
+        {
+            return;
+        }
+
+        var layoutByDocumentId = layoutResult.Nodes.ToDictionary(node => node.DocumentId);
+        foreach (var node in nodes)
+        {
+            if (!layoutByDocumentId.TryGetValue(node.DiffDocument.Id, out var layoutNode))
+            {
+                continue;
+            }
+
+            node.Bounds = NormalizeBounds(layoutNode.Bounds);
+            node.IsPinned = layoutNode.IsPinned;
+            node.SetFontSize(layoutNode.FontSize);
+            node.ClampScrollOffset();
+        }
+
+        RefreshGroupBounds();
+        geometryVersion++;
+    }
+
     public ImmutableHashSet<DiffDocumentId> GetPinnedDocumentIds() => nodes
         .Where(node => node.IsPinned)
         .Select(node => node.DiffDocument.Id)
@@ -2392,6 +2440,31 @@ public sealed class DiffCanvasScene
     private static Rect2 ExpandGroupBounds(Rect2 bounds) => bounds.IsEmpty
         ? Rect2.Empty
         : new Rect2(bounds.Left - 34, bounds.Top - 48, bounds.Width + 68, bounds.Height + 82);
+
+    private void RefreshGroupBounds()
+    {
+        if (groups.IsDefaultOrEmpty)
+        {
+            return;
+        }
+
+        var nodesByDocumentId = nodes.ToDictionary(node => node.DiffDocument.Id);
+        groups = groups
+            .Select(group =>
+            {
+                var groupNodes = group.DocumentIds.IsDefaultOrEmpty
+                    ? nodes.Where(node => group.Bounds.Intersects(node.Bounds)).ToArray()
+                    : group.DocumentIds
+                        .Select(documentId => nodesByDocumentId.GetValueOrDefault(documentId))
+                        .Where(node => node is not null)
+                        .Cast<DiffNode>()
+                        .ToArray();
+                return groupNodes.Length == 0
+                    ? group
+                    : group with { Bounds = ExpandGroupBounds(Rect2.Union(groupNodes.Select(node => node.Bounds))) };
+            })
+            .ToImmutableArray();
+    }
 
     private static GraphGroupKey CreateGroupKey(GraphGroupingMode groupingMode, DiffDocumentSnapshot document, IReadOnlyList<SemanticAnchor> anchors) => groupingMode switch
     {
