@@ -18,6 +18,7 @@
     <PackageVersion Include="Pretext.SkiaSharp" Version="0.1.0-preview.5" />
     <PackageVersion Include="Pretext.Uno" Version="0.1.0-preview.5" />
     <PackageVersion Include="SkiaSharp" Version="3.119.2" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.2" />
     <PackageVersion Include="SkiaSharp.Views.Uno.WinUI" Version="3.119.2" />
     <PackageVersion Include="TextMateSharp" Version="2.0.3" />
     <PackageVersion Include="TextMateSharp.Grammars" Version="2.0.3" />
