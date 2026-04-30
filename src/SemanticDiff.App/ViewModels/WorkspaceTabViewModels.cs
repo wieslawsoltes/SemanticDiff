@@ -572,6 +572,32 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
 
     partial void OnSelectedViewModeOptionChanged(SymbolGraphViewModeOptionViewModel value) => RefreshScene();
 
+    public void Relayout() => RefreshScene();
+
+    public void SetLayoutMode(GraphLayoutMode layoutMode)
+    {
+        var option = LayoutOptions.FirstOrDefault(candidate => candidate.Mode == layoutMode) ?? LayoutOptions[1];
+        if (SelectedLayoutOption == option)
+        {
+            RefreshScene();
+            return;
+        }
+
+        SelectedLayoutOption = option;
+    }
+
+    public void SetGroupingMode(GraphGroupingMode groupingMode)
+    {
+        var option = GroupingOptions.FirstOrDefault(candidate => candidate.Mode == groupingMode) ?? GroupingOptions[2];
+        if (SelectedGroupingOption == option)
+        {
+            RefreshScene();
+            return;
+        }
+
+        SelectedGroupingOption = option;
+    }
+
     public void ResetFilters()
     {
         SearchText = string.Empty;

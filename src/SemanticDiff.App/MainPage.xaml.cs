@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using SemanticDiff.Controls.Uno;
 using SemanticDiff.Core;
+using SemanticDiff.Layout;
 using SemanticDiff.Rendering;
 using SemanticDiff.Rendering.Export;
 using Windows.ApplicationModel.DataTransfer;
@@ -33,6 +34,7 @@ public sealed partial class MainPage : Page
     private const double MinimumSymbolFacetsHeight = 140;
     private const double MaximumSymbolFacetsHeight = 420;
     private const string EditorCanvasDragPathPrefix = "semanticdiff-file:";
+    private const string EditorCanvasDragFolderPathPrefix = "semanticdiff-folder:";
 
     private bool isPaneSplitterDragging;
     private bool isPaneSplitterPointerOver;
@@ -76,11 +78,11 @@ public sealed partial class MainPage : Page
 
         RegisterAccelerator(VirtualKey.O, control, OpenRepositoryFromPickerAsync);
         RegisterAccelerator(VirtualKey.R, control, () => RunSyncCommand(ViewModel.ReloadRepository));
-        RegisterAccelerator(VirtualKey.L, control, RelayoutAndFitAsync);
-        RegisterAccelerator(VirtualKey.Number0, control, () => RunSyncCommand(DiffCanvas.FitToScene));
+        RegisterAccelerator(VirtualKey.L, control, RelayoutAndFitActiveWorkspaceAsync);
+        RegisterAccelerator(VirtualKey.Number0, control, () => RunSyncCommand(FitActiveWorkspaceCanvas));
         RegisterAccelerator(VirtualKey.Escape, VirtualKeyModifiers.None, () => RunSyncCommand(ViewModel.CancelCurrentOperation), () => ViewModel.IsBusy, includePlatformCommandVariant: false);
-        RegisterAccelerator(VirtualKey.F7, VirtualKeyModifiers.None, () => RunSyncCommand(() => FocusCanvas(ViewModel.FocusPreviousChange())), () => ViewModel.HasNavigableChanges, includePlatformCommandVariant: false);
-        RegisterAccelerator(VirtualKey.F8, VirtualKeyModifiers.None, () => RunSyncCommand(() => FocusCanvas(ViewModel.FocusNextChange())), () => ViewModel.HasNavigableChanges, includePlatformCommandVariant: false);
+        RegisterAccelerator(VirtualKey.F7, VirtualKeyModifiers.None, () => RunSyncCommand(() => FocusActiveCanvas(ViewModel.FocusPreviousChange())), () => ViewModel.HasNavigableChanges, includePlatformCommandVariant: false);
+        RegisterAccelerator(VirtualKey.F8, VirtualKeyModifiers.None, () => RunSyncCommand(() => FocusActiveCanvas(ViewModel.FocusNextChange())), () => ViewModel.HasNavigableChanges, includePlatformCommandVariant: false);
 
         RegisterAccelerator(VirtualKey.Number1, VirtualKeyModifiers.Menu, () => SelectRailTabAsync(0), includePlatformCommandVariant: false);
         RegisterAccelerator(VirtualKey.Number2, VirtualKeyModifiers.Menu, () => SelectRailTabAsync(1), includePlatformCommandVariant: false);
@@ -134,12 +136,12 @@ public sealed partial class MainPage : Page
         RegisterAccelerator(VirtualKey.Number9, controlShift, () => SetGroupingModeFromAcceleratorAsync(GraphGroupingMode.Language));
         RegisterAccelerator(VirtualKey.Number0, controlShift, () => SetGroupingModeFromAcceleratorAsync(GraphGroupingMode.Status));
 
-        RegisterAccelerator(VirtualKey.R, controlShift, () => RunCanvasNodeCommand(DiffCanvas.RevealSelectedNode, "Select a node before revealing it"));
-        RegisterAccelerator(VirtualKey.B, controlShift, () => RunCanvasNodeCommand(DiffCanvas.OpenSelectedNodeBlameTab, "Select a node before opening blame"));
-        RegisterAccelerator(VirtualKey.N, controlShift, () => RunCanvasNodeCommand(DiffCanvas.FocusSelectedNode, "Select a node before focusing it"));
-        RegisterAccelerator(VirtualKey.P, controlAlt, () => RunCanvasNodeCommand(DiffCanvas.ToggleSelectedNodePin, "Select a node before pinning it"));
-        RegisterAccelerator(VirtualKey.Add, control, () => RunCanvasNodeCommand(() => DiffCanvas.AdjustSelectedNodeFontSize(DiffNodeFontSizeAction.Increase), "Select a node before changing font size"));
-        RegisterAccelerator(VirtualKey.Subtract, control, () => RunCanvasNodeCommand(() => DiffCanvas.AdjustSelectedNodeFontSize(DiffNodeFontSizeAction.Decrease), "Select a node before changing font size"));
+        RegisterAccelerator(VirtualKey.R, controlShift, () => RunCanvasNodeCommand(canvas => canvas.RevealSelectedNode(), "Select a node before revealing it"));
+        RegisterAccelerator(VirtualKey.B, controlShift, () => RunCanvasNodeCommand(canvas => canvas.OpenSelectedNodeBlameTab(), "Select a node before opening blame"));
+        RegisterAccelerator(VirtualKey.N, controlShift, () => RunCanvasNodeCommand(canvas => canvas.FocusSelectedNode(), "Select a node before focusing it"));
+        RegisterAccelerator(VirtualKey.P, controlAlt, () => RunCanvasNodeCommand(canvas => canvas.ToggleSelectedNodePin(), "Select a node before pinning it"));
+        RegisterAccelerator(VirtualKey.Add, control, () => RunCanvasNodeCommand(canvas => canvas.AdjustSelectedNodeFontSize(DiffNodeFontSizeAction.Increase), "Select a node before changing font size"));
+        RegisterAccelerator(VirtualKey.Subtract, control, () => RunCanvasNodeCommand(canvas => canvas.AdjustSelectedNodeFontSize(DiffNodeFontSizeAction.Decrease), "Select a node before changing font size"));
     }
 
     private void RegisterAccelerator(
@@ -319,6 +321,33 @@ public sealed partial class MainPage : Page
             }
 
             var descendant = FindDescendant<T>(child);
+            if (descendant is not null)
+            {
+                return descendant;
+            }
+        }
+
+        return null;
+    }
+
+    private static T? FindVisibleDescendant<T>(DependencyObject root)
+        where T : FrameworkElement
+    {
+        var childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < childCount; index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is FrameworkElement { Visibility: not Visibility.Visible })
+            {
+                continue;
+            }
+
+            if (child is T match)
+            {
+                return match;
+            }
+
+            var descendant = FindVisibleDescendant<T>(child);
             if (descendant is not null)
             {
                 return descendant;
@@ -640,11 +669,149 @@ public sealed partial class MainPage : Page
         };
     }
 
-    private async Task RelayoutAndFitAsync()
+    private async Task RelayoutAndFitActiveWorkspaceAsync()
     {
-        await ViewModel.RelayoutAsync(DiffCanvas.Scene);
-        DiffCanvas.Scene = ViewModel.Scene;
-        DiffCanvas.FitToScene();
+        await ApplyLayoutModeToActiveWorkspaceAsync(layoutMode: null, fitAfterLayout: true);
+    }
+
+    private DiffCanvasControl? GetActiveWorkspaceCanvas()
+    {
+        if (ViewModel.SelectedWorkspaceTab?.Kind == ViewModels.WorkspaceTabKind.Graph)
+        {
+            return DiffCanvas;
+        }
+
+        return FindVisibleDescendant<DiffCanvasControl>(WorkspaceTabContentHost);
+    }
+
+    private void FitActiveWorkspaceCanvas()
+    {
+        if (GetActiveWorkspaceCanvas() is { } canvas)
+        {
+            canvas.FitToScene();
+            return;
+        }
+
+        ViewModel.ReportInteractionError("No active canvas is available to fit");
+    }
+
+    private async Task ApplyLayoutModeToActiveWorkspaceAsync(GraphLayoutMode? layoutMode, bool fitAfterLayout)
+    {
+        var mode = layoutMode ?? ViewModel.SelectedLayoutModeOption?.Mode ?? GraphLayoutMode.Layered;
+        var activeTab = ViewModel.SelectedWorkspaceTab;
+        if (activeTab?.Kind == ViewModels.WorkspaceTabKind.Graph)
+        {
+            if (layoutMode is null)
+            {
+                await ViewModel.RelayoutAsync(DiffCanvas.Scene);
+            }
+            else
+            {
+                await ViewModel.SetLayoutModeAsync(mode, DiffCanvas.Scene);
+            }
+
+            DiffCanvas.Scene = ViewModel.Scene;
+            if (fitAfterLayout)
+            {
+                DiffCanvas.FitToScene();
+            }
+
+            return;
+        }
+
+        if (activeTab?.SymbolGraph is { } symbolGraph)
+        {
+            if (layoutMode is null)
+            {
+                symbolGraph.Relayout();
+            }
+            else
+            {
+                symbolGraph.SetLayoutMode(mode);
+            }
+
+            if (GetActiveWorkspaceCanvas() is { } symbolCanvas)
+            {
+                symbolCanvas.Scene = symbolGraph.Scene;
+                if (fitAfterLayout)
+                {
+                    symbolCanvas.FitToScene();
+                }
+            }
+
+            return;
+        }
+
+        if (GetActiveWorkspaceCanvas() is not { } canvas)
+        {
+            ViewModel.ReportInteractionError("No active canvas is available to lay out");
+            return;
+        }
+
+        if (canvas.Scene is null || canvas.Scene.Nodes.Count == 0)
+        {
+            ViewModel.ReportInteractionError("The active canvas has no nodes to lay out");
+            return;
+        }
+
+        await RelayoutCanvasSceneAsync(canvas, mode);
+        if (fitAfterLayout)
+        {
+            canvas.FitToScene();
+        }
+    }
+
+    private async Task ApplyGroupingModeToActiveWorkspaceAsync(GraphGroupingMode groupingMode)
+    {
+        var activeTab = ViewModel.SelectedWorkspaceTab;
+        if (activeTab?.Kind == ViewModels.WorkspaceTabKind.Graph)
+        {
+            await ViewModel.SetGroupingModeAsync(groupingMode);
+            DiffCanvas.Scene = ViewModel.Scene;
+            return;
+        }
+
+        if (activeTab?.SymbolGraph is { } symbolGraph)
+        {
+            symbolGraph.SetGroupingMode(groupingMode);
+            if (GetActiveWorkspaceCanvas() is { } symbolCanvas)
+            {
+                symbolCanvas.Scene = symbolGraph.Scene;
+            }
+
+            return;
+        }
+
+        ViewModel.ReportInteractionError("Grouping is only available for diff and symbol graph workspaces");
+    }
+
+    private static async Task RelayoutCanvasSceneAsync(DiffCanvasControl canvas, GraphLayoutMode layoutMode)
+    {
+        if (canvas.Scene is not { } scene)
+        {
+            return;
+        }
+
+        var documents = scene.Nodes
+            .Select(node => node.DiffDocument)
+            .ToImmutableArray();
+        if (documents.IsDefaultOrEmpty)
+        {
+            return;
+        }
+
+        var layoutEngine = new MsaglGraphLayoutEngine();
+        var layout = await layoutEngine.LayoutAsync(
+            new GraphLayoutRequest(
+                documents,
+                SemanticGraph.Empty,
+                new Size2(620, 420),
+                scene.GetCurrentLayout(),
+                ImmutableHashSet<DiffDocumentId>.Empty,
+                layoutMode),
+            CancellationToken.None);
+        scene.ApplyLayout(layout);
+        canvas.InvalidateScene();
     }
 
     private Task SelectRailTabAsync(int selectedIndex)
@@ -687,20 +854,24 @@ public sealed partial class MainPage : Page
 
     private async Task SetLayoutModeFromAcceleratorAsync(GraphLayoutMode layoutMode)
     {
-        await ViewModel.SetLayoutModeAsync(layoutMode, DiffCanvas.Scene);
-        DiffCanvas.Scene = ViewModel.Scene;
-        DiffCanvas.FitToScene();
+        await ApplyLayoutModeToActiveWorkspaceAsync(layoutMode, fitAfterLayout: true);
     }
 
     private async Task SetGroupingModeFromAcceleratorAsync(GraphGroupingMode groupingMode)
     {
-        await ViewModel.SetGroupingModeAsync(groupingMode);
-        DiffCanvas.Scene = ViewModel.Scene;
+        await ApplyGroupingModeToActiveWorkspaceAsync(groupingMode);
     }
 
-    private Task RunCanvasNodeCommand(Func<bool> command, string missingSelectionMessage)
+    private Task RunCanvasNodeCommand(Func<DiffCanvasControl, bool> command, string missingSelectionMessage)
     {
-        if (!command())
+        var canvas = GetActiveWorkspaceCanvas();
+        if (canvas is null)
+        {
+            ViewModel.ReportInteractionError("No active canvas is available for this command");
+            return Task.CompletedTask;
+        }
+
+        if (!command(canvas))
         {
             ViewModel.ReportInteractionError(missingSelectionMessage);
         }
@@ -710,7 +881,7 @@ public sealed partial class MainPage : Page
 
     private void OnFitClicked(object sender, RoutedEventArgs args)
     {
-        DiffCanvas.FitToScene();
+        FitActiveWorkspaceCanvas();
     }
 
     private void OnReloadClicked(object sender, RoutedEventArgs args)
@@ -720,12 +891,12 @@ public sealed partial class MainPage : Page
 
     private void OnPreviousChangeClicked(object sender, RoutedEventArgs args)
     {
-        FocusCanvas(ViewModel.FocusPreviousChange());
+        FocusActiveCanvas(ViewModel.FocusPreviousChange());
     }
 
     private void OnNextChangeClicked(object sender, RoutedEventArgs args)
     {
-        FocusCanvas(ViewModel.FocusNextChange());
+        FocusActiveCanvas(ViewModel.FocusNextChange());
     }
 
     private async void OnOpenRepositoryClicked(object sender, RoutedEventArgs args)
@@ -735,7 +906,7 @@ public sealed partial class MainPage : Page
 
     private async void OnLayoutClicked(object sender, RoutedEventArgs args)
     {
-        await RelayoutAndFitAsync();
+        await RelayoutAndFitActiveWorkspaceAsync();
     }
 
     private async void OnExportWorkspaceGraphClicked(object sender, RoutedEventArgs args)
@@ -898,9 +1069,7 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        await ViewModel.SetLayoutModeAsync(option.Mode, DiffCanvas.Scene);
-        DiffCanvas.Scene = ViewModel.Scene;
-        DiffCanvas.FitToScene();
+        await ApplyLayoutModeToActiveWorkspaceAsync(option.Mode, fitAfterLayout: true);
     }
 
     private async void OnGroupingModeSelectionChanged(object sender, SelectionChangedEventArgs args)
@@ -910,8 +1079,7 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        await ViewModel.SetGroupingModeAsync(option.Mode);
-        DiffCanvas.Scene = ViewModel.Scene;
+        await ApplyGroupingModeToActiveWorkspaceAsync(option.Mode);
     }
 
     private async void OnReviewRequestStateSelectionChanged(object sender, SelectionChangedEventArgs args)
@@ -1410,14 +1578,24 @@ public sealed partial class MainPage : Page
             openBlameItem.Click += OnExplorerNodeOpenBlameTabClicked;
             menu.Items.Add(openBlameItem);
 
-            var addToEditorCanvasItem = new MenuFlyoutItem
-            {
-                Text = "Add to editor canvas",
-                Tag = item
-            };
-            addToEditorCanvasItem.Click += OnExplorerNodeAddToEditorCanvasClicked;
-            menu.Items.Add(addToEditorCanvasItem);
         }
+
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var addToEditorCanvasItem = new MenuFlyoutItem
+        {
+            Text = item.IsFile ? "Add to editor canvas" : "Add folder recursively to editor canvas",
+            Tag = item
+        };
+        addToEditorCanvasItem.Click += OnExplorerNodeAddToEditorCanvasClicked;
+        menu.Items.Add(addToEditorCanvasItem);
+
+        var addToNewEditorCanvasItem = new MenuFlyoutItem
+        {
+            Text = item.IsFile ? "Add to new editor canvas" : "Add folder recursively to new editor canvas",
+            Tag = item
+        };
+        addToNewEditorCanvasItem.Click += OnExplorerNodeAddToNewEditorCanvasClicked;
+        menu.Items.Add(addToNewEditorCanvasItem);
 
         var openSymbolsItem = new MenuFlyoutItem
         {
@@ -1433,7 +1611,8 @@ public sealed partial class MainPage : Page
 
     private void OnExplorerTreeNodeDragStarting(UIElement sender, DragStartingEventArgs args)
     {
-        if (sender is not FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel { IsFile: true } item })
+        if (sender is not FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item } ||
+            string.IsNullOrWhiteSpace(item.Path))
         {
             return;
         }
@@ -1442,7 +1621,7 @@ public sealed partial class MainPage : Page
         args.Data.RequestedOperation = DataPackageOperation.Copy;
         args.Data.Properties.Title = Path.GetFileName(item.Path);
         args.Data.Properties.Description = item.Path;
-        args.Data.SetText(EditorCanvasDragPathPrefix + item.Path);
+        args.Data.SetText((item.IsFile ? EditorCanvasDragPathPrefix : EditorCanvasDragFolderPathPrefix) + item.Path);
     }
 
     private async void OnExplorerNodeOpenDiffTabClicked(object sender, RoutedEventArgs args)
@@ -1465,7 +1644,15 @@ public sealed partial class MainPage : Page
     {
         if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
         {
-            await ViewModel.AddFileToEditorCanvasAsync(item);
+            await ViewModel.AddExplorerNodeToEditorCanvasAsync(item);
+        }
+    }
+
+    private async void OnExplorerNodeAddToNewEditorCanvasClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
+        {
+            await ViewModel.AddExplorerNodeToNewEditorCanvasAsync(item);
         }
     }
 
@@ -1648,7 +1835,7 @@ public sealed partial class MainPage : Page
             args.DataView.Contains(StandardDataFormats.Text))
         {
             args.AcceptedOperation = DataPackageOperation.Copy;
-            args.DragUIOverride.Caption = "Add files to editor canvas";
+            args.DragUIOverride.Caption = "Add files or folders to editor canvas";
             args.DragUIOverride.IsCaptionVisible = true;
             args.Handled = true;
         }
@@ -1667,23 +1854,24 @@ public sealed partial class MainPage : Page
         try
         {
             var paths = new List<string>();
+            var shouldAutoLayoutByFolder = false;
             if (args.DataView.Contains(StandardDataFormats.StorageItems))
             {
                 var items = await args.DataView.GetStorageItemsAsync();
-                paths.AddRange(items
-                    .OfType<StorageFile>()
-                    .Select(file => file.Path)
-                    .Where(path => !string.IsNullOrWhiteSpace(path)));
+                foreach (var item in items)
+                {
+                    shouldAutoLayoutByFolder |= await AddEditorCanvasStorageItemPathsAsync(item, paths);
+                }
             }
 
             if (args.DataView.Contains(StandardDataFormats.Text))
             {
-                paths.AddRange(ParseEditorCanvasDragPaths(await args.DataView.GetTextAsync()));
+                shouldAutoLayoutByFolder |= AddEditorCanvasDragPaths(await args.DataView.GetTextAsync(), paths);
             }
 
             if (paths.Count == 0)
             {
-                ViewModel.ReportInteractionError("Drop one or more files onto the editor canvas");
+                ViewModel.ReportInteractionError("Drop one or more files or folders onto the editor canvas");
                 return;
             }
 
@@ -1697,7 +1885,12 @@ public sealed partial class MainPage : Page
                 dropPoint = scene.Camera.ScreenToWorld(new Point2(position.X, position.Y));
             }
 
-            await ViewModel.AddFilesToEditorCanvasAsync(paths, tab, dropPoint, CancellationToken.None);
+            await ViewModel.AddFilesToEditorCanvasAsync(
+                paths,
+                tab,
+                shouldAutoLayoutByFolder ? null : dropPoint,
+                CancellationToken.None,
+                autoLayoutByFolder: shouldAutoLayoutByFolder);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -1714,13 +1907,64 @@ public sealed partial class MainPage : Page
         ViewModel.RevealDocumentInExplorer(args.DocumentId);
     }
 
-    private static IEnumerable<string> ParseEditorCanvasDragPaths(string text)
+    private static async Task<bool> AddEditorCanvasStorageItemPathsAsync(IStorageItem item, List<string> paths)
     {
-        return text
-            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(line => line.StartsWith(EditorCanvasDragPathPrefix, StringComparison.Ordinal))
-            .Select(line => line[EditorCanvasDragPathPrefix.Length..])
-            .Where(path => !string.IsNullOrWhiteSpace(path));
+        switch (item)
+        {
+            case StorageFile file when !string.IsNullOrWhiteSpace(file.Path):
+                paths.Add(file.Path);
+                return false;
+
+            case StorageFolder folder:
+                if (!string.IsNullOrWhiteSpace(folder.Path))
+                {
+                    paths.Add(folder.Path);
+                }
+                else
+                {
+                    await AddEditorCanvasStorageFolderPathsAsync(folder, paths);
+                }
+
+                return true;
+        }
+
+        return false;
+    }
+
+    private static async Task AddEditorCanvasStorageFolderPathsAsync(StorageFolder folder, List<string> paths)
+    {
+        var children = await folder.GetItemsAsync();
+        foreach (var child in children)
+        {
+            await AddEditorCanvasStorageItemPathsAsync(child, paths);
+        }
+    }
+
+    private static bool AddEditorCanvasDragPaths(string text, List<string> paths)
+    {
+        var containsFolder = false;
+        foreach (var line in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (line.StartsWith(EditorCanvasDragFolderPathPrefix, StringComparison.Ordinal))
+            {
+                AddEditorCanvasDragPath(line[EditorCanvasDragFolderPathPrefix.Length..], paths);
+                containsFolder = true;
+            }
+            else if (line.StartsWith(EditorCanvasDragPathPrefix, StringComparison.Ordinal))
+            {
+                AddEditorCanvasDragPath(line[EditorCanvasDragPathPrefix.Length..], paths);
+            }
+        }
+
+        return containsFolder;
+    }
+
+    private static void AddEditorCanvasDragPath(string path, List<string> paths)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            paths.Add(path);
+        }
     }
 
     private void OnSemanticSelectionChanged(object sender, SelectionChangedEventArgs args)
@@ -1822,6 +2066,26 @@ public sealed partial class MainPage : Page
         if (focusRequest is not null && !DiffCanvas.FocusDocument(focusRequest.DocumentId, focusRequest.Line))
         {
             ViewModel.ReportInteractionError($"Could not focus {focusRequest.DocumentId}");
+        }
+    }
+
+    private void FocusActiveCanvas(ViewModels.FocusRequest? focusRequest)
+    {
+        if (focusRequest is null)
+        {
+            return;
+        }
+
+        var canvas = GetActiveWorkspaceCanvas();
+        if (canvas is null)
+        {
+            ViewModel.ReportInteractionError("No active canvas is available for navigation");
+            return;
+        }
+
+        if (!canvas.FocusDocument(focusRequest.DocumentId, focusRequest.Line))
+        {
+            ViewModel.ReportInteractionError($"Could not focus {focusRequest.DocumentId} in the active workspace");
         }
     }
 
