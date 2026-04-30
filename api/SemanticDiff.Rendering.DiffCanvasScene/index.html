@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html data-lunet-theme-mode="system" data-lunet-theme-storage-key="lunet-theme" data-lunet-css-prefix="lunet" lang="en" itemscope itemtype="http://schema.org/WebPage">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="lunet 1.0.10.0">
+    <script>(function(){const root=document.documentElement;const key=root.getAttribute("data-lunet-theme-storage-key")||"lunet-theme";const fallback=root.getAttribute("data-lunet-theme-mode")||"system";let stored=null;try{stored=localStorage.getItem(key);}catch(_){stored=null;}const mode=(stored==="light"||stored==="dark"||stored==="system")?stored:fallback;const prefersDark=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;const resolved=mode==="system"?(prefersDark?"dark":"light"):mode;root.setAttribute("data-lunet-theme-mode",mode);root.setAttribute("data-bs-theme",resolved);}());</script>
+    <link rel='icon' href='/SemanticDiff/favicon.ico' sizes='32x32'>
+    <title>DiffCanvasScene Class | SemanticDiff</title>
+    <link rel="stylesheet" href="/SemanticDiff/css/lite.css">
+    <script src="/SemanticDiff/js/lite-defer.js" defer></script>
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@wieslawsoltes">
+<meta name="twitter:title" content="DiffCanvasScene Class | SemanticDiff">
+<meta name="twitter:description" content="DiffCanvasScene Class Definition Namespace SemanticDiff.Rendering Assembly SemanticDiff.Rendering.dll Inherits Object View source Show inherited members (7) System.Object.Equals(System.Object?) System.Object.Equals(System.Object?, System.Object?) System.Object.GetHashCode() System.Object.GetType() System.Object.MemberwiseClone() System.Object.ReferenceEquals(System.Object?, System.Object?) System.Object.ToString() public sealed class DiffCanvasScene Filter members: Tip: use kind:method, kind:property, kind:ctor. Press Esc to clear. Constructors (1) DiffCanvasScene(IEnumerable&lt;DiffNode>, IEnumerable&lt;GraphEdge>, ImmutableArray&lt;GraphGroup>, ImmutableArray&lt;DiffAnnotation>, DiffAnnotationVisibilityState?)...">
+<meta name="twitter:image" content="https://wieslawsoltes.github.io/SemanticDiff/images/social.svg">
+<meta name="twitter:image:alt" content="DiffCanvasScene Class | SemanticDiff">
+<meta property="og:title" content="DiffCanvasScene Class | SemanticDiff">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://wieslawsoltes.github.io/SemanticDiff">
+<meta property="og:description" content="DiffCanvasScene Class Definition Namespace SemanticDiff.Rendering Assembly SemanticDiff.Rendering.dll Inherits Object View source Show inherited members (7) System.Object.Equals(System.Object?) System.Object.Equals(System.Object?, System.Object?) System.Object.GetHashCode() System.Object.GetType() System.Object.MemberwiseClone() System.Object.ReferenceEquals(System.Object?, System.Object?) System.Object.ToString() public sealed class DiffCanvasScene Filter members: Tip: use kind:method, kind:property, kind:ctor. Press Esc to clear. Constructors (1) DiffCanvasScene(IEnumerable&lt;DiffNode>, IEnumerable&lt;GraphEdge>, ImmutableArray&lt;GraphGroup>, ImmutableArray&lt;DiffAnnotation>, DiffAnnotationVisibilityState?)...">
+<meta property="og:image" content="https://wieslawsoltes.github.io/SemanticDiff/images/social.svg">
+<meta property="og:image:alt" content="DiffCanvasScene Class | SemanticDiff">
+  </head>
+  <body>
+
+    <div id="lunet" class="container">
+      <nav class="navbar navbar-expand-md sticky-top">
+        <a class="navbar-brand" href="/SemanticDiff/">
+          <img class="lunet-logo" src="/SemanticDiff/images/logo.svg" alt="SemanticDiff" width="96" height="96">
+          <span class="visually-hidden">Home</span>
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse"
+          data-bs-target="#navbarSupportedContent"
+          aria-controls="navbarSupportedContent"
+          aria-expanded="false"
+          aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div id="navbarSupportedContent" class="collapse navbar-collapse justify-content-between">
+<ol id='nav-id-home-0' class='navbar-nav nav-level0 show '>
+  <li id='nav-item-home-1' class='nav-item '>
+    <span class='nav-item-row'><a href='/SemanticDiff/' class='nav-link  '><i class='bi bi-house-door' aria-hidden='true'></i> Home</a></span>  </li>
+  <li id='nav-item-home-2' class='nav-item '>
+    <span class='nav-item-row'><a href='/SemanticDiff/articles/' class='nav-link  '><i class='bi bi-book' aria-hidden='true'></i> Docs</a></span>  </li>
+  <li id='nav-item-home-3' class='nav-item  active'>
+    <span class='nav-item-row'><a href='/SemanticDiff/api/' class='nav-link  '><i class='bi bi-braces' aria-hidden='true'></i> API</a></span>  </li>
+</ol>
+          <ol class="navbar-nav flex-grow-1" style="padding-right: 0.5rem;">
+            <li class="nav-item w-100">
+                <div class="lunet-search dropdown w-100">
+                  <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input id="search-input" type="search" class="form-control" placeholder="Search... (Alt+s)" aria-label="Search" aria-controls="search-results" data-bs-toggle="dropdown" data-bs-auto-close="outside" data-search-empty-message="Enter words to search..." data-search-no-results-message="No results found.">
+                    <ul id="search-results" class="dropdown-menu w-100 p-0" style="max-height: 50vh;" role="listbox" aria-labelledby="search-input"></ul>
+                  </div>
+                </div>
+            </li>
+          </ol>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0 navbar-right">
+            <div class="dropdown">
+              <button
+                id="theme-mode-toggle"
+                class="btn btn-outline-secondary btn-sm lunet-theme-toggle dropdown-toggle"
+                type="button"
+                data-bs-toggle="dropdown"
+                aria-expanded="false"
+                aria-label="Theme">
+                <i class="bi bi-circle-half" data-lunet-theme-toggle-icon aria-hidden="true"></i>
+                <span
+                  data-lunet-theme-toggle-label
+                  data-theme-system-label="System"
+                  data-theme-light-label="Light"
+                  data-theme-dark-label="Dark">Theme</span>
+              </button>
+              <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="theme-mode-toggle">
+                <li><button class="dropdown-item" type="button" data-lunet-theme-choice="system"><i class="bi bi-circle-half me-2"></i>System</button></li>
+                <li><button class="dropdown-item" type="button" data-lunet-theme-choice="light"><i class="bi bi-sun-fill me-2"></i>Light</button></li>
+                <li><button class="dropdown-item" type="button" data-lunet-theme-choice="dark"><i class="bi bi-moon-stars-fill me-2"></i>Dark</button></li>
+              </ul>
+            </div>
+<ol id='nav-id-home2-0' class='navbar-nav nav-level0 show flex-shrink-0'>
+  <li id='nav-item-home2-1' class='nav-item '>
+    <span class='nav-item-row'><a href='https://github.com/wieslawsoltes/SemanticDiff' class='nav-link  btn btn-info'><i class="bi bi-github"></i> GitHub</a></span>  </li>
+</ol>
+          </div>
+        </div>
+      </nav>
+      <div class="lunet lunet-api">
+        <section data-prismjs-copy="" data-prismjs-copy-success="" data-prismjs-copy-timeout="1200" data-copy-tooltip="Copy to Clipboard." data-copy-tooltip-success="Copied!" data-copy-tooltip-error="Failed to copy!">
+
+<div class="container-xxl">
+  <div class="row">
+      <!-- Left sidebar - responsive offcanvas (offcanvas on mobile, visible sidebar on md+) -->
+      <nav id="docs-sidebar-menu" class="col-md-3 col-lg-3 col-xl-3 col-xxl-3 offcanvas-md offcanvas-start sticky-md-top menu-sidebar align-self-start order-1 order-md-0" tabindex="-1" aria-labelledby="docs-sidebar-menu-label" aria-expanded="true">
+        <div class="offcanvas-header">
+          <h5 class="offcanvas-title" id="docs-sidebar-menu-label">Menu</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="offcanvas" data-bs-target="#docs-sidebar-menu" aria-label="Close"></button>
+        </div>
+        <div class="offcanvas-body">
+          <div class='lunet-menu-async' data-lunet-menu-partial='/SemanticDiff/partials/menus/menu-menu.031e3947498add52aa9e174d79d38596.html' data-lunet-menu-open='menu-id-menu-0,menu-id-menu-1268,menu-id-menu-1235' data-lunet-menu-active='menu-item-menu-1268,menu-item-menu-1235,menu-item-menu-0'><div class='menu-loading text-body-secondary small'>Loading menu…</div></div>
+        </div>
+      </nav>
+      <!-- Right sidebar (TOC) - collapsible on mobile, visible sidebar on xxl+ -->
+      <aside id="docs-sidebar-toc" class="col-12 col-xxl-2 sticky-xxl-top menu-sidebar align-self-start order-0 order-xxl-2 collapse d-xxl-block" aria-expanded="true">
+        <h3 class="toc-title">On this page</h3>
+        <nav class="js-toc"></nav>
+      </aside>
+      <!-- Main content column -->
+      <div class="col-12 col-md-9 col-lg-9 col-xl-9 col-xxl-7 order-2 order-md-1 js-toc-content">
+        <ol class='breadcrumb'>
+          <li class='breadcrumb-item '>
+            <a href='/SemanticDiff/' class='breadcrumb-link  '><i class='bi bi-house-door' aria-hidden='true'></i> Home</a>  </li>
+          <li class='breadcrumb-item '>
+            <a href='/SemanticDiff/api/' class='breadcrumb-link  '><i class='bi bi-braces' aria-hidden='true'></i> API</a>  </li>
+          <li class='breadcrumb-item '>
+            <a href='/SemanticDiff/api/SemanticDiff.Rendering/' class='breadcrumb-link  '><i class='bi bi-diagram-3' aria-hidden='true'></i> SemanticDiff.Rendering</a>  </li>
+          <li class='breadcrumb-item  active'>
+            <i class='bi bi-box' aria-hidden='true'></i> DiffCanvasScene  </li>
+        </ol>
+
+        <p id="lunet-results"></p>
+        <!-- Toggle buttons visible only on small screens -->
+        <div class="d-md-none mb-3">
+          <button
+            class="btn btn-outline-secondary btn-sm me-2"
+            type="button"
+            data-bs-toggle="offcanvas"
+            data-bs-target="#docs-sidebar-menu"
+            aria-controls="docs-sidebar-menu"
+            aria-label="Toggle docs menu">
+            Menu
+          </button>
+          <button
+            class="btn btn-outline-secondary btn-sm d-xxl-none"
+            type="button"
+            data-bs-toggle="collapse"
+            data-bs-target="#docs-sidebar-toc"
+            aria-controls="docs-sidebar-toc"
+            aria-expanded="false"
+            aria-label="Toggle Table Of Contents">
+            On this page
+          </button>
+        </div>
+<!-- lunet:summarize -->
+<div class="api-dotnet">
+<h1 id="diffcanvasscene-class">DiffCanvasScene Class</h1>
+<h2 id="definition" class="heading-anchor-hidden">Definition</h2>
+<div class="api-dotnet-definition">
+<div class="api-dotnet-definition-header">
+<div class="api-dotnet-definition-meta">
+<div><span class="api-dotnet-label">Namespace</span> <a href="/SemanticDiff/api/SemanticDiff.Rendering/">SemanticDiff.Rendering</a></div>
+<div><span class="api-dotnet-label">Assembly</span> SemanticDiff.Rendering.dll</div>
+<div><span class="api-dotnet-label">Inherits</span> <span class="api-dotnet-inline-list"><a href="https://docs.microsoft.com/en-us/dotnet/api/System.Object">Object</a></span></div>
+</div>
+<div class="api-dotnet-definition-actions">
+<a class="api-dotnet-action" href="https://github.com/wieslawsoltes/SemanticDiff/blob/main/src/SemanticDiff.Rendering/DiffCanvasScene.cs#L1219" target="_blank" rel="noopener">View source</a>
+</div>
+</div>
+<details class="api-dotnet-inherited">
+<summary>Show inherited members (7)</summary>
+<ul>
+<li><a href="https://docs.microsoft.com/en-us/dotnet/api/System.Object.Equals-System.Object">System.Object.Equals(System.Object?)</a></li>
+<li><a href="https://docs.microsoft.com/en-us/dotnet/api/System.Object.Equals-System.Object-System.Object">System.Object.Equals(System.Object?, System.Object?)</a></li>
+<li><a href="https://docs.microsoft.com/en-us/dotnet/api/System.Object.GetHashCode">System.Object.GetHashCode()</a></li>
+<li><a href="https://docs.microsoft.com/en-us/dotnet/api/System.Object.GetType">System.Object.GetType()</a></li>
+<li><a href="https://docs.microsoft.com/en-us/dotnet/api/System.Object.MemberwiseClone">System.Object.MemberwiseClone()</a></li>
+<li><a href="https://docs.microsoft.com/en-us/dotnet/api/System.Object.ReferenceEquals-System.Object-System.Object">System.Object.ReferenceEquals(System.Object?, System.Object?)</a></li>
+<li><a href="https://docs.microsoft.com/en-us/dotnet/api/System.Object.ToString">System.Object.ToString()</a></li>
+</ul>
+</details>
+</div>
+<pre><code class="language-csharp">public sealed class DiffCanvasScene
+</code></pre>
+<div class="api-dotnet-member-filter" data-api-dotnet-filter>
+<div class="api-dotnet-member-filter-row">
+<label class="api-dotnet-member-filter-label" for="api-dotnet-member-filter-semanticdiff-rendering-diffcanvasscene">Filter members:</label>
+<input id="api-dotnet-member-filter-semanticdiff-rendering-diffcanvasscene" class="form-control form-control-sm api-dotnet-member-filter-input" type="search" placeholder="name, kind, summary (e.g. kind:method)" autocomplete="off" spellcheck="false" />
+<div class="api-dotnet-member-filter-status" aria-live="polite"></div>
+</div>
+<div class="form-text api-dotnet-member-filter-help">Tip: use <code>kind:method</code>, <code>kind:property</code>, <code>kind:ctor</code>. Press <kbd>Esc</kbd> to clear.</div>
+</div>
+<h2 id="constructors">Constructors <span class="api-dotnet-count">(1)</span></h2>
+<div class="api-dotnet-members list-group list-group-flush" data-api-dotnet-members="constructors">
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Constructor"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.-ctor-System.Collections.Generic.IEnumerable-6c4ae870d117/"><i class="bi bi-hammer api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">DiffCanvasScene(IEnumerable&lt;DiffNode&gt;, IEnumerable&lt;GraphEdge&gt;, ImmutableArray&lt;GraphGroup&gt;, ImmutableArray&lt;DiffAnnotation&gt;, DiffAnnotationVisibilityState?)</code></a></div>
+</div>
+<h2 id="fields">Fields <span class="api-dotnet-count">(1)</span></h2>
+<div class="api-dotnet-members list-group list-group-flush" data-api-dotnet-members="fields">
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Field"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ResizeHandleScreenSize/"><i class="bi bi-hash api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ResizeHandleScreenSize</code></a></div>
+</div>
+<h2 id="properties">Properties <span class="api-dotnet-count">(14)</span></h2>
+<div class="api-dotnet-members list-group list-group-flush" data-api-dotnet-members="properties">
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.Annotations/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">Annotations</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.AnnotationVisibility/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">AnnotationVisibility</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.Camera/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">Camera</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.Edges/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">Edges</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.EnableNodeEditing/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">EnableNodeEditing</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.GeometryVersion/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">GeometryVersion</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.GraphBounds/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">GraphBounds</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.Groups/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">Groups</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.HasFocusedEditor/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">HasFocusedEditor</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.HoveredAnnotationId/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">HoveredAnnotationId</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.Nodes/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">Nodes</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SelectedNodeCount/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SelectedNodeCount</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SelectedNodes/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SelectedNodes</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Property"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ShowFullFileNodes/"><i class="bi bi-sliders api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ShowFullFileNodes</code></a></div>
+</div>
+<h2 id="methods">Methods <span class="api-dotnet-count">(71)</span></h2>
+<div class="api-dotnet-members list-group list-group-flush" data-api-dotnet-members="methods">
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.AddNodeToSelection-SemanticDiff.Rendering.DiffNode/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">AddNodeToSelection(DiffNode)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.AdjustNodeFontSize-SemanticDiff.Rendering.Di-fcfc6c2e1405/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">AdjustNodeFontSize(DiffNode, DiffNodeFontSizeAction)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ApplyLayout-SemanticDiff.Core.GraphLayoutResult/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ApplyLayout(GraphLayoutResult)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ApplyViewState-SemanticDiff.Rendering.DiffCa-89a599585038/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ApplyViewState(DiffCanvasSceneViewState)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.BackspaceInFocusedEditor/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">BackspaceInFocusedEditor()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.BackspaceWordInFocusedEditor/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">BackspaceWordInFocusedEditor()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.CaptureViewState/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">CaptureViewState()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ClearNodeEditingOverride-System.String/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ClearNodeEditingOverride(String)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ClearNodeFullFileViewOverride-System.String/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ClearNodeFullFileViewOverride(String)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ClearSelection/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ClearSelection()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ClearSelectionAndEditorFocus/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ClearSelectionAndEditorFocus()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.DeleteFocusedEditorLine/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">DeleteFocusedEditorLine()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.DeleteInFocusedEditor/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">DeleteInFocusedEditor()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.DeleteWordInFocusedEditor/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">DeleteWordInFocusedEditor()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.DragScrollbarThumb-SemanticDiff.Rendering.Di-b997fd2910f1/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">DragScrollbarThumb(DiffNode, Double, Double)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.DuplicateFocusedEditorLine/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">DuplicateFocusedEditorLine()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.FindGroupForNode-SemanticDiff.Rendering.DiffNode/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">FindGroupForNode(DiffNode)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.FitToGraph-SemanticDiff.Core.Size2/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">FitToGraph(Size2)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.FitToNode-SemanticDiff.Rendering.DiffNode-Se-9c988f042a15/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">FitToNode(DiffNode, Size2)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.FromDocuments-System.Collections.Immutable.I-9f7824358ad1/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">FromDocuments(ImmutableArray&lt;DiffDocumentSnapshot&gt;, SemanticGraph?, GraphLayoutResult?, EdgeProjectionOptions?, ImmutableArray&lt;DiffAnnotation&gt;, DiffAnnotationVisibilityState?, GraphGroupingMode)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.GetCurrentLayout/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">GetCurrentLayout()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.GetPinnedDocumentIds/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">GetPinnedDocumentIds()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.GetViewportScrollbars-SemanticDiff.Core.Size2/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">GetViewportScrollbars(Size2)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.GetViewportWorldBounds-SemanticDiff.Core.Size2/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">GetViewportWorldBounds(Size2)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.HandleWheel-SemanticDiff.Core.Point2-System-d0cb48f99006/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">HandleWheel(Point2, Double, Boolean, Boolean)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.HandleWheel-SemanticDiff.Core.Point2-System-477bdc517246/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">HandleWheel(Point2, Double, Boolean)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.HitTestNode-SemanticDiff.Core.Point2/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">HitTestNode(Point2)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.IndentFocusedEditorLine/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">IndentFocusedEditorLine()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.InsertNewLineInFocusedEditor/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">InsertNewLineInFocusedEditor()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.InsertTextInFocusedEditor-System.String/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">InsertTextInFocusedEditor(String)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.InvertNodeSelection/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">InvertNodeSelection()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.MoveFocusedEditorCaret-System.Int32-System.Int32/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">MoveFocusedEditorCaret(Int32, Int32)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.MoveFocusedEditorCaretToDocumentEnd/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">MoveFocusedEditorCaretToDocumentEnd()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.MoveFocusedEditorCaretToDocumentStart/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">MoveFocusedEditorCaretToDocumentStart()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.MoveFocusedEditorCaretToSmartLineStart/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">MoveFocusedEditorCaretToSmartLineStart()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.MoveFocusedEditorCaretWord-System.Int32/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">MoveFocusedEditorCaretWord(Int32)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.MoveGroup-SemanticDiff.Rendering.GraphGroup-88fe33f9de6a/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">MoveGroup(GraphGroup, Double, Double)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.MoveNode-SemanticDiff.Rendering.DiffNode-Sys-1803c37fb7dc/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">MoveNode(DiffNode, Double, Double)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.MoveNodeTo-SemanticDiff.Rendering.DiffNode-S-4e7843d25f4e/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">MoveNodeTo(DiffNode, Double, Double)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.MoveSelectedNodes-System.Double-System.Double/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">MoveSelectedNodes(Double, Double)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.OutdentFocusedEditorLine/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">OutdentFocusedEditorLine()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.Pan-System.Double-System.Double/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">Pan(Double, Double)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ResizeNode-SemanticDiff.Rendering.DiffNode-S-182e16db6024/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ResizeNode(DiffNode, DiffNodeResizeHandle, Double, Double)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ScreenStableWorldLength-System.Double-System.Double/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ScreenStableWorldLength(Double, Double)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SelectAllNodes/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SelectAllNodes()</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SelectConnectedNodes-SemanticDiff.Rendering-ce7980c9154b/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SelectConnectedNodes(DiffNode, DiffNodeSelectionMode, DiffNodeSelectionScope)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SelectGroupNodes-SemanticDiff.Rendering.Grap-0b20ff6e1345/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SelectGroupNodes(GraphGroup, DiffNodeSelectionMode)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SelectNode-SemanticDiff.Rendering.DiffNode/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SelectNode(DiffNode?)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SelectNodes-System.Collections.Generic.IEnum-90d21c1937b4/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SelectNodes(IEnumerable&lt;DiffNode&gt;)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SelectNodesInRect-SemanticDiff.Core.Rect2-Se-6a6f63ff10b8/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SelectNodesInRect(Rect2, DiffNodeSelectionMode)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SetFocusedEditorCaretColumn-System.Int32/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SetFocusedEditorCaretColumn(Int32)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SetFullFileDocuments-System.Collections.Gene-b08234226635/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SetFullFileDocuments(IEnumerable&lt;DiffNodeFullFileContent&gt;)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SetHoveredAnnotation-SemanticDiff.Core.DiffAnnotation/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SetHoveredAnnotation(DiffAnnotation?)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SetNodeEditingEnabled-System.Boolean/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SetNodeEditingEnabled(Boolean)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SetShowFullFileNodes-System.Boolean/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SetShowFullFileNodes(Boolean)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.SetViewportWorldOrigin-System.Nullable-Syste-a69d21df41cb/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">SetViewportWorldOrigin(Nullable&lt;Double&gt;, Nullable&lt;Double&gt;)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ToggleFoldAt-SemanticDiff.Core.Point2/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ToggleFoldAt(Point2)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ToggleNodeEditing-System.String/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ToggleNodeEditing(String)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ToggleNodeFullFileView-System.String/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ToggleNodeFullFileView(String)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ToggleNodeSelection-SemanticDiff.Rendering.DiffNode/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ToggleNodeSelection(DiffNode)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.TogglePinned-SemanticDiff.Rendering.DiffNode/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">TogglePinned(DiffNode)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.TryFocusEditorAt-SemanticDiff.Core.Point2/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">TryFocusEditorAt(Point2)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.TryHitTestAnnotation-SemanticDiff.Core.Point-9afda1bf678c/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">TryHitTestAnnotation(Point2, out DiffAnnotationHit?)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.TryHitTestFontSizeButton-SemanticDiff.Core.P-ad8fd62452de/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">TryHitTestFontSizeButton(Point2, out DiffNode?, out DiffNodeFontSizeAction)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.TryHitTestGroup-SemanticDiff.Core.Point2-Sem-59b133a93f21/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">TryHitTestGroup(Point2, out GraphGroup?)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.TryHitTestResizeHandle-SemanticDiff.Core.Poi-1f35f60df7ad/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">TryHitTestResizeHandle(Point2, out DiffNode?, out DiffNodeResizeHandle)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.TryHitTestScrollbarThumb-SemanticDiff.Core.P-97559626d6fc/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">TryHitTestScrollbarThumb(Point2, out DiffNode?, out Double)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.TryHitTestTitleBar-SemanticDiff.Core.Point2-b4ffd1451cfc/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">TryHitTestTitleBar(Point2, out DiffNode?)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.TryScrollNodeAt-SemanticDiff.Core.Point2-System.Double/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">TryScrollNodeAt(Point2, Double)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.WithAnnotations-System.Collections.Immutable-b72e630e6d03/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">WithAnnotations(ImmutableArray&lt;DiffAnnotation&gt;, DiffAnnotationVisibilityState)</code></a></div>
+<div class="api-dotnet-member-item list-group-item api-dotnet-member-item-has-link" data-api-kind="Method"><a class="api-dotnet-member-title api-dotnet-member-title-link" href="/SemanticDiff/api/SemanticDiff.Rendering.DiffCanvasScene.ZoomAt-SemanticDiff.Core.Point2-System.Double/"><i class="bi bi-gear api-dotnet-kind-icon" aria-hidden="true"></i><code class="api-dotnet-member-name">ZoomAt(Point2, Double)</code></a></div>
+</div>
+</div>
+
+      </div>
+  </div>
+</div>
+
+        </section>
+        <footer>
+          <hr>
+          <p>Copyright &copy; 2026, Wieslaw Soltes aka <a href="https://github.com/wieslawsoltes">wieslawsoltes</a> - Content licensed under the Creative Commons <a href="http://creativecommons.org/licenses/by/2.5/">CC BY 2.5</a> | Site generated by <a href="https://github.com/lunet-io/lunet">lunet</a> hosted on <a href="https://pages.github.com/">GitHub Pages</a></p>
+        </footer>
+      </div>
+    </div>
+
+  </body>
+</html>

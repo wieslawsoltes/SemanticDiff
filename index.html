@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html data-lunet-theme-mode="system" data-lunet-theme-storage-key="lunet-theme" data-lunet-css-prefix="lunet" lang="en" itemscope itemtype="http://schema.org/WebPage">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="lunet 1.0.10.0">
+    <script>(function(){const root=document.documentElement;const key=root.getAttribute("data-lunet-theme-storage-key")||"lunet-theme";const fallback=root.getAttribute("data-lunet-theme-mode")||"system";let stored=null;try{stored=localStorage.getItem(key);}catch(_){stored=null;}const mode=(stored==="light"||stored==="dark"||stored==="system")?stored:fallback;const prefersDark=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;const resolved=mode==="system"?(prefersDark?"dark":"light"):mode;root.setAttribute("data-lunet-theme-mode",mode);root.setAttribute("data-bs-theme",resolved);}());</script>
+    <link rel='icon' href='/SemanticDiff/favicon.ico' sizes='32x32'>
+    <title>SemanticDiff | SemanticDiff</title>
+    <link rel="stylesheet" href="/SemanticDiff/css/lite.css">
+    <script src="/SemanticDiff/js/lite-defer.js" defer></script>
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@wieslawsoltes">
+<meta name="twitter:title" content="SemanticDiff | SemanticDiff">
+<meta name="twitter:description" content="Graph-first code review SemanticDiff SemanticDiff turns Git changes into interactive file, symbol, review, history, and blame graphs. It is a desktop workbench for reviewing code when a flat patch does not show the shape of the change. Start with the app Choose a package Browse API GitHub and GitLab review workflows Semantic graph navigation History and blame timelines TextMate file rendering Skia export Reusable libraries File node diff + annotations...">
+<meta name="twitter:image" content="https://wieslawsoltes.github.io/SemanticDiff/images/social.svg">
+<meta name="twitter:image:alt" content="SemanticDiff | SemanticDiff">
+<meta property="og:title" content="SemanticDiff | SemanticDiff">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://wieslawsoltes.github.io/SemanticDiff">
+<meta property="og:description" content="Graph-first code review SemanticDiff SemanticDiff turns Git changes into interactive file, symbol, review, history, and blame graphs. It is a desktop workbench for reviewing code when a flat patch does not show the shape of the change. Start with the app Choose a package Browse API GitHub and GitLab review workflows Semantic graph navigation History and blame timelines TextMate file rendering Skia export Reusable libraries File node diff + annotations...">
+<meta property="og:image" content="https://wieslawsoltes.github.io/SemanticDiff/images/social.svg">
+<meta property="og:image:alt" content="SemanticDiff | SemanticDiff">
+  </head>
+  <body>
+
+    <div id="lunet" class="container">
+      <nav class="navbar navbar-expand-md ">
+        <a class="navbar-brand" href="/SemanticDiff/">
+          <img class="lunet-logo" src="/SemanticDiff/images/logo.svg" alt="SemanticDiff" width="96" height="96">
+          <span class="visually-hidden">Home</span>
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse"
+          data-bs-target="#navbarSupportedContent"
+          aria-controls="navbarSupportedContent"
+          aria-expanded="false"
+          aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div id="navbarSupportedContent" class="collapse navbar-collapse justify-content-between">
+<ol id='nav-id-home-0' class='navbar-nav nav-level0 show '>
+  <li id='nav-item-home-1' class='nav-item  active'>
+    <span class='nav-item-row'><a href='/SemanticDiff/' class='nav-link  '><i class='bi bi-house-door' aria-hidden='true'></i> Home</a></span>  </li>
+  <li id='nav-item-home-2' class='nav-item '>
+    <span class='nav-item-row'><a href='/SemanticDiff/articles/' class='nav-link  '><i class='bi bi-book' aria-hidden='true'></i> Docs</a></span>  </li>
+  <li id='nav-item-home-3' class='nav-item '>
+    <span class='nav-item-row'><a href='/SemanticDiff/api/' class='nav-link  '><i class='bi bi-braces' aria-hidden='true'></i> API</a></span>  </li>
+</ol>
+          <ol class="navbar-nav flex-grow-1" style="padding-right: 0.5rem;">
+            <li class="nav-item w-100">
+                <div class="lunet-search dropdown w-100">
+                  <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input id="search-input" type="search" class="form-control" placeholder="Search... (Alt+s)" aria-label="Search" aria-controls="search-results" data-bs-toggle="dropdown" data-bs-auto-close="outside" data-search-empty-message="Enter words to search..." data-search-no-results-message="No results found.">
+                    <ul id="search-results" class="dropdown-menu w-100 p-0" style="max-height: 50vh;" role="listbox" aria-labelledby="search-input"></ul>
+                  </div>
+                </div>
+            </li>
+          </ol>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0 navbar-right">
+            <div class="dropdown">
+              <button
+                id="theme-mode-toggle"
+                class="btn btn-outline-secondary btn-sm lunet-theme-toggle dropdown-toggle"
+                type="button"
+                data-bs-toggle="dropdown"
+                aria-expanded="false"
+                aria-label="Theme">
+                <i class="bi bi-circle-half" data-lunet-theme-toggle-icon aria-hidden="true"></i>
+                <span
+                  data-lunet-theme-toggle-label
+                  data-theme-system-label="System"
+                  data-theme-light-label="Light"
+                  data-theme-dark-label="Dark">Theme</span>
+              </button>
+              <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="theme-mode-toggle">
+                <li><button class="dropdown-item" type="button" data-lunet-theme-choice="system"><i class="bi bi-circle-half me-2"></i>System</button></li>
+                <li><button class="dropdown-item" type="button" data-lunet-theme-choice="light"><i class="bi bi-sun-fill me-2"></i>Light</button></li>
+                <li><button class="dropdown-item" type="button" data-lunet-theme-choice="dark"><i class="bi bi-moon-stars-fill me-2"></i>Dark</button></li>
+              </ul>
+            </div>
+<ol id='nav-id-home2-0' class='navbar-nav nav-level0 show flex-shrink-0'>
+  <li id='nav-item-home2-1' class='nav-item '>
+    <span class='nav-item-row'><a href='https://github.com/wieslawsoltes/SemanticDiff' class='nav-link  btn btn-info'><i class="bi bi-github"></i> GitHub</a></span>  </li>
+</ol>
+          </div>
+        </div>
+      </nav>
+      <div class="lunet lunet-home">
+        <section data-prismjs-copy="" data-prismjs-copy-success="" data-prismjs-copy-timeout="1200" data-copy-tooltip="Copy to Clipboard." data-copy-tooltip-success="Copied!" data-copy-tooltip-error="Failed to copy!">
+
+<div class="container">
+<!-- lunet:summarize -->
+<div class="semanticdiff-hero">
+  <div>
+    <div class="semanticdiff-eyebrow"><i class="bi bi-diagram-3" aria-hidden="true"></i> Graph-first code review</div>
+    <h1>SemanticDiff</h1>
+    <p class="lead"><strong>SemanticDiff</strong> turns Git changes into interactive file, symbol, review, history, and blame graphs. It is a desktop workbench for reviewing code when a flat patch does not show the shape of the change.</p>
+    <div class="semanticdiff-hero-actions">
+      <a class="btn btn-primary btn-lg" href="articles/getting-started/overview"><i class="bi bi-signpost-split" aria-hidden="true"></i> Start with the app</a>
+      <a class="btn btn-outline-secondary btn-lg" href="articles/packages"><i class="bi bi-box-seam" aria-hidden="true"></i> Choose a package</a>
+      <a class="btn btn-outline-secondary btn-lg" href="api"><i class="bi bi-braces" aria-hidden="true"></i> Browse API</a>
+    </div>
+    <div class="semanticdiff-pill-row">
+      <span class="semanticdiff-pill">GitHub and GitLab review workflows</span>
+      <span class="semanticdiff-pill">Semantic graph navigation</span>
+      <span class="semanticdiff-pill">History and blame timelines</span>
+      <span class="semanticdiff-pill">TextMate file rendering</span>
+      <span class="semanticdiff-pill">Skia export</span>
+      <span class="semanticdiff-pill">Reusable libraries</span>
+    </div>
+  </div>
+  <div class="semanticdiff-graph-card" aria-label="SemanticDiff graph illustration">
+    <svg viewBox="0 0 560 360" role="img" aria-label="Graph showing files, symbols, review comments, and history lanes">
+      <defs>
+        <linearGradient id="node" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#dff5ff"/></linearGradient>
+      </defs>
+      <rect width="560" height="360" fill="transparent"/>
+      <g stroke="#9be7ff" stroke-width="4" fill="none" opacity="0.75">
+        <path d="M86 248 C160 132 250 276 322 128 S434 98 492 180"/>
+        <path d="M86 110 C180 220 226 96 330 214 S452 280 500 102"/>
+        <path d="M150 304 C190 250 218 238 270 230 S366 215 412 260"/>
+      </g>
+      <g font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700">
+        <g transform="translate(55 78)"><rect width="145" height="72" rx="14" fill="url(#node)" stroke="#58c7ff"/><text x="18" y="32" fill="#07182b">File node</text><text x="18" y="54" fill="#2c6074" font-size="12">diff + annotations</text></g>
+        <g transform="translate(300 92)"><rect width="160" height="72" rx="14" fill="url(#node)" stroke="#16a34a"/><text x="18" y="32" fill="#07182b">Symbol map</text><text x="18" y="54" fill="#2c6074" font-size="12">semantic edges</text></g>
+        <g transform="translate(105 230)"><rect width="170" height="72" rx="14" fill="url(#node)" stroke="#f59e0b"/><text x="18" y="32" fill="#07182b">Review thread</text><text x="18" y="54" fill="#2c6074" font-size="12">click to code</text></g>
+        <g transform="translate(365 238)"><rect width="145" height="72" rx="14" fill="url(#node)" stroke="#ef3f8a"/><text x="18" y="32" fill="#07182b">Blame</text><text x="18" y="54" fill="#2c6074" font-size="12">commit history</text></g>
+      </g>
+      <g fill="#58c7ff"><circle cx="86" cy="110" r="7"/><circle cx="322" cy="128" r="7"/><circle cx="492" cy="180" r="7"/></g>
+    </svg>
+  </div>
+</div>
+<h2 id="documentation-sections">Documentation Sections</h2>
+<div class="semanticdiff-link-grid">
+  <a class="semanticdiff-link-card" href="articles/getting-started">
+    <span class="semanticdiff-link-card-title"><i class="bi bi-signpost" aria-hidden="true"></i> Getting Started</span>
+    <p>Install prerequisites, run the app, open a repository, and load your first branch, range, PR, or MR.</p>
+  </a>
+  <a class="semanticdiff-link-card" href="articles/packages">
+    <span class="semanticdiff-link-card-title"><i class="bi bi-boxes" aria-hidden="true"></i> Packages</span>
+    <p>Choose the reusable package layer for models, diff parsing, Git workflows, layout, rendering, semantics, or Uno controls.</p>
+  </a>
+  <a class="semanticdiff-link-card" href="articles/concepts">
+    <span class="semanticdiff-link-card-title"><i class="bi bi-lightbulb" aria-hidden="true"></i> Concepts</span>
+    <p>Understand the graph model, workspace tabs, semantic analysis, review integration, and Skia rendering pipeline.</p>
+  </a>
+  <a class="semanticdiff-link-card" href="articles/guides">
+    <span class="semanticdiff-link-card-title"><i class="bi bi-journal-code" aria-hidden="true"></i> Guides</span>
+    <p>Follow focused workflows for reviews, Git history, blame, file tabs, symbol maps, graph export, and publishing.</p>
+  </a>
+  <a class="semanticdiff-link-card" href="articles/reference">
+    <span class="semanticdiff-link-card-title"><i class="bi bi-collection" aria-hidden="true"></i> Reference</span>
+    <p>Review CI, docs publishing, dependency notes, package API coverage, and extraction planning.</p>
+  </a>
+  <a class="semanticdiff-link-card" href="api">
+    <span class="semanticdiff-link-card-title"><i class="bi bi-braces-asterisk" aria-hidden="true"></i> API Reference</span>
+    <p>Browse generated API documentation for the reusable SemanticDiff libraries and Uno controls.</p>
+  </a>
+</div>
+<h2 id="capability-snapshot">Capability Snapshot</h2>
+<div class="semanticdiff-metric-row">
+  <div class="semanticdiff-metric"><strong>10</strong> reusable package surfaces</div>
+  <div class="semanticdiff-metric"><strong>5</strong> left-pane workflows: Files, Git, Review, Symbols, Settings</div>
+  <div class="semanticdiff-metric"><strong>4</strong> main tab families: graph, file, history, blame</div>
+  <div class="semanticdiff-metric"><strong>3</strong> export targets: SVG, PNG, PDF</div>
+</div>
+<h2 id="start-here">Start Here</h2>
+<ul>
+<li>Use <a href="/SemanticDiff/articles/getting-started/overview">Getting Started Overview</a> to understand the application workflow.</li>
+<li>Use <a href="/SemanticDiff/articles/packages">Package Overview</a> when embedding SemanticDiff libraries in another application.</li>
+<li>Use <a href="/SemanticDiff/articles/guides/git-workflows">Git Workflows</a> for branches, ranges, pull requests, and merge requests.</li>
+<li>Use <a href="/SemanticDiff/articles/guides/review-comments">Review Comments</a> for GitHub/GitLab review threads and code annotations.</li>
+<li>Use <a href="/SemanticDiff/articles/reference/package-api-coverage">API Coverage</a> to see which projects are included in generated API docs.</li>
+</ul>
+
+</div>
+        </section>
+        <footer>
+          <hr>
+          <p>Copyright &copy; 2026, Wieslaw Soltes aka <a href="https://github.com/wieslawsoltes">wieslawsoltes</a> - Content licensed under the Creative Commons <a href="http://creativecommons.org/licenses/by/2.5/">CC BY 2.5</a> | Site generated by <a href="https://github.com/lunet-io/lunet">lunet</a> hosted on <a href="https://pages.github.com/">GitHub Pages</a></p>
+        </footer>
+      </div>
+    </div>
+
+  </body>
+</html>

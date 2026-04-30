@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#061a2d"/>
+      <stop offset="0.52" stop-color="#073b5a"/>
+      <stop offset="1" stop-color="#0b7ea7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#00101c" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <g opacity="0.28" stroke="#8ee7ff" stroke-width="2" fill="none">
+    <path d="M90 500 C250 390 330 520 500 370 S780 230 1110 330"/>
+    <path d="M160 170 C320 270 370 120 560 220 S840 420 1040 160"/>
+    <path d="M120 360 H1080" opacity="0.35"/>
+  </g>
+  <g transform="translate(92 115)" filter="url(#shadow)">
+    <rect width="1016" height="400" rx="42" fill="rgba(255,255,255,0.94)"/>
+    <g transform="translate(70 74)">
+      <rect x="0" y="0" width="72" height="72" rx="16" fill="#0b7ea7"/>
+      <circle cx="22" cy="22" r="7" fill="#ffffff"/>
+      <circle cx="50" cy="22" r="7" fill="#ffffff"/>
+      <circle cx="22" cy="50" r="7" fill="#ffffff"/>
+      <circle cx="50" cy="50" r="7" fill="#ffffff"/>
+      <path d="M29 22H43M22 29V43M50 29V43M29 50H43" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <text x="170" y="172" font-family="Segoe UI, Arial, sans-serif" font-size="76" font-weight="800" fill="#07182b">SemanticDiff</text>
+    <text x="174" y="238" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="600" fill="#245064">Graph-first Git diff and review workbench</text>
+    <text x="174" y="304" font-family="Segoe UI, Arial, sans-serif" font-size="26" fill="#4d6578">Diff graph • PR/MR reviews • symbols • history • blame • reusable packages</text>
+  </g>
+</svg>
