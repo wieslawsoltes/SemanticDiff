@@ -436,6 +436,15 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
     private readonly string? focusAnchorId;
     private bool isRefreshing;
 
+    private readonly record struct SymbolGraphSelection(
+        SymbolGraphFilterOptionViewModel Scope,
+        SymbolGraphFilterOptionViewModel Kind,
+        SymbolGraphFilterOptionViewModel Document,
+        SymbolGraphEdgeKindOptionViewModel EdgeKind,
+        LayoutModeOptionViewModel Layout,
+        GroupingModeOptionViewModel Grouping,
+        SymbolGraphViewModeOptionViewModel ViewMode);
+
     public SymbolGraphTabViewModel(
         string title,
         string description,
@@ -618,12 +627,13 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
         isRefreshing = true;
         try
         {
-            var query = SearchText.Trim();
-            var edgeKindAnchorIds = CreateEdgeKindAnchorSet(SelectedEdgeKindOption.Kind);
+            var selection = NormalizeSelectionOptions();
+            var query = (SearchText ?? string.Empty).Trim();
+            var edgeKindAnchorIds = CreateEdgeKindAnchorSet(selection.EdgeKind.Kind);
             var filtered = sourceItems
-                .Where(item => MatchesScope(item, SelectedScopeOption.Key))
-                .Where(item => MatchesOption(item.KindText, SelectedKindOption.Key, ignoreCase: true))
-                .Where(item => MatchesOption(item.DocumentId.Value, SelectedDocumentOption.Key, ignoreCase: false))
+                .Where(item => MatchesScope(item, selection.Scope.Key))
+                .Where(item => MatchesOption(item.KindText, selection.Kind.Key, ignoreCase: true))
+                .Where(item => MatchesOption(item.DocumentId.Value, selection.Document.Key, ignoreCase: false))
                 .Where(item => edgeKindAnchorIds is null || edgeKindAnchorIds.Contains(item.AnchorId))
                 .Where(item => string.IsNullOrWhiteSpace(query) || item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase))
                 .ToImmutableArray();
@@ -643,22 +653,54 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
                 selected,
                 sourceGraph,
                 sourceDocuments,
-                SelectedLayoutOption.Mode,
-                SelectedGroupingOption.Mode,
-                SelectedViewModeOption.Mode,
-                SelectedEdgeKindOption.Kind));
+                selection.Layout.Mode,
+                selection.Grouping.Mode,
+                selection.ViewMode.Mode,
+                selection.EdgeKind.Kind));
             Scene = sceneResult.Scene;
             RenderedSymbolCount = selected.Length;
             RenderedFileCount = sceneResult.FileCount;
             RenderedEdgeCount = Scene.Edges.Count;
-            SummaryText = BuildSummary(filtered.Length, selected.Length, RenderedFileCount, RenderedEdgeCount, SelectedViewModeOption.Mode);
-            FilterStatusText = BuildFilterStatus(filtered.Length, selected.Length, query);
-            StatusText = $"{SummaryText} | {SelectedLayoutOption.DisplayName} | {SelectedGroupingOption.DisplayName}";
+            SummaryText = BuildSummary(filtered.Length, selected.Length, RenderedFileCount, RenderedEdgeCount, selection.ViewMode.Mode);
+            FilterStatusText = BuildFilterStatus(filtered.Length, selected.Length, query, selection);
+            StatusText = $"{SummaryText} | {selection.Layout.DisplayName} | {selection.Grouping.DisplayName}";
         }
         finally
         {
             isRefreshing = false;
         }
+    }
+
+    private SymbolGraphSelection NormalizeSelectionOptions()
+    {
+        // Uno ComboBox can transiently push null SelectedItem values while rebinding ItemsSource.
+        var scope = NormalizeSelectedOption(SelectedScopeOption, ScopeOptions, 0, value => SelectedScopeOption = value, nameof(SelectedScopeOption));
+        var kind = NormalizeSelectedOption(SelectedKindOption, KindOptions, 0, value => SelectedKindOption = value, nameof(SelectedKindOption));
+        var document = NormalizeSelectedOption(SelectedDocumentOption, DocumentOptions, 0, value => SelectedDocumentOption = value, nameof(SelectedDocumentOption));
+        var edgeKind = NormalizeSelectedOption(SelectedEdgeKindOption, EdgeKindOptions, 0, value => SelectedEdgeKindOption = value, nameof(SelectedEdgeKindOption));
+        var layout = NormalizeSelectedOption(SelectedLayoutOption, LayoutOptions, 1, value => SelectedLayoutOption = value, nameof(SelectedLayoutOption));
+        var grouping = NormalizeSelectedOption(SelectedGroupingOption, GroupingOptions, 2, value => SelectedGroupingOption = value, nameof(SelectedGroupingOption));
+        var viewMode = NormalizeSelectedOption(SelectedViewModeOption, ViewModeOptions, 0, value => SelectedViewModeOption = value, nameof(SelectedViewModeOption));
+        return new SymbolGraphSelection(scope, kind, document, edgeKind, layout, grouping, viewMode);
+    }
+
+    private static T NormalizeSelectedOption<T>(T? selectedOption, ImmutableArray<T> options, int preferredIndex, Action<T> setSelectedOption, string propertyName)
+        where T : class
+    {
+        if (selectedOption is not null)
+        {
+            return selectedOption;
+        }
+
+        if (options.IsDefaultOrEmpty)
+        {
+            throw new InvalidOperationException($"Symbol graph option list for {propertyName} is empty.");
+        }
+
+        var fallbackIndex = preferredIndex >= 0 && preferredIndex < options.Length ? preferredIndex : 0;
+        var fallback = options[fallbackIndex];
+        setSelectedOption(fallback);
+        return fallback;
     }
 
     private static ImmutableArray<SymbolGraphFilterOptionViewModel> CreateKindOptions(ImmutableArray<SemanticNavigationItem> items) =>
@@ -745,30 +787,30 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
         return $"{cappedText}{filteredCount:N0} symbols{fileText} | {edgeCount:N0} links";
     }
 
-    private string BuildFilterStatus(int filteredCount, int renderedCount, string query)
+    private static string BuildFilterStatus(int filteredCount, int renderedCount, string query, SymbolGraphSelection selection)
     {
         var parts = new List<string>();
-        if (!string.Equals(SelectedScopeOption.Key, AllKey, StringComparison.Ordinal))
+        if (!string.Equals(selection.Scope.Key, AllKey, StringComparison.Ordinal))
         {
-            parts.Add(SelectedScopeOption.DisplayName);
+            parts.Add(selection.Scope.DisplayName);
         }
 
-        if (!string.Equals(SelectedKindOption.Key, AllKey, StringComparison.Ordinal))
+        if (!string.Equals(selection.Kind.Key, AllKey, StringComparison.Ordinal))
         {
-            parts.Add(SelectedKindOption.DisplayName);
+            parts.Add(selection.Kind.DisplayName);
         }
 
-        if (!string.Equals(SelectedDocumentOption.Key, AllKey, StringComparison.Ordinal))
+        if (!string.Equals(selection.Document.Key, AllKey, StringComparison.Ordinal))
         {
-            parts.Add(SelectedDocumentOption.DisplayName);
+            parts.Add(selection.Document.DisplayName);
         }
 
-        if (!string.Equals(SelectedEdgeKindOption.Key, AllKey, StringComparison.Ordinal))
+        if (!string.Equals(selection.EdgeKind.Key, AllKey, StringComparison.Ordinal))
         {
-            parts.Add(SelectedEdgeKindOption.DisplayName);
+            parts.Add(selection.EdgeKind.DisplayName);
         }
 
-        if (SelectedViewModeOption.Mode == SymbolGraphViewMode.FilesAndSymbols)
+        if (selection.ViewMode.Mode == SymbolGraphViewMode.FilesAndSymbols)
         {
             parts.Add("files + symbols");
         }
