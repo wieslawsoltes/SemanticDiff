@@ -1,11 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/git</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages</loc>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/controls-uno</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
@@ -13,19 +9,11 @@
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/diff</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/reference/dependency-advisories</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
     <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/reference/package-api-coverage</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/semantics-xaml</loc>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
@@ -33,15 +21,47 @@
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/reference/dependency-advisories</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/reference/license</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/diff</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/layout</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/core</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/git</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/rendering</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
     <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/semantics-roslyn</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/semantics</loc>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/semantics-xaml</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles</loc>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/semantics</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
@@ -57,15 +77,19 @@
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/guides/history-and-blame</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
     <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/guides/git-workflows</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/guides/history-and-blame</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
     <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/guides/publishing</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/guides/review-comments</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
@@ -77,63 +101,7 @@
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/guides/review-comments</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
     <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/reference/ci-and-docs</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/diff-graph</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/rendering-pipeline</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/architecture</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/reference/license</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/review-workflows</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/controls-uno</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/semantic-analysis</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/layout</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/getting-started/overview</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/getting-started</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/workspace-tabs</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/getting-started/quickstart-app</loc>
-    <lastmod>2026-04-30</lastmod>
-  </url>
-  <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/core</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
@@ -141,7 +109,27 @@
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/architecture</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
     <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/diff-graph</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/review-workflows</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/rendering-pipeline</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/workspace-tabs</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
@@ -149,11 +137,23 @@
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
-    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/packages/rendering</loc>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/concepts/semantic-analysis</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/getting-started</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/getting-started/quickstart-app</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
   <url>
     <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/getting-started/quickstart-libraries</loc>
+    <lastmod>2026-04-30</lastmod>
+  </url>
+  <url>
+    <loc>https://wieslawsoltes.github.io/SemanticDiff/SemanticDiff/articles/getting-started/overview</loc>
     <lastmod>2026-04-30</lastmod>
   </url>
 </urlset>
