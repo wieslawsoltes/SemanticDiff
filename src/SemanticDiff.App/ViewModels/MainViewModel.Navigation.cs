@@ -47,20 +47,31 @@ public sealed partial class MainViewModel
             : allExplorerItems
                 .Where(item => item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase))
                 .ToImmutableArray();
+        var tree = string.IsNullOrWhiteSpace(query)
+            ? activeExplorerTreeRoots
+            : BuildExplorerTree(filtered);
 
-        ExplorerItems = filtered;
-        var tree = FileExplorerTreeBuilder.Build(filtered.Select(item => new FileExplorerFile(item.Path, item.Status, item.Language)));
-        ExplorerTreeItems = FileExplorerNodeViewModel.Flatten(
-            tree,
-            collapsedExplorerNodePaths,
-            !string.IsNullOrWhiteSpace(query),
-            currentRepositoryPath,
-            IsLightThemeEnabled);
-        UpdateSelectedExplorerTreeNode();
-        ExplorerCountText = string.IsNullOrWhiteSpace(query)
-            ? FormatCount(allExplorerItems.Length, "file", "files")
-            : $"{filtered.Length:N0}/{allExplorerItems.Length:N0} files";
-        UpdateFileExplorerModeStatus(filtered.Length);
+        IsUpdatingExplorerTree = true;
+        try
+        {
+            ExplorerItems = filtered;
+            ExplorerTreeItems = FileExplorerNodeViewModel.Flatten(
+                tree,
+                collapsedExplorerNodePaths,
+                !string.IsNullOrWhiteSpace(query),
+                currentRepositoryPath,
+                IsLightThemeEnabled,
+                FileExplorerMode == FileExplorerMode.Diff);
+            UpdateSelectedExplorerTreeNode();
+            ExplorerCountText = string.IsNullOrWhiteSpace(query)
+                ? FormatCount(allExplorerItems.Length, "file", "files")
+                : $"{filtered.Length:N0}/{allExplorerItems.Length:N0} files";
+            UpdateFileExplorerModeStatus(filtered.Length);
+        }
+        finally
+        {
+            IsUpdatingExplorerTree = false;
+        }
     }
 
     private void UpdateSelectedExplorerTreeNode()
@@ -101,13 +112,13 @@ public sealed partial class MainViewModel
 
         if (mode == FileExplorerMode.Diff)
         {
-            SetActiveExplorerItems(diffExplorerItems);
+            SetActiveExplorerItems(diffExplorerItems, diffExplorerTreeRoots);
             return;
         }
 
         if (IsWorkspaceExplorerCacheValid())
         {
-            SetActiveExplorerItems(workspaceExplorerItems);
+            SetActiveExplorerItems(workspaceExplorerItems, workspaceExplorerTreeRoots);
             return;
         }
 
@@ -162,7 +173,7 @@ public sealed partial class MainViewModel
                 workspaceExplorerCacheLoaded = false;
                 if (FileExplorerMode == FileExplorerMode.Workspace)
                 {
-                    SetActiveExplorerItems(workspaceExplorerItems);
+                    SetActiveExplorerItems(workspaceExplorerItems, workspaceExplorerTreeRoots);
                 }
 
                 FileExplorerModeStatusText = "Open a repository to load workspace files";
@@ -190,7 +201,7 @@ public sealed partial class MainViewModel
             {
                 if (FileExplorerMode == FileExplorerMode.Workspace)
                 {
-                    SetActiveExplorerItems([]);
+                    SetActiveExplorerItems([], []);
                 }
 
                 FileExplorerModeStatusText = "Loading workspace files...";
@@ -201,6 +212,7 @@ public sealed partial class MainViewModel
             var items = result.Files
                 .Select(file => new ExplorerItemViewModel(file.Path, file.Status, file.Language))
                 .ToImmutableArray();
+            var tree = BuildExplorerTree(items);
             ReportProgress(operation!, 0.82, "Building workspace file tree");
 
             await RunOnCapturedContextAsync(() =>
@@ -213,12 +225,13 @@ public sealed partial class MainViewModel
                 }
 
                 workspaceExplorerItems = items;
+                workspaceExplorerTreeRoots = tree;
                 workspaceExplorerRepositoryPath = repositoryPath;
                 workspaceExplorerWorkspacePath = result.WorkspacePath;
                 workspaceExplorerCacheLoaded = true;
                 if (FileExplorerMode == FileExplorerMode.Workspace)
                 {
-                    SetActiveExplorerItems(workspaceExplorerItems);
+                    SetActiveExplorerItems(workspaceExplorerItems, workspaceExplorerTreeRoots);
                 }
 
                 var workspaceName = string.IsNullOrWhiteSpace(result.WorkspacePath)
@@ -252,12 +265,13 @@ public sealed partial class MainViewModel
                 }
 
                 workspaceExplorerItems = [];
+                workspaceExplorerTreeRoots = [];
                 workspaceExplorerRepositoryPath = repositoryPath;
                 workspaceExplorerWorkspacePath = null;
                 workspaceExplorerCacheLoaded = true;
                 if (FileExplorerMode == FileExplorerMode.Workspace)
                 {
-                    SetActiveExplorerItems(workspaceExplorerItems);
+                    SetActiveExplorerItems(workspaceExplorerItems, workspaceExplorerTreeRoots);
                 }
 
                 FileExplorerModeStatusText = $"Workspace files unavailable: {exception.Message}";
@@ -275,11 +289,19 @@ public sealed partial class MainViewModel
         }
     }
 
-    private void SetActiveExplorerItems(ImmutableArray<ExplorerItemViewModel> items)
+    private void SetActiveExplorerItems(
+        ImmutableArray<ExplorerItemViewModel> items,
+        ImmutableArray<FileExplorerNode> prebuiltTree = default)
     {
         allExplorerItems = items.IsDefault ? ImmutableArray<ExplorerItemViewModel>.Empty : items;
+        activeExplorerTreeRoots = prebuiltTree.IsDefault ? BuildExplorerTree(allExplorerItems) : prebuiltTree;
         ApplyExplorerFilter();
     }
+
+    private static ImmutableArray<FileExplorerNode> BuildExplorerTree(ImmutableArray<ExplorerItemViewModel> items) =>
+        items.IsDefaultOrEmpty
+            ? []
+            : FileExplorerTreeBuilder.Build(items.Select(item => new FileExplorerFile(item.Path, item.Status, item.Language)));
 
     private bool IsWorkspaceExplorerCacheValid() =>
         workspaceExplorerCacheLoaded &&
@@ -302,6 +324,8 @@ public sealed partial class MainViewModel
         }
 
         workspaceExplorerItems = [];
+        workspaceExplorerTreeRoots = [];
+        activeExplorerTreeRoots = [];
         workspaceExplorerRepositoryPath = null;
         workspaceExplorerWorkspacePath = null;
         workspaceExplorerCacheLoaded = false;

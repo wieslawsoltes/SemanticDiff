@@ -54,6 +54,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private ImmutableArray<ExplorerItemViewModel> allExplorerItems = [];
     private ImmutableArray<ExplorerItemViewModel> diffExplorerItems = [];
     private ImmutableArray<ExplorerItemViewModel> workspaceExplorerItems = [];
+    private ImmutableArray<FileExplorerNode> activeExplorerTreeRoots = [];
+    private ImmutableArray<FileExplorerNode> diffExplorerTreeRoots = [];
+    private ImmutableArray<FileExplorerNode> workspaceExplorerTreeRoots = [];
     private ImmutableHashSet<string> collapsedExplorerNodePaths = ImmutableHashSet<string>.Empty;
     private ImmutableArray<SemanticNavigationItem> allSemanticNavigationItems => symbolBrowser.AllItems;
     private SemanticSymbolInsightSummary currentSymbolInsight => symbolBrowser.Insight;
@@ -146,6 +149,10 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     }
 
     public ObservableCollection<WorkspaceTabViewModel> WorkspaceTabs { get; } = [];
+
+    public bool IsUpdatingExplorerTree { get; private set; }
+
+    public bool IsUpdatingGitReferenceTree { get; private set; }
 
     [ObservableProperty]
     private DiffCanvasScene scene = DiffCanvasScene.FromDocuments([]);

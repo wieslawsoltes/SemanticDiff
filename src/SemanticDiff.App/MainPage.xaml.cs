@@ -1484,6 +1484,11 @@ public sealed partial class MainPage : Page
 
     private void OnExplorerTreeSelectionChanged(object sender, SelectionChangedEventArgs args)
     {
+        if (ViewModel.IsUpdatingExplorerTree)
+        {
+            return;
+        }
+
         if (sender is ListView { SelectedItem: ViewModels.FileExplorerNodeViewModel item })
         {
             FocusCanvas(ViewModel.FocusExplorerNode(item));
@@ -1674,6 +1679,11 @@ public sealed partial class MainPage : Page
 
     private async void OnGitReferenceTreeSelectionChanged(object sender, SelectionChangedEventArgs args)
     {
+        if (ViewModel.IsUpdatingGitReferenceTree)
+        {
+            return;
+        }
+
         if (sender is ListView { SelectedItem: ViewModels.GitReferenceTreeItemViewModel item })
         {
             await ViewModel.SelectGitReferenceNodeAsync(item);

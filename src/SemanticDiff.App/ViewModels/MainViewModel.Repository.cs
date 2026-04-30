@@ -770,12 +770,13 @@ public sealed partial class MainViewModel
     private void SetExplorerItems(ImmutableArray<ExplorerItemViewModel> items)
     {
         diffExplorerItems = items.IsDefault ? ImmutableArray<ExplorerItemViewModel>.Empty : items;
+        diffExplorerTreeRoots = BuildExplorerTree(diffExplorerItems);
         UpdateFileExplorerModeLabels();
         if (FileExplorerMode == FileExplorerMode.Workspace)
         {
             if (IsWorkspaceExplorerCacheValid())
             {
-                SetActiveExplorerItems(workspaceExplorerItems);
+                SetActiveExplorerItems(workspaceExplorerItems, workspaceExplorerTreeRoots);
             }
             else
             {
@@ -785,6 +786,6 @@ public sealed partial class MainViewModel
             return;
         }
 
-        SetActiveExplorerItems(diffExplorerItems);
+        SetActiveExplorerItems(diffExplorerItems, diffExplorerTreeRoots);
     }
 }

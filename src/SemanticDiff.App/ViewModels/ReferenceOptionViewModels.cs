@@ -159,13 +159,13 @@ public sealed partial record GitReferenceTreeItemViewModel(
 {
     public bool IsSelectableReference => Branch is not null || PullRequest is not null;
 
-    public string DisclosureGlyph => HasChildren ? IsExpanded ? "\uE70D" : "\uE76C" : string.Empty;
+    public string DisclosureGlyph { get; } = HasChildren ? IsExpanded ? "\uE70D" : "\uE76C" : string.Empty;
 
-    public Visibility DisclosureVisibility => HasChildren ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility DisclosureVisibility { get; } = HasChildren ? Visibility.Visible : Visibility.Collapsed;
 
-    public Thickness IndentMargin => new(Math.Min(54, Depth * 14), 0, 0, 0);
+    public Thickness IndentMargin { get; } = new(Math.Min(54, Depth * 14), 0, 0, 0);
 
-    public string IconGlyph => Kind switch
+    public string IconGlyph { get; } = Kind switch
     {
         GitReferenceTreeItemKind.Remote => "\uE8B7",
         GitReferenceTreeItemKind.PullRequest => "\uE8F1",
@@ -173,30 +173,9 @@ public sealed partial record GitReferenceTreeItemViewModel(
         _ => "\uE8B7"
     };
 
-    public string BadgeText
-    {
-        get
-        {
-            if (Branch is { IsCurrent: true })
-            {
-                return "current";
-            }
+    public string BadgeText { get; } = CreateBadgeText(Count, Branch, PullRequest);
 
-            if (Branch is { IsDefault: true })
-            {
-                return "default";
-            }
-
-            if (PullRequest is not null)
-            {
-                return PullRequest.NumberText;
-            }
-
-            return Count > 0 ? Count.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
-        }
-    }
-
-    public Visibility BadgeVisibility => string.IsNullOrWhiteSpace(BadgeText) ? Visibility.Collapsed : Visibility.Visible;
+    public Visibility BadgeVisibility { get; } = string.IsNullOrWhiteSpace(CreateBadgeText(Count, Branch, PullRequest)) ? Visibility.Collapsed : Visibility.Visible;
 
     public string SearchText => $"{DisplayName} {DetailText} {Branch?.SearchText} {PullRequest?.SearchText}";
 
@@ -233,4 +212,27 @@ public sealed partial record GitReferenceTreeItemViewModel(
             isSelected,
             null,
             pullRequest);
+
+    private static string CreateBadgeText(
+        int count,
+        GitBranchOptionViewModel? branch,
+        GitPullRequestOptionViewModel? pullRequest)
+    {
+        if (branch is { IsCurrent: true })
+        {
+            return "current";
+        }
+
+        if (branch is { IsDefault: true })
+        {
+            return "default";
+        }
+
+        if (pullRequest is not null)
+        {
+            return pullRequest.NumberText;
+        }
+
+        return count > 0 ? count.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+    }
 }
