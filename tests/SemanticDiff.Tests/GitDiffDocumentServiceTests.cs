@@ -24,7 +24,8 @@ public sealed class GitDiffDocumentServiceTests
             CancellationToken.None);
 
         Assert.Single(snapshot.Documents);
-        Assert.Contains(gitService.FileDiffRequests, request => request.ContextLines == 0);
+        Assert.Contains(gitService.UnifiedDiffRequests, request => request.ContextLines == 0);
+        Assert.Empty(gitService.FileDiffRequests);
     }
 
     [Fact]
@@ -45,7 +46,8 @@ public sealed class GitDiffDocumentServiceTests
             CancellationToken.None);
 
         Assert.Single(snapshot.Documents);
-        Assert.Contains(gitService.FileDiffRequests, request => request.ContextLines == 1_000_000);
+        Assert.Contains(gitService.UnifiedDiffRequests, request => request.ContextLines == 1_000_000);
+        Assert.Empty(gitService.FileDiffRequests);
     }
 
     [Fact]
@@ -97,15 +99,17 @@ public sealed class GitDiffDocumentServiceTests
     }
 
     [Fact]
-    public async Task LoadDocumentsAsync_LoadsFileDiffsConcurrentlyWithoutChangingDocumentOrder()
+    public async Task LoadDocumentsAsync_LoadsUnifiedDiffBatchWithoutChangingDocumentOrder()
     {
-        var fileChanges = Enumerable.Range(0, 6)
-            .Select(index => CreateFileChange($"src/File{index}.cs", DiffFileStatus.Modified))
-            .ToImmutableArray();
+        var fileChanges = ImmutableArray.Create(
+            CreateFileChange("src/Modified.cs", DiffFileStatus.Modified),
+            CreateFileChange("src/New.cs", DiffFileStatus.Added),
+            CreateFileChange("src/Deleted.cs", DiffFileStatus.Deleted),
+            CreateFileChange("src/Renamed.cs", DiffFileStatus.Renamed, "src/Old.cs"),
+            CreateFileChange("src/Copied.cs", DiffFileStatus.Copied, "src/Original.cs"));
         var gitService = new FakeGitDiffService(
             fileChanges,
-            fileChange => $"@@ -0,0 +1,1 @@\n+{fileChange.Path}\n",
-            fileDiffDelay: TimeSpan.FromMilliseconds(40));
+            fileChange => $"@@ -0,0 +1,1 @@\n+{fileChange.Path}\n");
         var documentService = new GitDiffDocumentService(gitService, new DiffDocumentFactory());
 
         var snapshot = await documentService.LoadDocumentsAsync(
@@ -113,7 +117,8 @@ public sealed class GitDiffDocumentServiceTests
             DiffContextMode.ChangedHunks,
             CancellationToken.None);
 
-        Assert.True(gitService.MaxConcurrentFileDiffRequests > 1);
+        Assert.Single(gitService.UnifiedDiffRequests);
+        Assert.Empty(gitService.FileDiffRequests);
         Assert.Equal(fileChanges.Select(file => file.Path), snapshot.Documents.Select(document => document.Metadata.Path));
     }
 
@@ -160,6 +165,8 @@ public sealed class GitDiffDocumentServiceTests
 
         public List<GitDiffRequest> FileDiffRequests { get; } = [];
 
+        public List<GitDiffRequest> UnifiedDiffRequests { get; } = [];
+
         public List<GitDiffRequest> ContentRequests { get; } = [];
 
         public int MaxConcurrentFileDiffRequests => maxConcurrentFileDiffRequests;
@@ -173,6 +180,21 @@ public sealed class GitDiffDocumentServiceTests
                 fileChanges,
                 DateTimeOffset.UtcNow);
             return Task.FromResult(snapshot);
+        }
+
+        public Task<string> GetUnifiedDiffAsync(GitDiffRequest request, CancellationToken cancellationToken)
+        {
+            lock (requestGate)
+            {
+                UnifiedDiffRequests.Add(request);
+            }
+
+            var unifiedDiff = string.Concat(fileChanges.Select(fileChange =>
+                $"diff --git a/{fileChange.OldPath ?? fileChange.Path} b/{fileChange.Path}\n" +
+                $"--- {(fileChange.Status == DiffFileStatus.Added ? "/dev/null" : $"a/{fileChange.OldPath ?? fileChange.Path}")}\n" +
+                $"+++ {(fileChange.Status == DiffFileStatus.Deleted ? "/dev/null" : $"b/{fileChange.Path}")}\n" +
+                unifiedDiffFactory(fileChange)));
+            return Task.FromResult(unifiedDiff);
         }
 
         public async Task<GitFileDiff> GetFileDiffAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken)

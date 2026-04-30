@@ -206,6 +206,9 @@ public sealed class CSharpSemanticProviderTests
         public Task<GitFileDiff> GetFileDiffAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
+        public Task<string> GetUnifiedDiffAsync(GitDiffRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public Task<string> GetFileContentAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken) =>
             Task.FromResult(content);
     }

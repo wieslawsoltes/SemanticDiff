@@ -45,9 +45,22 @@ public sealed class GitReferenceDiscoveryService : IGitReferenceDiscoveryService
         CancellationToken cancellationToken,
         GitReviewRequestState reviewRequestState = GitReviewRequestState.Open)
     {
-        var defaultBranch = await defaultBranchDiscovery.DiscoverAsync(repositoryPath, cancellationToken).ConfigureAwait(false);
-        var branches = await GetBranchesAsync(repositoryPath, defaultBranch, cancellationToken).ConfigureAwait(false);
-        var gitLabRemotes = await GetGitLabRemotesAsync(repositoryPath, cancellationToken).ConfigureAwait(false);
+        var defaultBranchTask = defaultBranchDiscovery.DiscoverAsync(repositoryPath, cancellationToken);
+        var branchListTask = GetBranchListOutputAsync(repositoryPath, cancellationToken);
+        var remoteListTask = GetRemoteListOutputAsync(repositoryPath, cancellationToken);
+        await Task.WhenAll(new Task[] { defaultBranchTask, branchListTask, remoteListTask }).ConfigureAwait(false);
+
+        var defaultBranch = await defaultBranchTask.ConfigureAwait(false);
+        var branches = ParseBranches(await branchListTask.ConfigureAwait(false), currentBranch: null, defaultBranch);
+        var remoteList = await remoteListTask.ConfigureAwait(false);
+        string? originUrl = null;
+        var gitLabRemotes = ParseGitLabRemotes(remoteList);
+        if (gitLabRemotes.IsDefaultOrEmpty)
+        {
+            originUrl = await GetOriginRemoteUrlAsync(repositoryPath, cancellationToken).ConfigureAwait(false);
+            gitLabRemotes = CreateGitLabOriginRemote(originUrl);
+        }
+
         if (!gitLabRemotes.IsDefaultOrEmpty)
         {
             var mergeRequestRemote = SelectMergeRequestRemote(gitLabRemotes);
@@ -58,7 +71,13 @@ public sealed class GitReferenceDiscoveryService : IGitReferenceDiscoveryService
             return new GitRepositoryReferenceSnapshot(branches, mergeRequests, true, GitReviewRequestKind.MergeRequest, gitLabStatus);
         }
 
-        var githubRemotes = await GetGitHubRemotesAsync(repositoryPath, cancellationToken).ConfigureAwait(false);
+        var githubRemotes = ParseGitHubRemotes(remoteList);
+        if (githubRemotes.IsDefaultOrEmpty)
+        {
+            originUrl ??= await GetOriginRemoteUrlAsync(repositoryPath, cancellationToken).ConfigureAwait(false);
+            githubRemotes = CreateGitHubOriginRemote(originUrl);
+        }
+
         if (githubRemotes.IsDefaultOrEmpty)
         {
             return new GitRepositoryReferenceSnapshot(branches, ImmutableArray<GitPullRequestInfo>.Empty, false, GitReviewRequestKind.PullRequest, FormatBranchStatus(branches));
@@ -253,9 +272,8 @@ public sealed class GitReferenceDiscoveryService : IGitReferenceDiscoveryService
         return builder.ToImmutable();
     }
 
-    private async Task<ImmutableArray<GitBranchInfo>> GetBranchesAsync(
+    private async Task<string> GetBranchListOutputAsync(
         string repositoryPath,
-        string? defaultBranch,
         CancellationToken cancellationToken)
     {
         var branchResult = await commandRunner.RunAsync(
@@ -264,62 +282,48 @@ public sealed class GitReferenceDiscoveryService : IGitReferenceDiscoveryService
             cancellationToken).ConfigureAwait(false);
         if (!branchResult.Succeeded)
         {
-            return ImmutableArray<GitBranchInfo>.Empty;
+            return string.Empty;
         }
 
-        var currentBranchResult = await commandRunner.RunAsync(repositoryPath, ["branch", "--show-current"], cancellationToken).ConfigureAwait(false);
-        var currentBranch = currentBranchResult.Succeeded ? currentBranchResult.StandardOutput.Trim() : null;
-        return ParseBranches(branchResult.StandardOutput, currentBranch, defaultBranch);
+        return branchResult.StandardOutput;
     }
 
-    private async Task<ImmutableArray<GitHubRemote>> GetGitHubRemotesAsync(string repositoryPath, CancellationToken cancellationToken)
+    private async Task<string> GetRemoteListOutputAsync(string repositoryPath, CancellationToken cancellationToken)
     {
         var remoteListResult = await commandRunner.RunAsync(repositoryPath, ["remote", "-v"], cancellationToken).ConfigureAwait(false);
-        if (remoteListResult.Succeeded)
-        {
-            var remotes = ParseGitHubRemotes(remoteListResult.StandardOutput);
-            if (!remotes.IsDefaultOrEmpty)
-            {
-                return remotes;
-            }
-        }
-
-        var originResult = await commandRunner.RunAsync(repositoryPath, ["remote", "get-url", "origin"], cancellationToken).ConfigureAwait(false);
-        if (!originResult.Succeeded)
-        {
-            return ImmutableArray<GitHubRemote>.Empty;
-        }
-
-        var originUrl = originResult.StandardOutput.Trim();
-        var originRepository = TryParseGitHubRemoteUrl(originUrl);
-        return originRepository is null
-            ? ImmutableArray<GitHubRemote>.Empty
-            : [new GitHubRemote("origin", originUrl, originRepository)];
+        return remoteListResult.Succeeded ? remoteListResult.StandardOutput : string.Empty;
     }
 
-    private async Task<ImmutableArray<GitLabRemote>> GetGitLabRemotesAsync(string repositoryPath, CancellationToken cancellationToken)
+    private async Task<string?> GetOriginRemoteUrlAsync(string repositoryPath, CancellationToken cancellationToken)
     {
-        var remoteListResult = await commandRunner.RunAsync(repositoryPath, ["remote", "-v"], cancellationToken).ConfigureAwait(false);
-        if (remoteListResult.Succeeded)
-        {
-            var remotes = ParseGitLabRemotes(remoteListResult.StandardOutput);
-            if (!remotes.IsDefaultOrEmpty)
-            {
-                return remotes;
-            }
-        }
-
         var originResult = await commandRunner.RunAsync(repositoryPath, ["remote", "get-url", "origin"], cancellationToken).ConfigureAwait(false);
-        if (!originResult.Succeeded)
+        return originResult.Succeeded ? originResult.StandardOutput.Trim() : null;
+    }
+
+    private static ImmutableArray<GitLabRemote> CreateGitLabOriginRemote(string? originUrl)
+    {
+        if (string.IsNullOrWhiteSpace(originUrl))
         {
             return ImmutableArray<GitLabRemote>.Empty;
         }
 
-        var originUrl = originResult.StandardOutput.Trim();
         var originRepository = TryParseGitLabRemoteUrl(originUrl);
         return originRepository is null
             ? ImmutableArray<GitLabRemote>.Empty
             : [new GitLabRemote("origin", originUrl, originRepository)];
+    }
+
+    private static ImmutableArray<GitHubRemote> CreateGitHubOriginRemote(string? originUrl)
+    {
+        if (string.IsNullOrWhiteSpace(originUrl))
+        {
+            return ImmutableArray<GitHubRemote>.Empty;
+        }
+
+        var originRepository = TryParseGitHubRemoteUrl(originUrl);
+        return originRepository is null
+            ? ImmutableArray<GitHubRemote>.Empty
+            : [new GitHubRemote("origin", originUrl, originRepository)];
     }
 
     private async Task<ImmutableArray<GitPullRequestInfo>> GetPullRequestsAsync(

@@ -29,6 +29,8 @@ public interface IGitDiffService
 {
     Task<GitDiffSnapshot> GetDiffAsync(GitDiffRequest request, CancellationToken cancellationToken);
 
+    Task<string> GetUnifiedDiffAsync(GitDiffRequest request, CancellationToken cancellationToken);
+
     Task<GitFileDiff> GetFileDiffAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken);
 
     Task<string> GetFileContentAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken);

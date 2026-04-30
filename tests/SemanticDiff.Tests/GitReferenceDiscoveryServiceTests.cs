@@ -152,6 +152,8 @@ public sealed class GitReferenceDiscoveryServiceTests
         Assert.Equal(122, snapshot.PullRequests[0].Number);
         Assert.Contains("122 PRs from upstream", snapshot.StatusMessage);
         Assert.All(handler.Requests, request => Assert.Contains("/repos/owner/repo/pulls", request));
+        Assert.Equal(1, runner.Calls.Count(call => call.SequenceEqual(["remote", "-v"])));
+        Assert.DoesNotContain(runner.Calls, call => call.SequenceEqual(["branch", "--show-current"]));
         Assert.DoesNotContain(runner.Calls, call => call.SequenceEqual(["ls-remote", "--refs", "upstream", "refs/pull/*/head"]));
     }
 

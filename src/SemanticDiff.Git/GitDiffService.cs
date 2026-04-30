@@ -35,6 +35,14 @@ public sealed class GitDiffService : IGitDiffService
         return new GitDiffSnapshot(request.RepositoryPath, request, defaultBranch, files, DateTimeOffset.UtcNow);
     }
 
+    public async Task<string> GetUnifiedDiffAsync(GitDiffRequest request, CancellationToken cancellationToken)
+    {
+        var defaultBranch = await GetDefaultBranchIfNeededAsync(request, cancellationToken).ConfigureAwait(false);
+        var arguments = GitDiffCommandBuilder.BuildDiffArguments(request, defaultBranch);
+        var result = await commandRunner.RunAsync(request.RepositoryPath, arguments, cancellationToken).ConfigureAwait(false);
+        return result.Succeeded ? result.StandardOutput : string.Empty;
+    }
+
     public async Task<GitFileDiff> GetFileDiffAsync(GitDiffRequest request, GitFileChange fileChange, CancellationToken cancellationToken)
     {
         if (fileChange.Status == DiffFileStatus.Untracked)
