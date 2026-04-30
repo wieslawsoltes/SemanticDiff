@@ -146,7 +146,13 @@ public sealed partial class MainViewModel
             return;
         }
 
+        var isNewRepositoryRoot = !string.Equals(currentRepositoryPath, state.RepositoryPath, StringComparison.Ordinal);
         currentRepositoryPath = state.RepositoryPath;
+        if (isNewRepositoryRoot)
+        {
+            InvalidateWorkspaceExplorerCache();
+        }
+
         currentGitSnapshot = state.GitSnapshot;
         currentStatusPrefix = state.StatusPrefix;
         currentDocumentsAreRepositoryDocuments = state.DocumentsAreRepositoryDocuments;

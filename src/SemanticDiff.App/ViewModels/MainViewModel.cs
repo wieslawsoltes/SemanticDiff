@@ -38,6 +38,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly QueryCanvasEngine queryCanvasEngine = new();
     private readonly QueryCanvasCompletionProvider queryCanvasCompletionProvider = new();
     private readonly Dictionary<string, CancellationTokenSource> queryCanvasOperations = new(StringComparer.Ordinal);
+    private readonly object workspaceExplorerLoadGate = new();
     private readonly GitReferenceBrowserModel<GitBranchOptionViewModel, GitPullRequestOptionViewModel> gitReferenceBrowser = new(
         branch => branch.SearchText,
         reviewRequest => reviewRequest.SearchText);
@@ -74,6 +75,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private bool isUpdatingReferenceSelection;
     private string? workspaceExplorerRepositoryPath;
     private string? workspaceExplorerWorkspacePath;
+    private string? currentWorkspaceExplorerLoadRepositoryPath;
+    private Task? currentWorkspaceExplorerLoadTask;
+    private bool workspaceExplorerCacheLoaded;
 
     public MainViewModel()
         : this(JsonAppStateStore.CreateDefault())

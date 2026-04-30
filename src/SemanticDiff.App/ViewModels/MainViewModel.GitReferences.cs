@@ -56,7 +56,13 @@ public sealed partial class MainViewModel
                 return;
             }
 
+            var isNewRepositoryRoot = !string.Equals(currentRepositoryPath, repositoryRoot, StringComparison.Ordinal);
             currentRepositoryPath = repositoryRoot;
+            if (isNewRepositoryRoot)
+            {
+                InvalidateWorkspaceExplorerCache();
+            }
+
             appState = appState with
             {
                 RepositoryPath = repositoryRoot,

@@ -97,6 +97,7 @@ public sealed partial class MainViewModel
             {
                 currentRepositoryPath = null;
                 currentGitSnapshot = null;
+                InvalidateWorkspaceExplorerCache();
                 ClearReferenceOptions("Refs unavailable");
                 await StopRepositoryWatcherAsync();
                 EnsureCurrentRepositoryRequest(requestId, cancellationToken);
@@ -109,6 +110,11 @@ public sealed partial class MainViewModel
 
             var isNewRepositoryRoot = !string.Equals(currentRepositoryPath, repositoryRoot, StringComparison.Ordinal);
             currentRepositoryPath = repositoryRoot;
+            if (isNewRepositoryRoot)
+            {
+                InvalidateWorkspaceExplorerCache();
+            }
+
             appState = appState with { RepositoryPath = repositoryRoot };
             ApplyAppStateToPresentation();
             if (isNewRepositoryRoot || BranchOptions.IsDefaultOrEmpty)
@@ -760,11 +766,18 @@ public sealed partial class MainViewModel
     private void SetExplorerItems(ImmutableArray<ExplorerItemViewModel> items)
     {
         diffExplorerItems = items.IsDefault ? ImmutableArray<ExplorerItemViewModel>.Empty : items;
-        InvalidateWorkspaceExplorerCache();
         UpdateFileExplorerModeLabels();
         if (FileExplorerMode == FileExplorerMode.Workspace)
         {
-            _ = LoadWorkspaceExplorerAsync(CancellationToken.None);
+            if (IsWorkspaceExplorerCacheValid())
+            {
+                SetActiveExplorerItems(workspaceExplorerItems);
+            }
+            else
+            {
+                _ = LoadWorkspaceExplorerAsync(CancellationToken.None);
+            }
+
             return;
         }
 

@@ -24,6 +24,8 @@ public sealed record FileExplorerNodeViewModel(
 {
     public bool IsFile => Kind == FileExplorerNodeKind.File;
 
+    public bool CanDragToEditorCanvas => !string.IsNullOrWhiteSpace(Path);
+
     public bool CanNavigateToNode => IsFile && !string.IsNullOrWhiteSpace(DocumentId);
 
     public string DisplayPath => IsFile ? Path : FormatFolderPath(Path, ChildCount);

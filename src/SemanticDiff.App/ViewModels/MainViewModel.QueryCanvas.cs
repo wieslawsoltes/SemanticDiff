@@ -79,7 +79,7 @@ public sealed partial class MainViewModel
 
             if (queryCanvas.Scope == QueryCanvasScope.Workspace && !IsWorkspaceExplorerCacheValid())
             {
-                await RunOnCapturedContextAsync(() => LoadWorkspaceExplorerAsync(operation.Token)).ConfigureAwait(false);
+                await LoadWorkspaceExplorerAsync(operation.Token).ConfigureAwait(false);
             }
 
             operation.Token.ThrowIfCancellationRequested();
