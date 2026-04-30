@@ -172,10 +172,17 @@ public sealed partial class MainViewModel
         }
 
         var repositoryPath = currentRepositoryPath;
-        var operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var previousOperation = Interlocked.Exchange(ref currentWorkspaceExplorerOperation, operation);
-        previousOperation?.Cancel();
-        previousOperation?.Dispose();
+        CancellationTokenSource? operation = null;
+        await RunOnCapturedContextAsync(() =>
+        {
+            operation = BeginBackgroundOperation(
+                "Loading workspace files",
+                cancellationToken,
+                drivesGlobalProgress: true);
+            var previousOperation = Interlocked.Exchange(ref currentWorkspaceExplorerOperation, operation);
+            previousOperation?.Cancel();
+            return Task.CompletedTask;
+        }).ConfigureAwait(false);
 
         try
         {
@@ -189,16 +196,19 @@ public sealed partial class MainViewModel
                 FileExplorerModeStatusText = "Loading workspace files...";
                 return Task.CompletedTask;
             }).ConfigureAwait(false);
-            var result = await workspaceFileDiscoveryService.LoadFilesAsync(repositoryPath, operation.Token).ConfigureAwait(false);
+            ReportProgress(operation!, 0.15, "Discovering MSBuild workspace files");
+            var result = await workspaceFileDiscoveryService.LoadFilesAsync(repositoryPath, operation!.Token).ConfigureAwait(false);
             var items = result.Files
                 .Select(file => new ExplorerItemViewModel(file.Path, file.Status, file.Language))
                 .ToImmutableArray();
+            ReportProgress(operation!, 0.82, "Building workspace file tree");
 
             await RunOnCapturedContextAsync(() =>
             {
-                if (operation.IsCancellationRequested ||
+                if (!CanReportOperation(operation!) ||
                     !string.Equals(currentRepositoryPath, repositoryPath, StringComparison.Ordinal))
                 {
+                    CompleteOperation(operation, "Workspace file load skipped");
                     return Task.CompletedTask;
                 }
 
@@ -222,11 +232,14 @@ public sealed partial class MainViewModel
                 {
                     FileExplorerModeStatusText = $"{workspaceName} | {workspaceExplorerItems.Length:N0} files";
                 }
+
+                CompleteOperation(operation, FileExplorerModeStatusText);
                 return Task.CompletedTask;
             }).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
+            CompleteOperation(operation!, "Workspace file load canceled");
         }
         catch (Exception exception)
         {
@@ -234,6 +247,7 @@ public sealed partial class MainViewModel
             {
                 if (!string.Equals(currentRepositoryPath, repositoryPath, StringComparison.Ordinal))
                 {
+                    CompleteOperation(operation!, "Workspace file load skipped");
                     return Task.CompletedTask;
                 }
 
@@ -248,6 +262,7 @@ public sealed partial class MainViewModel
 
                 FileExplorerModeStatusText = $"Workspace files unavailable: {exception.Message}";
                 AddDiagnostic("Warning", FileExplorerModeStatusText);
+                CompleteOperation(operation!, "Workspace files unavailable");
                 return Task.CompletedTask;
             }).ConfigureAwait(false);
         }
@@ -257,8 +272,6 @@ public sealed partial class MainViewModel
             {
                 currentWorkspaceExplorerOperation = null;
             }
-
-            operation.Dispose();
         }
     }
 
@@ -283,7 +296,11 @@ public sealed partial class MainViewModel
 
         var operation = Interlocked.Exchange(ref currentWorkspaceExplorerOperation, null);
         operation?.Cancel();
-        operation?.Dispose();
+        if (operation is not null)
+        {
+            CompleteOperation(operation, "Workspace file cache invalidated");
+        }
+
         workspaceExplorerItems = [];
         workspaceExplorerRepositoryPath = null;
         workspaceExplorerWorkspacePath = null;

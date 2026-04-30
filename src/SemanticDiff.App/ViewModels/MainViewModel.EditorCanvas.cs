@@ -77,61 +77,87 @@ public sealed partial class MainViewModel
         CancellationToken cancellationToken,
         bool autoLayoutByFolder = false)
     {
-        var candidatePaths = ExpandEditorCanvasInputPaths(paths)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(path => NormalizeRepositoryPath(path), StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (candidatePaths.Length == 0)
-        {
-            return;
-        }
-
         var tab = ResolveEditorCanvasTab(targetTab);
         if (tab.EditorCanvas is not { } editorCanvas)
         {
             return;
         }
 
-        var builder = editorCanvas.Documents.IsDefault
-            ? ImmutableArray.CreateBuilder<EditorCanvasDocument>()
-            : editorCanvas.Documents.ToBuilder();
-        var existingIds = builder
-            .Select(document => document.Document.Id.Value)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var added = 0;
-
-        foreach (var path in candidatePaths)
+        var operation = BeginTabOperation(
+            tab,
+            "Preparing editor canvas files",
+            cancellationToken,
+            drivesGlobalProgress: true);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var editorDocument = await CreateEditorCanvasDocumentAsync(path, cancellationToken);
-            if (editorDocument is null)
+            var candidatePaths = await Task.Run(() => ExpandEditorCanvasInputPaths(paths)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => NormalizeRepositoryPath(path), StringComparer.OrdinalIgnoreCase)
+                .ToArray(), operation.Token);
+            if (candidatePaths.Length == 0)
             {
-                AddDiagnostic("Warning", $"Could not add {path} to editor canvas");
-                continue;
+                CompleteOperation(operation, "No files to add");
+                return;
             }
 
-            if (!existingIds.Add(editorDocument.Document.Id.Value))
+            var builder = editorCanvas.Documents.IsDefault
+                ? ImmutableArray.CreateBuilder<EditorCanvasDocument>()
+                : editorCanvas.Documents.ToBuilder();
+            var existingIds = builder
+                .Select(document => document.Document.Id.Value)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var added = 0;
+
+            for (var index = 0; index < candidatePaths.Length; index++)
             {
-                AddDiagnostic("Info", $"{editorDocument.Document.Metadata.Path} is already on the editor canvas");
-                continue;
+                var path = candidatePaths[index];
+                operation.Token.ThrowIfCancellationRequested();
+                ReportProgress(
+                    operation,
+                    0.12 + (candidatePaths.Length == 0 ? 0 : (double)index / candidatePaths.Length) * 0.68,
+                    $"Loading editor node {index + 1:N0}/{candidatePaths.Length:N0}: {ShortenPath(path)}");
+                var editorDocument = await CreateEditorCanvasDocumentAsync(path, operation.Token);
+                if (editorDocument is null)
+                {
+                    AddDiagnostic("Warning", $"Could not add {path} to editor canvas");
+                    continue;
+                }
+
+                if (!existingIds.Add(editorDocument.Document.Id.Value))
+                {
+                    AddDiagnostic("Info", $"{editorDocument.Document.Metadata.Path} is already on the editor canvas");
+                    continue;
+                }
+
+                builder.Add(editorDocument);
+                added++;
             }
 
-            builder.Add(editorDocument);
-            added++;
-        }
+            if (added == 0)
+            {
+                SelectedWorkspaceTab = tab;
+                CompleteOperation(operation, "No new editor nodes added");
+                return;
+            }
 
-        if (added == 0)
-        {
+            ReportProgress(operation, 0.9, "Laying out editor canvas");
+            var documents = builder.ToImmutable();
+            var scene = await CreateEditorCanvasSceneAsync(editorCanvas, documents, dropWorldPoint, autoLayoutByFolder, operation.Token);
+            editorCanvas.SetDocuments(documents, scene);
+            tab.StatusText = editorCanvas.StatusText;
             SelectedWorkspaceTab = tab;
-            return;
+            AddDiagnostic("Info", $"Added {added:N0} file{(added == 1 ? string.Empty : "s")} to editor canvas");
+            CompleteOperation(operation, $"Added {added:N0} editor node{(added == 1 ? string.Empty : "s")}");
         }
-
-        var documents = builder.ToImmutable();
-        var scene = CreateEditorCanvasScene(editorCanvas, documents, dropWorldPoint, autoLayoutByFolder);
-        editorCanvas.SetDocuments(documents, scene);
-        tab.StatusText = editorCanvas.StatusText;
-        SelectedWorkspaceTab = tab;
-        AddDiagnostic("Info", $"Added {added:N0} file{(added == 1 ? string.Empty : "s")} to editor canvas");
+        catch (OperationCanceledException)
+        {
+            CompleteOperation(operation, "Editor canvas add canceled");
+        }
+        catch (Exception exception)
+        {
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "Editor canvas add failed");
+        }
     }
 
     private ImmutableArray<string> ExpandEditorCanvasInputPaths(IEnumerable<string> paths)
@@ -420,18 +446,43 @@ public sealed partial class MainViewModel
         return CreateEditorCanvasScene(documents, BuildEditorCanvasLayout(documents, existingLayouts, dropWorldPoint, autoLayoutByFolder));
     }
 
+    private Task<DiffCanvasScene> CreateEditorCanvasSceneAsync(
+        EditorCanvasTabViewModel editorCanvas,
+        ImmutableArray<EditorCanvasDocument> documents,
+        Point2? dropWorldPoint,
+        bool autoLayoutByFolder,
+        CancellationToken cancellationToken)
+    {
+        var existingLayouts = editorCanvas.Scene.GetCurrentLayout();
+        var edgeOptions = CreateEdgeOptions();
+        var annotationVisibility = appState.EffectiveAnnotationVisibility;
+        return Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var layout = BuildEditorCanvasLayout(documents, existingLayouts, dropWorldPoint, autoLayoutByFolder);
+            return CreateEditorCanvasScene(documents, layout, edgeOptions, annotationVisibility);
+        }, cancellationToken);
+    }
+
     private DiffCanvasScene CreateEditorCanvasScene(
         ImmutableArray<EditorCanvasDocument> documents,
-        GraphLayoutResult? layout)
+        GraphLayoutResult? layout) =>
+        CreateEditorCanvasScene(documents, layout, CreateEdgeOptions(), appState.EffectiveAnnotationVisibility);
+
+    private static DiffCanvasScene CreateEditorCanvasScene(
+        ImmutableArray<EditorCanvasDocument> documents,
+        GraphLayoutResult? layout,
+        EdgeProjectionOptions edgeOptions,
+        DiffAnnotationVisibilityState annotationVisibility)
     {
         var snapshots = documents.Select(document => document.Document).ToImmutableArray();
         var scene = DiffCanvasScene.FromDocuments(
             snapshots,
             SemanticGraph.Empty,
             layout,
-            CreateEdgeOptions(),
+            edgeOptions,
             [],
-            appState.EffectiveAnnotationVisibility,
+            annotationVisibility,
             GraphGroupingMode.Folder);
         scene.SetFullFileDocuments(documents.Select(document =>
             new DiffNodeFullFileContent(

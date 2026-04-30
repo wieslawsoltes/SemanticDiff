@@ -122,7 +122,7 @@ public sealed partial class MainViewModel
                 ClearReferenceOptions("Loading branches");
             }
 
-            _ = RefreshRepositoryReferencesAsync(repositoryRoot, requestId, CancellationToken.None);
+            _ = RefreshRepositoryReferencesAsync(repositoryRoot, requestId, cancellationToken);
             var request = new GitDiffRequest(repositoryRoot, appState.DiffScope, NormalizeRef(appState.BaseRef), NormalizeRef(appState.HeadRef));
 
             if (TryApplyCachedDiffView(repositoryRoot, request, requestId, cancellationToken))
@@ -355,10 +355,12 @@ public sealed partial class MainViewModel
             AddDiagnostic("Info", "Refining semantic graph with MSBuild");
             StatusText = $"{statusPrefix} | {documents.Length} nodes | refining MSBuild semantics";
 
+            ReportProgress(refinementOperation, 0.22, "Analyzing MSBuild workspace semantics");
             var semanticGraph = await AnalyzeSemanticsAsync(repositoryPath, gitSnapshot, documents, SemanticAnalysisMode.WorkspaceThenSyntax, cancellationToken);
             EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
             var viewState = Scene.CaptureViewState();
             currentSemanticGraph = semanticGraph;
+            ReportProgress(refinementOperation, 0.72, "Laying out refined semantic graph");
             var layout = await LayoutDocumentsAsync(documents, semanticGraph, cancellationToken);
             EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
 
@@ -378,9 +380,11 @@ public sealed partial class MainViewModel
             await SaveStateAsync(cancellationToken);
             CacheCurrentDiffView();
             AddDiagnostic("Info", $"MSBuild semantic refinement produced {semanticGraph.Edges.Length} semantic edges");
+            CompleteOperation(refinementOperation, "MSBuild semantics ready");
         }
         catch (OperationCanceledException)
         {
+            CompleteOperation(refinementOperation, "MSBuild semantic refinement canceled");
         }
         catch (Exception exception)
         {
@@ -388,6 +392,8 @@ public sealed partial class MainViewModel
             {
                 AddDiagnostic("Warning", $"MSBuild semantic refinement failed: {exception.Message}");
             }
+
+            CompleteOperation(refinementOperation, "MSBuild semantic refinement failed");
         }
         finally
         {
@@ -395,8 +401,6 @@ public sealed partial class MainViewModel
             {
                 currentSemanticRefinementOperation = null;
             }
-
-            refinementOperation.Dispose();
         }
     }
 

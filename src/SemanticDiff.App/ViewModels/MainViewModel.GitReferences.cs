@@ -254,20 +254,28 @@ public sealed partial class MainViewModel
 
     private async Task RefreshRepositoryReferencesAsync(string repositoryPath, long repositoryRequestId, CancellationToken cancellationToken)
     {
+        var operation = BeginBackgroundOperation(
+            $"Loading {FormatReviewRequestState(appState.ReviewRequestState)} branches and review requests",
+            cancellationToken,
+            drivesGlobalProgress: false);
         try
         {
             if (!IsCurrentRepositoryRequest(repositoryRequestId))
             {
+                CompleteOperation(operation, "Reference load skipped");
                 return;
             }
 
             ReferenceSelectorStatusText = $"Loading {FormatReviewRequestState(appState.ReviewRequestState)} review requests";
-            var snapshot = await gitReferenceDiscoveryService.GetReferencesAsync(repositoryPath, cancellationToken, appState.ReviewRequestState);
+            ReportProgress(operation, 0.15, "Discovering Git remotes and branches");
+            var snapshot = await gitReferenceDiscoveryService.GetReferencesAsync(repositoryPath, operation.Token, appState.ReviewRequestState);
             if (!IsCurrentRepositoryRequest(repositoryRequestId))
             {
+                CompleteOperation(operation, "Reference load skipped");
                 return;
             }
 
+            ReportProgress(operation, 0.82, "Building Git reference tree");
             gitReferenceBrowser.SetReferences(
                 snapshot.Branches.Select(GitBranchOptionViewModel.FromBranch).ToImmutableArray(),
                 snapshot.PullRequests.Select(GitPullRequestOptionViewModel.FromPullRequest).ToImmutableArray(),
@@ -285,9 +293,12 @@ public sealed partial class MainViewModel
             {
                 _ = RefreshReviewDiscussionAsync(CancellationToken.None);
             }
+
+            CompleteOperation(operation, snapshot.StatusMessage);
         }
         catch (OperationCanceledException)
         {
+            CompleteOperation(operation, "Reference load canceled");
         }
         catch (Exception exception)
         {
@@ -296,6 +307,8 @@ public sealed partial class MainViewModel
                 ReferenceSelectorStatusText = "Refs unavailable";
                 AddDiagnostic("Warning", $"Reference discovery failed: {exception.Message}");
             }
+
+            CompleteOperation(operation, "Reference load failed");
         }
     }
 
@@ -488,18 +501,27 @@ public sealed partial class MainViewModel
             branch.ReferenceName,
             null);
         AddWorkspaceTab(tab);
-        tab.IsLoading = true;
-        tab.StatusText = $"Loading workspace for {branch.ReferenceName}";
+        var tabOperation = BeginTabOperation(
+            tab,
+            $"Loading workspace for {branch.ReferenceName}",
+            drivesGlobalProgress: false);
         try
         {
             await SelectBranchAsync(branch);
             CaptureGraphWorkspaceState(tab);
             tab.StatusText = StatusText;
             AddDiagnostic("Info", $"Opened workspace tab for {branch.ReferenceName}");
+            CompleteOperation(tabOperation, "Workspace ready");
         }
-        finally
+        catch (OperationCanceledException)
         {
-            tab.IsLoading = false;
+            CompleteOperation(tabOperation, "Workspace load canceled");
+            throw;
+        }
+        catch
+        {
+            CompleteOperation(tabOperation, "Workspace load failed");
+            throw;
         }
     }
 
@@ -521,18 +543,27 @@ public sealed partial class MainViewModel
             null,
             reviewRequest);
         AddWorkspaceTab(tab);
-        tab.IsLoading = true;
-        tab.StatusText = $"Loading workspace for {pullRequest.KindText} {pullRequest.NumberText}";
+        var tabOperation = BeginTabOperation(
+            tab,
+            $"Loading workspace for {pullRequest.KindText} {pullRequest.NumberText}",
+            drivesGlobalProgress: false);
         try
         {
             await SelectPullRequestAsync(pullRequest);
             CaptureGraphWorkspaceState(tab);
             tab.StatusText = StatusText;
             AddDiagnostic("Info", $"Opened workspace tab for {pullRequest.KindText} {pullRequest.NumberText}");
+            CompleteOperation(tabOperation, "Workspace ready");
         }
-        finally
+        catch (OperationCanceledException)
         {
-            tab.IsLoading = false;
+            CompleteOperation(tabOperation, "Workspace load canceled");
+            throw;
+        }
+        catch
+        {
+            CompleteOperation(tabOperation, "Workspace load failed");
+            throw;
         }
     }
 
@@ -549,10 +580,10 @@ public sealed partial class MainViewModel
             branch.ReferenceName,
             new GitHistoryRequest(currentRepositoryPath!, branch.ReferenceName, MaxCount: GitHistoryPageSize));
         AddWorkspaceTab(tab);
-        var operation = BeginOperation($"Loading history for {branch.ReferenceName}");
+        var operation = BeginTabOperation(tab, $"Loading history for {branch.ReferenceName}");
         try
         {
-            await LoadGitHistoryPageAsync(tab, operation.Token);
+            await LoadGitHistoryPageAsync(tab, operation.Token, operation);
             AddDiagnostic("Info", $"Loaded history for {branch.ReferenceName}");
             CompleteOperation(operation, "History ready");
         }
@@ -583,11 +614,12 @@ public sealed partial class MainViewModel
 
         var tab = WorkspaceTabViewModel.CreateHistory(tabId, $"History {pullRequest.NumberText}", pullRequest.Title);
         AddWorkspaceTab(tab);
-        var operation = BeginOperation($"Loading history for {pullRequest.KindText} {pullRequest.NumberText}");
+        var operation = BeginTabOperation(tab, $"Loading history for {pullRequest.KindText} {pullRequest.NumberText}");
         try
         {
             tab.IsLoading = true;
             tab.StatusText = $"Preparing {pullRequest.KindText} head";
+            ReportProgress(operation, 0.12, $"Preparing {pullRequest.KindText} head");
             var headRef = await gitReferenceDiscoveryService.EnsurePullRequestHeadAsync(currentRepositoryPath!, pullRequest.ToPullRequestInfo(), operation.Token);
             if (string.IsNullOrWhiteSpace(headRef))
             {
@@ -599,7 +631,7 @@ public sealed partial class MainViewModel
             tab.History = GitHistoryTimelineViewModel.Create(
                 $"{pullRequest.NumberText} {pullRequest.Title}",
                 new GitHistoryRequest(currentRepositoryPath!, headRef, pullRequest.BaseReferenceName, GitHistoryPageSize));
-            await LoadGitHistoryPageAsync(tab, operation.Token);
+            await LoadGitHistoryPageAsync(tab, operation.Token, operation);
             AddDiagnostic("Info", $"Loaded history for {pullRequest.KindText} {pullRequest.NumberText}");
             CompleteOperation(operation, "History ready");
         }
@@ -638,10 +670,10 @@ public sealed partial class MainViewModel
             }
         }
 
-        var operation = BeginOperation($"Loading more history for {history.ReferenceText}");
+        var operation = BeginTabOperation(tab, $"Loading more history for {history.ReferenceText}");
         try
         {
-            await LoadGitHistoryPageAsync(tab, operation.Token);
+            await LoadGitHistoryPageAsync(tab, operation.Token, operation);
             CompleteOperation(operation, "History page loaded");
         }
         catch (OperationCanceledException)
@@ -657,7 +689,10 @@ public sealed partial class MainViewModel
         }
     }
 
-    private async Task LoadGitHistoryPageAsync(WorkspaceTabViewModel tab, CancellationToken cancellationToken)
+    private async Task LoadGitHistoryPageAsync(
+        WorkspaceTabViewModel tab,
+        CancellationToken cancellationToken,
+        CancellationTokenSource? operation = null)
     {
         var history = tab.History;
         if (history is null || history.IsLoadingMore || !history.HasMore)
@@ -670,7 +705,17 @@ public sealed partial class MainViewModel
         tab.StatusText = history.LoadedCount == 0 ? "Loading Git history" : $"Loading more commits from {history.ReferenceText}";
         try
         {
+            if (operation is not null)
+            {
+                ReportProgress(operation, history.LoadedCount == 0 ? 0.25 : 0.45, tab.StatusText);
+            }
+
             var snapshot = await gitHistoryService.GetHistoryAsync(history.NextPageRequest, cancellationToken);
+            if (operation is not null)
+            {
+                ReportProgress(operation, 0.86, "Appending Git history page");
+            }
+
             history.AppendSnapshot(snapshot);
             tab.StatusText = history.CountText;
         }

@@ -1,6 +1,8 @@
 using System.Collections.Immutable;
 using SemanticDiff.Core;
 using SemanticDiff.Diff;
+using SemanticDiff.Rendering;
+using SemanticDiff.Semantics;
 using SemanticDiff.Workbench.Query;
 
 namespace SemanticDiff.App.ViewModels;
@@ -54,13 +56,17 @@ public sealed partial class MainViewModel
         if (queryCanvasOperations.TryGetValue(tab.Id, out var previousOperation))
         {
             previousOperation.Cancel();
-            previousOperation.Dispose();
         }
 
-        var operation = new CancellationTokenSource();
+        var operation = BeginTabOperation(
+            tab,
+            "Running query",
+            drivesGlobalProgress: false,
+            logDiagnostic: false);
         queryCanvasOperations[tab.Id] = operation;
         queryCanvas.SetExecuting();
         tab.StatusText = queryCanvas.StatusText;
+        ReportIndeterminate(operation, queryCanvas.StatusText);
         _ = ExecuteQueryCanvasAsync(tab, queryCanvas, delay, operation);
     }
 
@@ -70,6 +76,7 @@ public sealed partial class MainViewModel
         TimeSpan delay,
         CancellationTokenSource operation)
     {
+        var completionMessage = "Query canceled";
         try
         {
             if (delay > TimeSpan.Zero)
@@ -83,12 +90,43 @@ public sealed partial class MainViewModel
             }
 
             operation.Token.ThrowIfCancellationRequested();
-            var context = CreateQueryCanvasContext();
-            var result = queryCanvasEngine.Execute(queryCanvas.QueryText, context, queryCanvas.Scope);
+            var queryText = queryCanvas.QueryText;
+            var queryScope = queryCanvas.Scope;
+            var diffDocuments = currentDocuments.IsDefault ? [] : currentDocuments;
+            var workspaceItems = workspaceExplorerItems;
+            var explorerItems = allExplorerItems;
+            var changedItems = diffExplorerItems;
+            var semanticItems = allSemanticNavigationItems.IsDefault ? [] : allSemanticNavigationItems;
+            var semanticGraph = currentSemanticGraph;
+            var layoutMode = appState.LayoutMode;
+            var groupingMode = appState.GroupingMode;
+            var edgeOptions = CreateEdgeOptions();
+            var annotationVisibility = appState.EffectiveAnnotationVisibility;
+            ReportProgress(operation, 0.35, "Preparing query context");
+            var result = await Task.Run(
+                () =>
+                {
+                    var context = CreateQueryCanvasContext(
+                        diffDocuments,
+                        workspaceItems,
+                        explorerItems,
+                        changedItems,
+                        semanticItems,
+                        semanticGraph,
+                        layoutMode,
+                        groupingMode,
+                        edgeOptions,
+                        annotationVisibility);
+                    operation.Token.ThrowIfCancellationRequested();
+                    return queryCanvasEngine.Execute(queryText, context, queryScope);
+                },
+                operation.Token).ConfigureAwait(false);
             operation.Token.ThrowIfCancellationRequested();
+            completionMessage = result.StatusText;
+            ReportProgress(operation, 0.82, "Rendering query canvas");
             PostToCapturedContext(() =>
             {
-                if (operation.IsCancellationRequested)
+                if (!CanReportOperation(operation))
                 {
                     return;
                 }
@@ -106,6 +144,7 @@ public sealed partial class MainViewModel
         }
         catch (Exception exception)
         {
+            completionMessage = exception.Message;
             PostToCapturedContext(() =>
             {
                 var result = QueryCanvasExecutionResult.Error(exception.Message);
@@ -121,21 +160,35 @@ public sealed partial class MainViewModel
                 queryCanvasOperations.Remove(tab.Id);
             }
 
-            operation.Dispose();
+            CompleteOperation(operation, completionMessage);
         }
     }
 
-    private QueryCanvasContext CreateQueryCanvasContext() => new(
-        currentDocuments.IsDefault ? [] : currentDocuments,
-        CreateWorkspaceQueryDocuments(),
-        allSemanticNavigationItems.IsDefault ? [] : allSemanticNavigationItems,
-        currentSemanticGraph,
-        appState.LayoutMode,
-        appState.GroupingMode,
-        CreateEdgeOptions(),
-        appState.EffectiveAnnotationVisibility);
+    private static QueryCanvasContext CreateQueryCanvasContext(
+        ImmutableArray<DiffDocumentSnapshot> diffDocuments,
+        ImmutableArray<ExplorerItemViewModel> workspaceItems,
+        ImmutableArray<ExplorerItemViewModel> explorerItems,
+        ImmutableArray<ExplorerItemViewModel> changedItems,
+        ImmutableArray<SemanticNavigationItem> semanticItems,
+        SemanticGraph semanticGraph,
+        GraphLayoutMode layoutMode,
+        GraphGroupingMode groupingMode,
+        EdgeProjectionOptions edgeOptions,
+        DiffAnnotationVisibilityState annotationVisibility) => new(
+        diffDocuments,
+        CreateWorkspaceQueryDocuments(diffDocuments, workspaceItems, explorerItems, changedItems),
+        semanticItems,
+        semanticGraph,
+        layoutMode,
+        groupingMode,
+        edgeOptions,
+        annotationVisibility);
 
-    private ImmutableArray<DiffDocumentSnapshot> CreateWorkspaceQueryDocuments()
+    private static ImmutableArray<DiffDocumentSnapshot> CreateWorkspaceQueryDocuments(
+        ImmutableArray<DiffDocumentSnapshot> currentDocuments,
+        ImmutableArray<ExplorerItemViewModel> workspaceExplorerItems,
+        ImmutableArray<ExplorerItemViewModel> allExplorerItems,
+        ImmutableArray<ExplorerItemViewModel> diffExplorerItems)
     {
         var sourceItems = !workspaceExplorerItems.IsDefaultOrEmpty
             ? workspaceExplorerItems
@@ -182,7 +235,6 @@ public sealed partial class MainViewModel
         foreach (var operation in queryCanvasOperations.Values)
         {
             operation.Cancel();
-            operation.Dispose();
         }
 
         queryCanvasOperations.Clear();
@@ -196,6 +248,5 @@ public sealed partial class MainViewModel
         }
 
         operation.Cancel();
-        operation.Dispose();
     }
 }

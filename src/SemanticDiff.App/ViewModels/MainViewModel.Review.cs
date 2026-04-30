@@ -38,12 +38,18 @@ public sealed partial class MainViewModel
             return;
         }
 
+        var operation = BeginBackgroundOperation(
+            $"Loading {option.KindText} review",
+            cancellationToken,
+            drivesGlobalProgress: false);
         try
         {
             reviewWorkflow.BeginLoad($"Loading {option.KindText} review");
             ReviewPanelStatusText = reviewWorkflow.StatusText;
             RefreshSceneAnnotations();
-            var snapshot = await gitReviewDiscussionService.GetDiscussionAsync(currentRepositoryPath, option.ToPullRequestInfo(), cancellationToken);
+            ReportProgress(operation, 0.2, $"Loading {option.KindText} review threads");
+            var snapshot = await gitReviewDiscussionService.GetDiscussionAsync(currentRepositoryPath, option.ToPullRequestInfo(), operation.Token);
+            ReportProgress(operation, 0.82, "Preparing review annotations");
             reviewWorkflow.SetThreads(
                 snapshot.Threads,
                 snapshot.Threads.Select(ReviewThreadItemViewModel.FromThread).ToImmutableArray(),
@@ -51,15 +57,18 @@ public sealed partial class MainViewModel
             ApplyReviewThreadFilter();
             RefreshSceneAnnotations();
             ReviewPanelStatusText = reviewWorkflow.StatusText;
+            CompleteOperation(operation, snapshot.StatusMessage);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (operation.IsCancellationRequested || cancellationToken.IsCancellationRequested)
         {
             ReviewPanelStatusText = "Review load canceled";
+            CompleteOperation(operation, "Review load canceled");
         }
         catch (Exception exception)
         {
             ReviewPanelStatusText = "Review unavailable";
             AddDiagnostic("Warning", $"Review discussion failed: {exception.Message}");
+            CompleteOperation(operation, "Review load failed");
         }
     }
 
@@ -85,12 +94,13 @@ public sealed partial class MainViewModel
             var result = await gitReviewDiscussionService.AddCommentAsync(currentRepositoryPath, option.ToPullRequestInfo(), body, operation.Token);
             ReviewPanelStatusText = result.Message;
             AddDiagnostic(result.Succeeded ? "Info" : "Warning", result.Message);
-            CompleteOperation(operation, result.Succeeded ? "Comment added" : "Comment failed");
             if (result.Succeeded)
             {
                 ReviewCommentText = string.Empty;
                 await RefreshReviewDiscussionAsync(operation.Token);
             }
+
+            CompleteOperation(operation, result.Succeeded ? "Comment added" : "Comment failed");
         }
         catch (OperationCanceledException)
         {
@@ -128,12 +138,13 @@ public sealed partial class MainViewModel
             var result = await gitReviewDiscussionService.ReplyToThreadAsync(currentRepositoryPath, option.ToPullRequestInfo(), thread.Id, body, operation.Token);
             ReviewPanelStatusText = result.Message;
             AddDiagnostic(result.Succeeded ? "Info" : "Warning", result.Message);
-            CompleteOperation(operation, result.Succeeded ? "Reply added" : "Reply failed");
             if (result.Succeeded)
             {
                 ReviewCommentText = string.Empty;
                 await RefreshReviewDiscussionAsync(operation.Token);
             }
+
+            CompleteOperation(operation, result.Succeeded ? "Reply added" : "Reply failed");
         }
         catch (OperationCanceledException)
         {
@@ -165,11 +176,12 @@ public sealed partial class MainViewModel
             var result = await gitReviewDiscussionService.SetThreadResolvedAsync(currentRepositoryPath, option.ToPullRequestInfo(), thread.Id, shouldResolve, operation.Token);
             ReviewPanelStatusText = result.Message;
             AddDiagnostic(result.Succeeded ? "Info" : "Warning", result.Message);
-            CompleteOperation(operation, result.Succeeded ? "Thread updated" : "Thread update failed");
             if (result.Succeeded)
             {
                 await RefreshReviewDiscussionAsync(operation.Token);
             }
+
+            CompleteOperation(operation, result.Succeeded ? "Thread updated" : "Thread update failed");
         }
         catch (OperationCanceledException)
         {

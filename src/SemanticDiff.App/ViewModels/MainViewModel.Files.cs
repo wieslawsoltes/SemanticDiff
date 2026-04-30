@@ -144,10 +144,27 @@ public sealed partial class MainViewModel
                 string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedPath, StringComparison.OrdinalIgnoreCase)));
         if (document is null)
         {
-            document = await CreateWorkspaceFileDocumentAsync(normalizedPath, CancellationToken.None);
-            if (document is null)
+            var operation = BeginBackgroundOperation($"Resolving workspace file {path}");
+            try
             {
-                AddDiagnostic("Warning", $"No document node for {path}");
+                ReportProgress(operation, 0.25, $"Loading workspace file {path}");
+                document = await CreateWorkspaceFileDocumentAsync(normalizedPath, operation.Token);
+                CompleteOperation(operation, document is null ? "Workspace file not found" : "Workspace file resolved");
+                if (document is null)
+                {
+                    AddDiagnostic("Warning", $"No document node for {path}");
+                    return;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                CompleteOperation(operation, "Workspace file load canceled");
+                return;
+            }
+            catch (Exception exception)
+            {
+                AddDiagnostic("Error", exception.Message);
+                CompleteOperation(operation, "Workspace file load failed");
                 return;
             }
         }
@@ -164,13 +181,31 @@ public sealed partial class MainViewModel
                 string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedPath, StringComparison.OrdinalIgnoreCase)));
         if (document is null)
         {
-            if (!await HasRepositoryFileAsync(normalizedPath, CancellationToken.None))
+            var operation = BeginBackgroundOperation($"Resolving blame file {path}");
+            try
             {
-                AddDiagnostic("Warning", $"No document node for {path}");
+                ReportProgress(operation, 0.35, $"Checking repository file {path}");
+                if (!await HasRepositoryFileAsync(normalizedPath, operation.Token))
+                {
+                    CompleteOperation(operation, "Blame file not found");
+                    AddDiagnostic("Warning", $"No document node for {path}");
+                    return;
+                }
+
+                document = CreateWorkspaceFilePlaceholderDocument(normalizedPath);
+                CompleteOperation(operation, "Blame file resolved");
+            }
+            catch (OperationCanceledException)
+            {
+                CompleteOperation(operation, "Blame file load canceled");
                 return;
             }
-
-            document = CreateWorkspaceFilePlaceholderDocument(normalizedPath);
+            catch (Exception exception)
+            {
+                AddDiagnostic("Error", exception.Message);
+                CompleteOperation(operation, "Blame file load failed");
+                return;
+            }
         }
 
         await OpenBlameTabAsync(document);
@@ -288,21 +323,38 @@ public sealed partial class MainViewModel
             return;
         }
 
-        var fullText = await LoadFullFileTextAsync(document, CancellationToken.None);
-        var fullFileDocument = await CreateTokenizedFullFileDocumentAsync(document, fullText, CancellationToken.None);
-        var foldRegions = CreateFoldRegions(fullFileDocument, CancellationToken.None);
-        var fileDiff = FileDiffTabViewModel.FromDocument(
-            document,
-            fullFileDocument,
-            fullText,
-            foldRegions,
-            GetSemanticDocumentInsight(document.Id),
-            displayMode,
-            currentRepositoryPath,
-            CodeCompletionProvider);
-        var tab = WorkspaceTabViewModel.CreateFileDiff(tabId, Path.GetFileName(document.Metadata.Path), document.Metadata.Path, fileDiff);
-        AddWorkspaceTab(tab);
-        AddDiagnostic("Info", $"Opened file diff tab for {document.Metadata.Path}");
+        var operation = BeginBackgroundOperation($"Opening file tab for {document.Metadata.Path}");
+        try
+        {
+            ReportProgress(operation, 0.18, $"Loading full text for {document.Metadata.Path}");
+            var fullText = await LoadFullFileTextAsync(document, operation.Token);
+            ReportProgress(operation, 0.46, "Tokenizing file view");
+            var fullFileDocument = await CreateTokenizedFullFileDocumentAsync(document, fullText, operation.Token);
+            ReportProgress(operation, 0.72, "Preparing folding and diff annotations");
+            var foldRegions = CreateFoldRegions(fullFileDocument, operation.Token);
+            var fileDiff = FileDiffTabViewModel.FromDocument(
+                document,
+                fullFileDocument,
+                fullText,
+                foldRegions,
+                GetSemanticDocumentInsight(document.Id),
+                displayMode,
+                currentRepositoryPath,
+                CodeCompletionProvider);
+            var tab = WorkspaceTabViewModel.CreateFileDiff(tabId, Path.GetFileName(document.Metadata.Path), document.Metadata.Path, fileDiff);
+            AddWorkspaceTab(tab);
+            AddDiagnostic("Info", $"Opened file diff tab for {document.Metadata.Path}");
+            CompleteOperation(operation, "File tab ready");
+        }
+        catch (OperationCanceledException)
+        {
+            CompleteOperation(operation, "File tab load canceled");
+        }
+        catch (Exception exception)
+        {
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "File tab load failed");
+        }
     }
 
     private SemanticDocumentInsight GetSemanticDocumentInsight(DiffDocumentId documentId) =>
@@ -347,17 +399,17 @@ public sealed partial class MainViewModel
         var blameView = BlameTabViewModel.Loading(path, document.Metadata.Language);
         var tab = WorkspaceTabViewModel.CreateBlame(tabId, $"Blame {Path.GetFileName(path)}", path, blameView);
         AddWorkspaceTab(tab);
-        tab.IsLoading = true;
-        tab.StatusText = $"Loading blame for {path}";
-        var operation = BeginOperation($"Loading blame for {path}");
+        var operation = BeginTabOperation(tab, $"Loading blame for {path}");
         try
         {
             var blameRevision = GetActiveBlameRevision();
+            ReportProgress(operation, 0.18, $"Loading blame for {path}");
             var blameTask = gitBlameService.GetFileBlameAsync(currentRepositoryPath, path, operation.Token, blameRevision);
             var historyTask = gitHistoryService.GetHistoryAsync(
                 new GitHistoryRequest(currentRepositoryPath, blameRevision ?? "HEAD", MaxCount: 160, PathFilter: path),
                 operation.Token);
             await Task.WhenAll(blameTask, historyTask);
+            ReportProgress(operation, 0.86, "Building blame visualization");
 
             tab.Blame = BlameTabViewModel.FromBlame(path, document.Metadata.Language, await blameTask, (await historyTask).Commits);
             tab.StatusText = tab.Blame.StatusText;
@@ -374,10 +426,6 @@ public sealed partial class MainViewModel
             tab.StatusText = "Blame unavailable";
             AddDiagnostic("Error", exception.Message);
             CompleteOperation(operation, "Blame failed");
-        }
-        finally
-        {
-            tab.IsLoading = false;
         }
     }
 

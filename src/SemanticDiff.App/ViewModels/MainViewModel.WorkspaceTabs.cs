@@ -31,6 +31,7 @@ public sealed partial class MainViewModel
             return;
         }
 
+        tab.SymbolGraph?.CancelRefresh();
         CancelQueryCanvasOperation(tab.Id);
         var fallback = WorkspaceTabs.FirstOrDefault(candidate => candidate.Kind == WorkspaceTabKind.Graph)
             ?? WorkspaceTabs.FirstOrDefault()
