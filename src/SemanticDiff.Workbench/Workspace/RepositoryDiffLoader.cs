@@ -36,7 +36,7 @@ public sealed class RepositoryDiffLoader
     public async Task<RepositoryDiffLoadResult> LoadAsync(RepositoryDiffLoadRequest request, CancellationToken cancellationToken)
     {
         var gitRequest = new GitDiffRequest(request.RepositoryPath, request.Scope, NormalizeRef(request.BaseRef), NormalizeRef(request.HeadRef));
-        var snapshot = await documentService.LoadDocumentsAsync(gitRequest, request.DiffContextMode, cancellationToken);
+        var snapshot = await documentService.LoadDocumentsAsync(gitRequest, request.DiffContextMode, cancellationToken).ConfigureAwait(false);
         var documents = PrepareDocuments(snapshot.Documents, request.ReviewMode, request.CollapseUnchangedContext);
         return new RepositoryDiffLoadResult(gitRequest, snapshot.GitSnapshot, documents);
     }

@@ -507,9 +507,14 @@ public sealed partial class MainViewModel
             drivesGlobalProgress: false);
         try
         {
-            await SelectBranchAsync(branch);
-            CaptureGraphWorkspaceState(tab);
-            tab.StatusText = StatusText;
+            var state = await LoadGraphWorkspaceTabStateAsync(request, branch.ReferenceName, null, tabOperation);
+            tab.GraphState = state;
+            tab.StatusText = state.StatusText;
+            if (ReferenceEquals(SelectedWorkspaceTab, tab))
+            {
+                RestoreGraphWorkspaceState(tab);
+            }
+
             AddDiagnostic("Info", $"Opened workspace tab for {branch.ReferenceName}");
             CompleteOperation(tabOperation, "Workspace ready");
         }
@@ -549,9 +554,30 @@ public sealed partial class MainViewModel
             drivesGlobalProgress: false);
         try
         {
-            await SelectPullRequestAsync(pullRequest);
-            CaptureGraphWorkspaceState(tab);
-            tab.StatusText = StatusText;
+            ReportProgress(tabOperation, 0.08, $"Preparing {pullRequest.KindText} head");
+            var headRef = await gitReferenceDiscoveryService.EnsurePullRequestHeadAsync(currentRepositoryPath!, reviewRequest, tabOperation.Token);
+            if (string.IsNullOrWhiteSpace(headRef))
+            {
+                tab.StatusText = $"{pullRequest.KindText} workspace unavailable";
+                AddDiagnostic("Warning", $"Unable to fetch {pullRequest.KindText} {pullRequest.NumberText}");
+                CompleteOperation(tabOperation, "Workspace unavailable");
+                return;
+            }
+
+            var loadRequest = request with { HeadRef = headRef };
+            tab.GraphRequest = loadRequest;
+            var state = await LoadGraphWorkspaceTabStateAsync(
+                loadRequest,
+                $"{pullRequest.KindText} {pullRequest.NumberText}",
+                reviewRequest with { HeadRefName = headRef },
+                tabOperation);
+            tab.GraphState = state;
+            tab.StatusText = state.StatusText;
+            if (ReferenceEquals(SelectedWorkspaceTab, tab))
+            {
+                RestoreGraphWorkspaceState(tab);
+            }
+
             AddDiagnostic("Info", $"Opened workspace tab for {pullRequest.KindText} {pullRequest.NumberText}");
             CompleteOperation(tabOperation, "Workspace ready");
         }
@@ -566,6 +592,119 @@ public sealed partial class MainViewModel
             throw;
         }
     }
+
+    private async Task<GraphWorkspaceState> LoadGraphWorkspaceTabStateAsync(
+        GitDiffRequest request,
+        string statusLabel,
+        GitPullRequestInfo? reviewRequest,
+        CancellationTokenSource operation)
+    {
+        ReportProgress(operation, 0.14, $"Loading Git diff for {statusLabel}");
+        var diffContextMode = appState.DiffContextMode;
+        var reviewMode = appState.ReviewMode;
+        var collapseUnchangedContext = appState.CollapseUnchangedContext;
+        var layoutMode = appState.LayoutMode;
+        var loadedDiff = await Task.Run(async () => await repositoryDiffLoader.LoadAsync(
+            new RepositoryDiffLoadRequest(
+                request.RepositoryPath,
+                request.Scope,
+                request.BaseRef,
+                request.HeadRef,
+                diffContextMode,
+                reviewMode,
+                collapseUnchangedContext),
+            operation.Token).ConfigureAwait(false), operation.Token);
+
+        var repositoryName = Path.GetFileName(request.RepositoryPath);
+        var statusPrefix = $"{repositoryName} | {loadedDiff.GitSnapshot.Files.Length:N0} {FormatDiffScope(request.Scope)} changes | {FormatDiffContextMode(diffContextMode)} | {FormatReviewMode(reviewMode)} | {FormatReferenceText(loadedDiff.Request, loadedDiff.GitSnapshot.DefaultBranch)}";
+
+        if (loadedDiff.Documents.IsDefaultOrEmpty)
+        {
+            var emptyScene = CreateScene([], SemanticGraph.Empty, null);
+            return new GraphWorkspaceState(
+                request.RepositoryPath,
+                loadedDiff.Request,
+                reviewRequest,
+                repositoryName,
+                statusPrefix,
+                $"{statusPrefix} | no changes",
+                statusPrefix,
+                true,
+                [],
+                SemanticGraph.Empty,
+                loadedDiff.GitSnapshot,
+                null,
+                ImmutableHashSet<DiffDocumentId>.Empty,
+                emptyScene,
+                null,
+                [],
+                [],
+                reviewRequest?.Kind ?? gitReferenceBrowser.ReviewRequestKind);
+        }
+
+        ReportProgress(operation, 0.34, "Tokenizing workspace tab");
+        var tokenizationProgress = new Progress<(double Value, string Message)>(update =>
+            ReportProgress(operation, 0.34 + update.Value * 0.24, update.Message));
+        var tokenizedDocuments = await TokenizeAsync(loadedDiff.Documents, operation.Token, tokenizationProgress);
+
+        var initialSemanticAnalysisMode = GetInitialSemanticAnalysisMode(appState.SemanticAnalysisMode);
+        ReportProgress(operation, 0.62, $"Analyzing semantics ({FormatSemanticAnalysisMode(initialSemanticAnalysisMode)})");
+        var semanticGraph = await AnalyzeSemanticsAsync(
+            request.RepositoryPath,
+            loadedDiff.GitSnapshot,
+            tokenizedDocuments,
+            initialSemanticAnalysisMode,
+            operation.Token);
+
+        ReportProgress(operation, 0.86, "Running semantic graph layout");
+        var layout = await LayoutDocumentsForWorkspaceTabAsync(
+            tokenizedDocuments,
+            semanticGraph,
+            layoutMode,
+            operation.Token);
+        var scene = CreateScene(tokenizedDocuments, semanticGraph, layout);
+        var impactSummary = new SemanticImpactAnalyzer().Analyze(tokenizedDocuments, semanticGraph);
+        var statusText = $"{statusPrefix} | {tokenizedDocuments.Length:N0} nodes | {semanticGraph.Edges.Length:N0} semantic edges | {FormatImpactStatus(impactSummary)} | workspace ready";
+
+        return new GraphWorkspaceState(
+            request.RepositoryPath,
+            loadedDiff.Request,
+            reviewRequest,
+            repositoryName,
+            statusPrefix,
+            statusText,
+            statusPrefix,
+            true,
+            tokenizedDocuments,
+            semanticGraph,
+            loadedDiff.GitSnapshot,
+            layout,
+            ImmutableHashSet<DiffDocumentId>.Empty,
+            scene,
+            null,
+            [],
+            [],
+            reviewRequest?.Kind ?? gitReferenceBrowser.ReviewRequestKind);
+    }
+
+    private static Task<GraphLayoutResult> LayoutDocumentsForWorkspaceTabAsync(
+        ImmutableArray<DiffDocumentSnapshot> documents,
+        SemanticGraph semanticGraph,
+        GraphLayoutMode layoutMode,
+        CancellationToken cancellationToken) =>
+        Task.Run(async () =>
+        {
+            var layoutEngine = new MsaglGraphLayoutEngine();
+            return await layoutEngine.LayoutAsync(
+                new GraphLayoutRequest(
+                    documents,
+                    semanticGraph,
+                    new Size2(620, 420),
+                    default,
+                    ImmutableHashSet<DiffDocumentId>.Empty,
+                    layoutMode),
+                cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
 
     private async Task OpenBranchHistoryTabAsync(GitBranchOptionViewModel branch)
     {
@@ -789,8 +928,16 @@ public sealed partial class MainViewModel
                 }
             });
 
-        GitReferenceTreeItems = builder.ToImmutable();
-        GitReferenceCountText = referenceView.CountText;
+        IsUpdatingGitReferenceTree = true;
+        try
+        {
+            GitReferenceTreeItems = builder.ToImmutable();
+            GitReferenceCountText = referenceView.CountText;
+        }
+        finally
+        {
+            IsUpdatingGitReferenceTree = false;
+        }
     }
 
     private void AddGroup(

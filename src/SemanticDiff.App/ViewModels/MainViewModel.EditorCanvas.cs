@@ -47,13 +47,13 @@ public sealed partial class MainViewModel
 
     public async Task AddExplorerNodeToEditorCanvasAsync(FileExplorerNodeViewModel? node)
     {
-        var paths = GetEditorCanvasPathsForExplorerNode(node);
+        var paths = await GetEditorCanvasPathsForExplorerNodeAsync(node, CancellationToken.None);
         await AddFilesToEditorCanvasAsync(paths, null, null, CancellationToken.None, autoLayoutByFolder: true);
     }
 
     public async Task AddExplorerNodeToNewEditorCanvasAsync(FileExplorerNodeViewModel? node)
     {
-        var paths = GetEditorCanvasPathsForExplorerNode(node);
+        var paths = await GetEditorCanvasPathsForExplorerNodeAsync(node, CancellationToken.None);
         if (paths.IsDefaultOrEmpty)
         {
             return;
@@ -299,7 +299,9 @@ public sealed partial class MainViewModel
         }
     }
 
-    private ImmutableArray<string> GetEditorCanvasPathsForExplorerNode(FileExplorerNodeViewModel? node)
+    private async Task<ImmutableArray<string>> GetEditorCanvasPathsForExplorerNodeAsync(
+        FileExplorerNodeViewModel? node,
+        CancellationToken cancellationToken)
     {
         if (node is null)
         {
@@ -313,15 +315,21 @@ public sealed partial class MainViewModel
                 : ImmutableArray.Create(NormalizeRepositoryPath(node.Path));
         }
 
-        var folderPath = NormalizeRepositoryPath(node.Path);
-        var folderPrefix = string.IsNullOrWhiteSpace(folderPath) ? string.Empty : $"{folderPath}/";
-        var paths = allExplorerItems
-            .Where(item => string.IsNullOrWhiteSpace(folderPrefix) ||
-                NormalizeRepositoryPath(item.Path).StartsWith(folderPrefix, StringComparison.OrdinalIgnoreCase))
-            .Select(item => NormalizeRepositoryPath(item.Path))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-            .ToImmutableArray();
+        var explorerItems = allExplorerItems;
+        var nodePath = node.Path;
+        var paths = await Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var folderPath = NormalizeRepositoryPath(nodePath);
+            var folderPrefix = string.IsNullOrWhiteSpace(folderPath) ? string.Empty : $"{folderPath}/";
+            return explorerItems
+                .Where(item => string.IsNullOrWhiteSpace(folderPrefix) ||
+                    NormalizeRepositoryPath(item.Path).StartsWith(folderPrefix, StringComparison.OrdinalIgnoreCase))
+                .Select(item => NormalizeRepositoryPath(item.Path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToImmutableArray();
+        }, cancellationToken);
 
         if (paths.IsDefaultOrEmpty)
         {
