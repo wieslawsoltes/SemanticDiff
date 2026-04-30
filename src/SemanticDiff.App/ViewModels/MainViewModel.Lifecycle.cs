@@ -30,12 +30,14 @@ public sealed partial class MainViewModel
         currentBlameOperation?.Cancel();
         currentWorkspaceExplorerOperation?.Cancel();
         pendingAutoReload?.Cancel();
+        CancelLoadingOperations();
         CancelQueryCanvasOperations();
         await StopRepositoryWatcherAsync();
         currentOperation?.Dispose();
         currentSemanticRefinementOperation?.Dispose();
         currentBlameOperation?.Dispose();
         currentWorkspaceExplorerOperation?.Dispose();
+        ClearLoadingOperations();
         roslynCompletionProvider.Dispose();
         currentOperation = null;
         currentSemanticRefinementOperation = null;

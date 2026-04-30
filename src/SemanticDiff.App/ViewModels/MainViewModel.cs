@@ -79,6 +79,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private Task? currentWorkspaceExplorerLoadTask;
     private bool workspaceExplorerCacheLoaded;
 
+    public ObservableCollection<LoadingOperationViewModel> LoadingOperations { get; } = [];
+
     public MainViewModel()
         : this(JsonAppStateStore.CreateDefault())
     {

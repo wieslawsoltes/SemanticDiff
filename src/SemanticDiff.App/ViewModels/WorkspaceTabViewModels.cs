@@ -96,12 +96,23 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
 
     public Visibility LoadingVisibility => IsLoading ? Visibility.Visible : Visibility.Collapsed;
 
+    public string LoadingProgressText => IsLoadingIndeterminate ? StatusText : $"{LoadingProgress:P0} {StatusText}";
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(LoadingVisibility))]
     private bool isLoading;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LoadingProgressText))]
     private string statusText = string.Empty;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LoadingProgressText))]
+    private double loadingProgress;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LoadingProgressText))]
+    private bool isLoadingIndeterminate = true;
 
     [ObservableProperty]
     private GitHistoryTimelineViewModel? history;
@@ -434,7 +445,10 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
     private readonly SemanticGraph sourceGraph;
     private readonly ImmutableArray<DiffDocumentSnapshot> sourceDocuments;
     private readonly string? focusAnchorId;
+    private readonly SynchronizationContext? synchronizationContext;
     private bool isRefreshing;
+    private long refreshVersion;
+    private CancellationTokenSource? refreshOperation;
 
     private readonly record struct SymbolGraphSelection(
         SymbolGraphFilterOptionViewModel Scope,
@@ -462,6 +476,7 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
     {
         Title = title;
         Description = description;
+        synchronizationContext = SynchronizationContext.Current;
         this.sourceItems = sourceItems.IsDefault ? [] : sourceItems;
         this.sourceGraph = sourceGraph;
         this.sourceDocuments = sourceDocuments.IsDefault ? [] : sourceDocuments;
@@ -511,9 +526,11 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
 
     public ImmutableArray<SymbolGraphViewModeOptionViewModel> ViewModeOptions { get; }
 
-    public Visibility EmptyVisibility => RenderedSymbolCount == 0 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility EmptyVisibility => !IsLoading && RenderedSymbolCount == 0 ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility ContentVisibility => RenderedSymbolCount == 0 ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility LoadingVisibility => IsLoading ? Visibility.Visible : Visibility.Collapsed;
 
     [ObservableProperty]
     private string searchText = string.Empty;
@@ -563,6 +580,11 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
     private string statusText = "Symbol graph ready";
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(EmptyVisibility))]
+    [NotifyPropertyChangedFor(nameof(LoadingVisibility))]
+    private bool isLoading;
+
+    [ObservableProperty]
     private DiffCanvasScene scene = DiffCanvasScene.FromDocuments([]);
 
     partial void OnSearchTextChanged(string value) => RefreshScene();
@@ -582,6 +604,14 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
     partial void OnSelectedViewModeOptionChanged(SymbolGraphViewModeOptionViewModel value) => RefreshScene();
 
     public void Relayout() => RefreshScene();
+
+    public void CancelRefresh()
+    {
+        Interlocked.Increment(ref refreshVersion);
+        var operation = Interlocked.Exchange(ref refreshOperation, null);
+        operation?.Cancel();
+        IsLoading = false;
+    }
 
     public void SetLayoutMode(GraphLayoutMode layoutMode)
     {
@@ -625,50 +655,144 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
         }
 
         isRefreshing = true;
+        SymbolGraphSelection selection;
+        string query;
         try
         {
-            var selection = NormalizeSelectionOptions();
-            var query = (SearchText ?? string.Empty).Trim();
-            var edgeKindAnchorIds = CreateEdgeKindAnchorSet(selection.EdgeKind.Kind);
-            var filtered = sourceItems
-                .Where(item => MatchesScope(item, selection.Scope.Key))
-                .Where(item => MatchesOption(item.KindText, selection.Kind.Key, ignoreCase: true))
-                .Where(item => MatchesOption(item.DocumentId.Value, selection.Document.Key, ignoreCase: false))
-                .Where(item => edgeKindAnchorIds is null || edgeKindAnchorIds.Contains(item.AnchorId))
-                .Where(item => string.IsNullOrWhiteSpace(query) || item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase))
-                .ToImmutableArray();
-            var selected = filtered
-                .OrderByDescending(item => string.Equals(item.AnchorId, focusAnchorId, StringComparison.Ordinal))
-                .ThenByDescending(item => item.IsChanged)
-                .ThenByDescending(item => item.IsLinked)
-                .ThenByDescending(item => item.IncidentEdgeCount)
-                .ThenBy(item => item.KindText, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(item => item.Line)
-                .Take(MaxRenderedSymbols)
-                .ToImmutableArray();
-
-            FilteredSymbolCount = filtered.Length;
-            var sceneResult = new SymbolGraphSceneBuilder().Build(new SymbolGraphSceneBuildRequest(
-                selected,
-                sourceGraph,
-                sourceDocuments,
-                selection.Layout.Mode,
-                selection.Grouping.Mode,
-                selection.ViewMode.Mode,
-                selection.EdgeKind.Kind));
-            Scene = sceneResult.Scene;
-            RenderedSymbolCount = selected.Length;
-            RenderedFileCount = sceneResult.FileCount;
-            RenderedEdgeCount = Scene.Edges.Count;
-            SummaryText = BuildSummary(filtered.Length, selected.Length, RenderedFileCount, RenderedEdgeCount, selection.ViewMode.Mode);
-            FilterStatusText = BuildFilterStatus(filtered.Length, selected.Length, query, selection);
-            StatusText = $"{SummaryText} | {selection.Layout.DisplayName} | {selection.Grouping.DisplayName}";
+            selection = NormalizeSelectionOptions();
+            query = (SearchText ?? string.Empty).Trim();
         }
         finally
         {
             isRefreshing = false;
         }
+
+        var version = Interlocked.Increment(ref refreshVersion);
+        var operation = new CancellationTokenSource();
+        var previousOperation = refreshOperation;
+        refreshOperation = operation;
+        previousOperation?.Cancel();
+
+        IsLoading = true;
+        StatusText = "Building symbol graph...";
+        _ = RefreshSceneAsync(selection, query, version, operation);
+    }
+
+    private async Task RefreshSceneAsync(
+        SymbolGraphSelection selection,
+        string query,
+        long version,
+        CancellationTokenSource operation)
+    {
+        try
+        {
+            var result = await Task.Run(
+                    () => BuildSceneResult(selection, query, operation.Token),
+                    operation.Token)
+                .ConfigureAwait(false);
+            RunOnCapturedContext(() => ApplySceneResult(result, version, operation));
+        }
+        catch (OperationCanceledException)
+        {
+            operation.Dispose();
+        }
+        catch (Exception exception)
+        {
+            RunOnCapturedContext(() =>
+            {
+                if (version != refreshVersion || !ReferenceEquals(refreshOperation, operation))
+                {
+                    operation.Dispose();
+                    return;
+                }
+
+                IsLoading = false;
+                StatusText = $"Symbol graph unavailable: {exception.Message}";
+                refreshOperation = null;
+                operation.Dispose();
+            });
+        }
+    }
+
+    private SymbolGraphRefreshResult BuildSceneResult(
+        SymbolGraphSelection selection,
+        string query,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var edgeKindAnchorIds = CreateEdgeKindAnchorSet(selection.EdgeKind.Kind);
+        var filtered = sourceItems
+            .Where(item => MatchesScope(item, selection.Scope.Key))
+            .Where(item => MatchesOption(item.KindText, selection.Kind.Key, ignoreCase: true))
+            .Where(item => MatchesOption(item.DocumentId.Value, selection.Document.Key, ignoreCase: false))
+            .Where(item => edgeKindAnchorIds is null || edgeKindAnchorIds.Contains(item.AnchorId))
+            .Where(item => string.IsNullOrWhiteSpace(query) || item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .ToImmutableArray();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var selected = filtered
+            .OrderByDescending(item => string.Equals(item.AnchorId, focusAnchorId, StringComparison.Ordinal))
+            .ThenByDescending(item => item.IsChanged)
+            .ThenByDescending(item => item.IsLinked)
+            .ThenByDescending(item => item.IncidentEdgeCount)
+            .ThenBy(item => item.KindText, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Line)
+            .Take(MaxRenderedSymbols)
+            .ToImmutableArray();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var sceneResult = new SymbolGraphSceneBuilder().Build(new SymbolGraphSceneBuildRequest(
+            selected,
+            sourceGraph,
+            sourceDocuments,
+            selection.Layout.Mode,
+            selection.Grouping.Mode,
+            selection.ViewMode.Mode,
+            selection.EdgeKind.Kind));
+        var renderedEdgeCount = sceneResult.Scene.Edges.Count;
+        var summary = BuildSummary(filtered.Length, selected.Length, sceneResult.FileCount, renderedEdgeCount, selection.ViewMode.Mode);
+        return new SymbolGraphRefreshResult(
+            sceneResult.Scene,
+            filtered.Length,
+            selected.Length,
+            sceneResult.FileCount,
+            renderedEdgeCount,
+            summary,
+            BuildFilterStatus(filtered.Length, selected.Length, query, selection),
+            $"{summary} | {selection.Layout.DisplayName} | {selection.Grouping.DisplayName}");
+    }
+
+    private void ApplySceneResult(SymbolGraphRefreshResult result, long version, CancellationTokenSource operation)
+    {
+        if (version != refreshVersion || !ReferenceEquals(refreshOperation, operation))
+        {
+            operation.Dispose();
+            return;
+        }
+
+        FilteredSymbolCount = result.FilteredSymbolCount;
+        Scene = result.Scene;
+        RenderedSymbolCount = result.RenderedSymbolCount;
+        RenderedFileCount = result.RenderedFileCount;
+        RenderedEdgeCount = result.RenderedEdgeCount;
+        SummaryText = result.SummaryText;
+        FilterStatusText = result.FilterStatusText;
+        StatusText = result.StatusText;
+        IsLoading = false;
+        refreshOperation = null;
+        operation.Dispose();
+    }
+
+    private void RunOnCapturedContext(Action action)
+    {
+        if (synchronizationContext is not null && SynchronizationContext.Current != synchronizationContext)
+        {
+            synchronizationContext.Post(_ => action(), null);
+            return;
+        }
+
+        action();
     }
 
     private SymbolGraphSelection NormalizeSelectionOptions()
@@ -831,6 +955,16 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
         var digits = new string(text.TakeWhile(character => char.IsDigit(character) || character == ',' || character == '.').ToArray());
         return int.TryParse(digits.Replace(",", string.Empty).Replace(".", string.Empty), out var count) ? count : 0;
     }
+
+    private sealed record SymbolGraphRefreshResult(
+        DiffCanvasScene Scene,
+        int FilteredSymbolCount,
+        int RenderedSymbolCount,
+        int RenderedFileCount,
+        int RenderedEdgeCount,
+        string SummaryText,
+        string FilterStatusText,
+        string StatusText);
 }
 
 public sealed partial record SymbolGraphFilterOptionViewModel(string Key, string DisplayName, string DetailText)
