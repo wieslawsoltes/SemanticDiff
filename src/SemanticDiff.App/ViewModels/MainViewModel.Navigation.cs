@@ -295,6 +295,7 @@ public sealed partial class MainViewModel
     {
         allExplorerItems = items.IsDefault ? ImmutableArray<ExplorerItemViewModel>.Empty : items;
         activeExplorerTreeRoots = prebuiltTree.IsDefault ? BuildExplorerTree(allExplorerItems) : prebuiltTree;
+        collapsedExplorerNodePaths = CreateDefaultCollapsedExplorerNodePaths(activeExplorerTreeRoots);
         ApplyExplorerFilter();
     }
 
@@ -302,6 +303,105 @@ public sealed partial class MainViewModel
         items.IsDefaultOrEmpty
             ? []
             : FileExplorerTreeBuilder.Build(items.Select(item => new FileExplorerFile(item.Path, item.Status, item.Language)));
+
+    private ImmutableHashSet<string> GetExplorerFolderPathSet(string path)
+    {
+        var builder = ImmutableHashSet.CreateBuilder<string>(StringComparer.OrdinalIgnoreCase);
+        var node = FindExplorerNode(activeExplorerTreeRoots, path);
+        if (node is { Kind: FileExplorerNodeKind.Folder })
+        {
+            AddExplorerFolderPaths(node, builder, includeCurrent: true);
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private ImmutableHashSet<string> GetAllExplorerFolderPathSet()
+    {
+        var builder = ImmutableHashSet.CreateBuilder<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in activeExplorerTreeRoots)
+        {
+            AddExplorerFolderPaths(root, builder, includeCurrent: true);
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static ImmutableHashSet<string> CreateDefaultCollapsedExplorerNodePaths(ImmutableArray<FileExplorerNode> roots)
+    {
+        var builder = ImmutableHashSet.CreateBuilder<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in roots)
+        {
+            if (root.Kind != FileExplorerNodeKind.Folder)
+            {
+                continue;
+            }
+
+            foreach (var child in root.Children)
+            {
+                AddExplorerFolderPaths(child, builder, includeCurrent: true);
+            }
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static ImmutableHashSet<string> CreateExplorerPathSet() =>
+        ImmutableHashSet.Create<string>(StringComparer.OrdinalIgnoreCase);
+
+    private static FileExplorerNode? FindExplorerNode(ImmutableArray<FileExplorerNode> roots, string path)
+    {
+        foreach (var root in roots)
+        {
+            var match = FindExplorerNode(root, path);
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    private static FileExplorerNode? FindExplorerNode(FileExplorerNode node, string path)
+    {
+        if (string.Equals(node.Path, path, StringComparison.OrdinalIgnoreCase))
+        {
+            return node;
+        }
+
+        foreach (var child in node.Children)
+        {
+            var match = FindExplorerNode(child, path);
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    private static void AddExplorerFolderPaths(
+        FileExplorerNode node,
+        ImmutableHashSet<string>.Builder builder,
+        bool includeCurrent)
+    {
+        if (node.Kind != FileExplorerNodeKind.Folder)
+        {
+            return;
+        }
+
+        if (includeCurrent && !string.IsNullOrWhiteSpace(node.Path))
+        {
+            builder.Add(node.Path);
+        }
+
+        foreach (var child in node.Children)
+        {
+            AddExplorerFolderPaths(child, builder, includeCurrent: true);
+        }
+    }
 
     private bool IsWorkspaceExplorerCacheValid() =>
         workspaceExplorerCacheLoaded &&

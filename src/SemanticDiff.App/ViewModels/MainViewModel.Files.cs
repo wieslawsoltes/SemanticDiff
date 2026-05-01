@@ -448,6 +448,58 @@ public sealed partial class MainViewModel
         ApplyExplorerFilter();
     }
 
+    public void ExpandExplorerNodeTree(FileExplorerNodeViewModel? node)
+    {
+        if (node is null || !node.HasChildren)
+        {
+            return;
+        }
+
+        var paths = GetExplorerFolderPathSet(node.Path);
+        if (paths.Count == 0)
+        {
+            return;
+        }
+
+        var builder = collapsedExplorerNodePaths.ToBuilder();
+        foreach (var path in paths)
+        {
+            builder.Remove(path);
+        }
+
+        collapsedExplorerNodePaths = builder.ToImmutable();
+        ApplyExplorerFilter();
+    }
+
+    public void CollapseExplorerNodeTree(FileExplorerNodeViewModel? node)
+    {
+        if (node is null || !node.HasChildren)
+        {
+            return;
+        }
+
+        var paths = GetExplorerFolderPathSet(node.Path);
+        if (paths.Count == 0)
+        {
+            return;
+        }
+
+        collapsedExplorerNodePaths = collapsedExplorerNodePaths.Union(paths);
+        ApplyExplorerFilter();
+    }
+
+    public void ExpandAllExplorerNodes()
+    {
+        collapsedExplorerNodePaths = CreateExplorerPathSet();
+        ApplyExplorerFilter();
+    }
+
+    public void CollapseAllExplorerNodes()
+    {
+        collapsedExplorerNodePaths = GetAllExplorerFolderPathSet();
+        ApplyExplorerFilter();
+    }
+
     public void RevealDocumentInExplorer(string documentId)
     {
         if (string.IsNullOrWhiteSpace(documentId))

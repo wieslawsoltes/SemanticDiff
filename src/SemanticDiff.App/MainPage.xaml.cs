@@ -1557,8 +1557,43 @@ public sealed partial class MainPage : Page
         primaryItem.Click += OnExplorerNodeContextNavigateClicked;
         menu.Items.Add(primaryItem);
 
+        menu.Items.Add(new MenuFlyoutSeparator());
+        if (item.HasChildren)
+        {
+            var expandTreeItem = new MenuFlyoutItem
+            {
+                Text = "Expand selected tree",
+                Tag = item
+            };
+            expandTreeItem.Click += OnExplorerNodeExpandTreeClicked;
+            menu.Items.Add(expandTreeItem);
+
+            var collapseTreeItem = new MenuFlyoutItem
+            {
+                Text = "Collapse selected tree",
+                Tag = item
+            };
+            collapseTreeItem.Click += OnExplorerNodeCollapseTreeClicked;
+            menu.Items.Add(collapseTreeItem);
+        }
+
+        var expandAllItem = new MenuFlyoutItem
+        {
+            Text = "Expand entire tree"
+        };
+        expandAllItem.Click += OnExplorerTreeExpandAllClicked;
+        menu.Items.Add(expandAllItem);
+
+        var collapseAllItem = new MenuFlyoutItem
+        {
+            Text = "Collapse entire tree"
+        };
+        collapseAllItem.Click += OnExplorerTreeCollapseAllClicked;
+        menu.Items.Add(collapseAllItem);
+
         if (item.IsFile)
         {
+            menu.Items.Add(new MenuFlyoutSeparator());
             var openDiffItem = new MenuFlyoutItem
             {
                 Text = "Open diff tab",
@@ -1613,6 +1648,28 @@ public sealed partial class MainPage : Page
         menu.ShowAt(element, new FlyoutShowOptions { Position = args.GetPosition(element) });
         args.Handled = true;
     }
+
+    private void OnExplorerNodeExpandTreeClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
+        {
+            ViewModel.ExpandExplorerNodeTree(item);
+        }
+    }
+
+    private void OnExplorerNodeCollapseTreeClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
+        {
+            ViewModel.CollapseExplorerNodeTree(item);
+        }
+    }
+
+    private void OnExplorerTreeExpandAllClicked(object sender, RoutedEventArgs args) =>
+        ViewModel.ExpandAllExplorerNodes();
+
+    private void OnExplorerTreeCollapseAllClicked(object sender, RoutedEventArgs args) =>
+        ViewModel.CollapseAllExplorerNodes();
 
     private void OnExplorerTreeNodeDragStarting(UIElement sender, DragStartingEventArgs args)
     {

@@ -57,7 +57,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private ImmutableArray<FileExplorerNode> activeExplorerTreeRoots = [];
     private ImmutableArray<FileExplorerNode> diffExplorerTreeRoots = [];
     private ImmutableArray<FileExplorerNode> workspaceExplorerTreeRoots = [];
-    private ImmutableHashSet<string> collapsedExplorerNodePaths = ImmutableHashSet<string>.Empty;
+    private ImmutableHashSet<string> collapsedExplorerNodePaths = CreateExplorerPathSet();
     private ImmutableArray<SemanticNavigationItem> allSemanticNavigationItems => symbolBrowser.AllItems;
     private SemanticSymbolInsightSummary currentSymbolInsight => symbolBrowser.Insight;
     private ImmutableDictionary<DiffDocumentId, SemanticDocumentInsight> currentSemanticDocumentInsights = ImmutableDictionary<DiffDocumentId, SemanticDocumentInsight>.Empty;
