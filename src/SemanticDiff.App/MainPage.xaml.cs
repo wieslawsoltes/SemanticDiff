@@ -45,6 +45,7 @@ public sealed partial class MainPage : Page
     private double symbolFacetSplitterStartY;
     private double symbolFacetSplitterStartHeight;
     private ScrollViewer? workspaceTabsScrollViewer;
+    private bool suppressNextGitReferenceSelection;
     private readonly IDiffSceneExporter workspaceGraphExporter = new DiffSceneExportService();
 
     public ViewModels.MainViewModel ViewModel { get; } = new();
@@ -1741,6 +1742,12 @@ public sealed partial class MainPage : Page
             return;
         }
 
+        if (suppressNextGitReferenceSelection)
+        {
+            suppressNextGitReferenceSelection = false;
+            return;
+        }
+
         if (sender is ListView { SelectedItem: ViewModels.GitReferenceTreeItemViewModel item })
         {
             await ViewModel.SelectGitReferenceNodeAsync(item);
@@ -1771,6 +1778,20 @@ public sealed partial class MainPage : Page
         if (sender is FrameworkElement { Tag: ViewModels.GitReferenceTreeItemViewModel item })
         {
             ViewModel.ToggleGitReferenceNode(item);
+        }
+    }
+
+    private void OnGitReferenceTreeItemPointerPressed(object sender, PointerRoutedEventArgs args)
+    {
+        if (sender is not UIElement element)
+        {
+            return;
+        }
+
+        var point = args.GetCurrentPoint(element);
+        if (point.Properties.IsRightButtonPressed)
+        {
+            suppressNextGitReferenceSelection = true;
         }
     }
 
@@ -1820,6 +1841,7 @@ public sealed partial class MainPage : Page
         }
 
         menu.ShowAt(element, new FlyoutShowOptions { Position = args.GetPosition(element) });
+        _ = DispatcherQueue.TryEnqueue(() => suppressNextGitReferenceSelection = false);
         args.Handled = true;
     }
 

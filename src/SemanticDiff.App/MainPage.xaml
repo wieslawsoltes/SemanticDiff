@@ -712,7 +712,11 @@
     </DataTemplate>
 
     <DataTemplate x:Key="GitReferenceTreeItemTemplate" x:DataType="viewModels:GitReferenceTreeItemViewModel">
-      <Grid MinHeight="30" Padding="0,1" Tag="{x:Bind}" RightTapped="OnGitReferenceTreeItemRightTapped">
+      <Grid MinHeight="30"
+            Padding="0,1"
+            Tag="{x:Bind}"
+            PointerPressed="OnGitReferenceTreeItemPointerPressed"
+            RightTapped="OnGitReferenceTreeItemRightTapped">
         <Grid Margin="{x:Bind IndentMargin}" ColumnDefinitions="18,22,*,Auto" ColumnSpacing="7">
           <Button Content="{x:Bind DisclosureGlyph}"
                   Tag="{x:Bind}"
