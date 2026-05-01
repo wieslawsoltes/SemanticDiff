@@ -129,6 +129,11 @@ public sealed partial class MainViewModel
             currentStatusPrefix,
             currentDocumentsAreRepositoryDocuments,
             currentDocuments,
+            diffExplorerItems,
+            diffExplorerTreeRoots,
+            allSemanticNavigationItems,
+            symbolBrowser.Insight,
+            currentSemanticDocumentInsights,
             currentSemanticGraph,
             currentGitSnapshot,
             previousLayout,
@@ -170,13 +175,13 @@ public sealed partial class MainViewModel
         gitReferenceBrowser.SetReviewRequestKind(state.ReviewRequestKind);
 
         ApplyGraphWorkspaceReferenceState(tab, state);
-        Scene = state.Scene.WithAnnotations(CreateAnnotations(state.Documents, state.SemanticGraph), appState.EffectiveAnnotationVisibility);
+        Scene = state.Scene.WithAnnotations(state.Scene.Annotations, appState.EffectiveAnnotationVisibility);
         IsFullCodeWorkspaceEnabled = Scene.ShowFullFileNodes;
         IsNodeEditingWorkspaceEnabled = Scene.EnableNodeEditing;
         UpdateChangeNavigation(state.Documents);
-        SetExplorerItems(state.Documents.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
+        SetExplorerItems(state.ExplorerItems, state.ExplorerTreeRoots);
         RestoreSelectedExplorerItem(state.SelectedDocumentId);
-        UpdateSemanticNavigation(state.SemanticGraph, state.Documents);
+        RestoreSemanticNavigation(state.SemanticNavigationItems, state.SymbolInsight, state.SemanticDocumentInsights);
         var impactSummary = UpdateImpactSummary(state.Documents, state.SemanticGraph);
         UpdateWorkspaceSummary(state.RepositoryName, state.ContextText, state.Documents.Length, state.SemanticGraph.Edges.Length);
         StatusText = string.IsNullOrWhiteSpace(state.StatusText)

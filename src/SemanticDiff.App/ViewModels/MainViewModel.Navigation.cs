@@ -458,14 +458,47 @@ public sealed partial class MainViewModel
 
     private void UpdateSemanticNavigation(SemanticGraph semanticGraph, ImmutableArray<DiffDocumentSnapshot> documents)
     {
-        var index = new SemanticNavigationIndex();
-        symbolBrowser.SetItems(index.Build(semanticGraph, documents));
-        currentSemanticDocumentInsights = new SemanticDocumentInsightIndex()
-            .Build(semanticGraph, documents)
-            .ToImmutableDictionary(insight => insight.DocumentId);
+        var state = BuildSemanticNavigationState(documents, semanticGraph, CancellationToken.None);
+        RestoreSemanticNavigation(state.Items, state.SymbolInsight, state.DocumentInsights);
+    }
+
+    private void RestoreSemanticNavigation(
+        ImmutableArray<SemanticNavigationItem> items,
+        SemanticSymbolInsightSummary symbolInsight,
+        ImmutableDictionary<DiffDocumentId, SemanticDocumentInsight> documentInsights)
+    {
+        symbolBrowser.SetItems(items, symbolInsight);
+        currentSemanticDocumentInsights = documentInsights ?? ImmutableDictionary<DiffDocumentId, SemanticDocumentInsight>.Empty;
         RefreshOpenFileDiffSemanticInsights();
         ApplySemanticNavigationFilter();
     }
+
+    private static Task<SemanticNavigationState> BuildSemanticNavigationStateAsync(
+        ImmutableArray<DiffDocumentSnapshot> documents,
+        SemanticGraph semanticGraph,
+        CancellationToken cancellationToken) =>
+        Task.Run(() => BuildSemanticNavigationState(documents, semanticGraph, cancellationToken), cancellationToken);
+
+    private static SemanticNavigationState BuildSemanticNavigationState(
+        ImmutableArray<DiffDocumentSnapshot> documents,
+        SemanticGraph semanticGraph,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var items = new SemanticNavigationIndex().Build(semanticGraph, documents);
+        cancellationToken.ThrowIfCancellationRequested();
+        var symbolInsight = new SemanticSymbolInsightIndex().Build(items);
+        cancellationToken.ThrowIfCancellationRequested();
+        var documentInsights = new SemanticDocumentInsightIndex()
+            .Build(semanticGraph, documents)
+            .ToImmutableDictionary(insight => insight.DocumentId);
+        return new SemanticNavigationState(items, symbolInsight, documentInsights);
+    }
+
+    private sealed record SemanticNavigationState(
+        ImmutableArray<SemanticNavigationItem> Items,
+        SemanticSymbolInsightSummary SymbolInsight,
+        ImmutableDictionary<DiffDocumentId, SemanticDocumentInsight> DocumentInsights);
 
     private void UpdateChangeNavigation(ImmutableArray<DiffDocumentSnapshot> documents)
     {

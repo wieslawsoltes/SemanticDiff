@@ -210,7 +210,7 @@ public sealed partial class MainViewModel
         SelectExplorerItem(null);
         RestoreLayoutState(documents);
         Scene = CreateScene(documents, SemanticGraph.Empty, previousLayout);
-        SetExplorerItems(documents.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
+        SetExplorerItems(CreateExplorerItems(documents));
         UpdateSemanticNavigation(SemanticGraph.Empty, documents);
         UpdateImpactSummary(documents, SemanticGraph.Empty);
         UpdateWorkspaceSummary("SemanticDiff", "Sample fallback", documents.Length, 0);
@@ -255,9 +255,13 @@ public sealed partial class MainViewModel
         currentDocumentsAreRepositoryDocuments = !string.IsNullOrWhiteSpace(repositoryPath);
         SelectExplorerItem(null);
         RestoreLayoutState(documents, preservedSceneState);
+        var explorerItems = CreateExplorerItems(documents);
+        var explorerTreeTask = BuildExplorerTreeAsync(explorerItems, cancellationToken);
 
         ReportProgress(0.52, "Running initial layout", cancellationToken);
         var initialLayout = await LayoutDocumentsAsync(documents, SemanticGraph.Empty, cancellationToken);
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+        var explorerTreeRoots = await explorerTreeTask;
         EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
 
         currentSemanticGraph = SemanticGraph.Empty;
@@ -269,7 +273,7 @@ public sealed partial class MainViewModel
             CaptureLayoutState(Scene);
         }
 
-        SetExplorerItems(documents.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
+        SetExplorerItems(explorerItems, explorerTreeRoots);
         RestoreSelectedExplorerItem(preservedSelectedDocumentId);
         UpdateSemanticNavigation(SemanticGraph.Empty, documents);
         UpdateImpactSummary(documents, SemanticGraph.Empty);
@@ -293,7 +297,7 @@ public sealed partial class MainViewModel
         tokenizedScene.ApplyViewState(tokenizedViewState);
         Scene = tokenizedScene;
         CaptureLayoutState(Scene);
-        SetExplorerItems(tokenizedDocuments.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
+        SetExplorerItems(explorerItems, explorerTreeRoots);
         RestoreSelectedExplorerItem(preservedSelectedDocumentId);
         var initialSemanticAnalysisMode = GetInitialSemanticAnalysisMode(appState.SemanticAnalysisMode);
         StatusText = $"{statusPrefix} | {tokenizedDocuments.Length} nodes | syntax coloring ready | analyzing semantics";
@@ -314,7 +318,7 @@ public sealed partial class MainViewModel
             CaptureLayoutState(Scene);
         }
 
-        SetExplorerItems(tokenizedDocuments.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
+        SetExplorerItems(explorerItems, explorerTreeRoots);
         RestoreSelectedExplorerItem(preservedSelectedDocumentId);
         UpdateSemanticNavigation(semanticGraph, tokenizedDocuments);
         var impactSummary = UpdateImpactSummary(tokenizedDocuments, semanticGraph);
@@ -639,8 +643,8 @@ public sealed partial class MainViewModel
         currentDocumentsAreRepositoryDocuments = true;
         previousLayout = entry.PreviousLayout;
         pinnedDocumentIds = entry.PinnedDocumentIds;
-        Scene = entry.Scene.WithAnnotations(CreateAnnotations(entry.Documents, entry.SemanticGraph), appState.EffectiveAnnotationVisibility);
-        SetExplorerItems(entry.Documents.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray());
+        Scene = entry.Scene.WithAnnotations(entry.Scene.Annotations, appState.EffectiveAnnotationVisibility);
+        SetExplorerItems(CreateExplorerItems(entry.Documents));
         RestoreSelectedExplorerItem(entry.SelectedDocumentId);
         UpdateChangeNavigation(entry.Documents);
         UpdateSemanticNavigation(entry.SemanticGraph, entry.Documents);
@@ -719,7 +723,6 @@ public sealed partial class MainViewModel
             WatchStatusText = "Watch ready";
         }
 
-        BuildGitReferenceTree();
         ApplyReferenceSelectionsToPresentation();
     }
 
@@ -767,10 +770,22 @@ public sealed partial class MainViewModel
         VisualizationSummaryText = $"Visual layers {visibility.EnabledLayerCount}/8";
     }
 
-    private void SetExplorerItems(ImmutableArray<ExplorerItemViewModel> items)
+    private static ImmutableArray<ExplorerItemViewModel> CreateExplorerItems(ImmutableArray<DiffDocumentSnapshot> documents) =>
+        documents.IsDefaultOrEmpty
+            ? []
+            : documents.Select(document => new ExplorerItemViewModel(document.Metadata.Path, document.Metadata.Status, document.Metadata.Language)).ToImmutableArray();
+
+    private static Task<ImmutableArray<FileExplorerNode>> BuildExplorerTreeAsync(ImmutableArray<ExplorerItemViewModel> items, CancellationToken cancellationToken) =>
+        Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return BuildExplorerTree(items);
+        }, cancellationToken);
+
+    private void SetExplorerItems(ImmutableArray<ExplorerItemViewModel> items, ImmutableArray<FileExplorerNode> treeRoots = default)
     {
         diffExplorerItems = items.IsDefault ? ImmutableArray<ExplorerItemViewModel>.Empty : items;
-        diffExplorerTreeRoots = BuildExplorerTree(diffExplorerItems);
+        diffExplorerTreeRoots = treeRoots.IsDefault ? BuildExplorerTree(diffExplorerItems) : treeRoots;
         UpdateFileExplorerModeLabels();
         if (FileExplorerMode == FileExplorerMode.Workspace)
         {

@@ -36,10 +36,10 @@ public sealed class SymbolBrowserModel
 
     public SemanticSymbolInsightSummary Insight => insight;
 
-    public void SetItems(ImmutableArray<SemanticNavigationItem> items)
+    public void SetItems(ImmutableArray<SemanticNavigationItem> items, SemanticSymbolInsightSummary? precomputedInsight = null)
     {
         allItems = items.IsDefault ? ImmutableArray<SemanticNavigationItem>.Empty : items;
-        insight = new SemanticSymbolInsightIndex().Build(allItems);
+        insight = precomputedInsight ?? new SemanticSymbolInsightIndex().Build(allItems);
         PruneSelection();
     }
 

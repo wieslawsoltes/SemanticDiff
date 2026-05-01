@@ -631,6 +631,11 @@ public sealed partial class MainViewModel
                 statusPrefix,
                 true,
                 [],
+                [],
+                [],
+                [],
+                SemanticSymbolInsightSummary.Empty,
+                ImmutableDictionary<DiffDocumentId, SemanticDocumentInsight>.Empty,
                 SemanticGraph.Empty,
                 loadedDiff.GitSnapshot,
                 null,
@@ -655,6 +660,9 @@ public sealed partial class MainViewModel
             tokenizedDocuments,
             initialSemanticAnalysisMode,
             operation.Token);
+        var explorerItems = CreateExplorerItems(tokenizedDocuments);
+        var explorerTreeTask = BuildExplorerTreeAsync(explorerItems, operation.Token);
+        var semanticNavigationTask = BuildSemanticNavigationStateAsync(tokenizedDocuments, semanticGraph, operation.Token);
 
         ReportProgress(operation, 0.86, "Running semantic graph layout");
         var layout = await LayoutDocumentsForWorkspaceTabAsync(
@@ -663,6 +671,8 @@ public sealed partial class MainViewModel
             layoutMode,
             operation.Token);
         var scene = CreateScene(tokenizedDocuments, semanticGraph, layout);
+        var explorerTreeRoots = await explorerTreeTask;
+        var semanticNavigationState = await semanticNavigationTask;
         var impactSummary = new SemanticImpactAnalyzer().Analyze(tokenizedDocuments, semanticGraph);
         var statusText = $"{statusPrefix} | {tokenizedDocuments.Length:N0} nodes | {semanticGraph.Edges.Length:N0} semantic edges | {FormatImpactStatus(impactSummary)} | workspace ready";
 
@@ -676,6 +686,11 @@ public sealed partial class MainViewModel
             statusPrefix,
             true,
             tokenizedDocuments,
+            explorerItems,
+            explorerTreeRoots,
+            semanticNavigationState.Items,
+            semanticNavigationState.SymbolInsight,
+            semanticNavigationState.DocumentInsights,
             semanticGraph,
             loadedDiff.GitSnapshot,
             layout,
