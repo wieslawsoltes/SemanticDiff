@@ -1564,6 +1564,7 @@
                     ScrollViewer.VerticalScrollBarVisibility="Disabled"
                     Loaded="OnWorkspaceTabListLoaded"
                     SizeChanged="OnWorkspaceTabListSizeChanged"
+                    PointerWheelChanged="OnWorkspaceTabListPointerWheelChanged"
                     SelectionChanged="OnWorkspaceTabListSelectionChanged">
             <ListView.Resources>
               <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="Transparent" />

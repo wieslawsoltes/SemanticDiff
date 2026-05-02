@@ -232,6 +232,31 @@ public sealed partial class MainPage : Page
         QueueWorkspaceTabsScrollStateUpdate(scrollSelectedIntoView: true);
     }
 
+    private void OnWorkspaceTabListPointerWheelChanged(object sender, PointerRoutedEventArgs args)
+    {
+        var scrollViewer = EnsureWorkspaceTabsScrollViewer();
+        if (scrollViewer is null || scrollViewer.ScrollableWidth <= 0.5)
+        {
+            return;
+        }
+
+        var delta = args.GetCurrentPoint(WorkspaceTabList).Properties.MouseWheelDelta;
+        if (delta == 0)
+        {
+            return;
+        }
+
+        var nextOffset = Math.Clamp(scrollViewer.HorizontalOffset - delta, 0, scrollViewer.ScrollableWidth);
+        if (Math.Abs(nextOffset - scrollViewer.HorizontalOffset) <= 0.5)
+        {
+            return;
+        }
+
+        scrollViewer.ChangeView(nextOffset, null, null, disableAnimation: true);
+        UpdateWorkspaceTabsScrollButtons();
+        args.Handled = true;
+    }
+
     private void OnWorkspaceTabsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
     {
         QueueWorkspaceTabsScrollStateUpdate(scrollSelectedIntoView: true);
