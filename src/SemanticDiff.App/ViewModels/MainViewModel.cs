@@ -85,6 +85,7 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable, 
     private bool workspaceExplorerCacheLoaded;
     private WorkspaceSessionState? pendingWorkspaceSessionState;
     private bool isRestoringWorkspaceSession;
+    private string? lastSelectedGraphWorkspaceTabId;
 
     public ObservableCollection<LoadingOperationViewModel> LoadingOperations { get; } = [];
 

@@ -2314,7 +2314,7 @@ public sealed partial class MainPage : Page
 
     private void FocusCanvas(ViewModels.FocusRequest? focusRequest)
     {
-        ViewModel.SelectGraphWorkspaceTab();
+        ViewModel.SelectGraphWorkspaceTab(focusRequest?.DocumentId);
         if (focusRequest is not null && !DiffCanvas.FocusDocument(focusRequest.DocumentId, focusRequest.Line))
         {
             ViewModel.ReportInteractionError($"Could not focus {focusRequest.DocumentId}");

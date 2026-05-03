@@ -19,10 +19,41 @@ namespace SemanticDiff.App.ViewModels;
 
 public sealed partial class MainViewModel
 {
-    public void SelectGraphWorkspaceTab()
+    public void SelectGraphWorkspaceTab(string? documentId = null)
     {
-        SelectedWorkspaceTab = WorkspaceTabs.FirstOrDefault(tab => tab.Kind == WorkspaceTabKind.Graph) ?? WorkspaceTabs.FirstOrDefault();
+        var sourceDocumentId = string.IsNullOrWhiteSpace(documentId) ? null : ResolveSourceDocumentId(documentId);
+        if (SelectedWorkspaceTab?.Kind == WorkspaceTabKind.Graph &&
+            (sourceDocumentId is null || GraphWorkspaceContainsDocument(SelectedWorkspaceTab, sourceDocumentId)))
+        {
+            return;
+        }
+
+        WorkspaceTabViewModel? target = null;
+        if (sourceDocumentId is not null)
+        {
+            target = FindLastSelectedGraphWorkspaceTab();
+            if (target is not null && !GraphWorkspaceContainsDocument(target, sourceDocumentId))
+            {
+                target = null;
+            }
+
+            target ??= WorkspaceTabs.LastOrDefault(tab => tab.Kind == WorkspaceTabKind.Graph && GraphWorkspaceContainsDocument(tab, sourceDocumentId));
+        }
+
+        target ??= FindLastSelectedGraphWorkspaceTab();
+        target ??= WorkspaceTabs.FirstOrDefault(tab => tab.Kind == WorkspaceTabKind.Graph);
+        SelectedWorkspaceTab = target ?? WorkspaceTabs.FirstOrDefault();
     }
+
+    private WorkspaceTabViewModel? FindLastSelectedGraphWorkspaceTab() =>
+        string.IsNullOrWhiteSpace(lastSelectedGraphWorkspaceTabId)
+            ? null
+            : WorkspaceTabs.FirstOrDefault(tab =>
+                tab.Kind == WorkspaceTabKind.Graph &&
+                string.Equals(tab.Id, lastSelectedGraphWorkspaceTabId, StringComparison.Ordinal));
+
+    private static bool GraphWorkspaceContainsDocument(WorkspaceTabViewModel tab, string sourceDocumentId) =>
+        tab.GraphState?.Documents.Any(document => string.Equals(document.Id.Value, sourceDocumentId, StringComparison.Ordinal)) == true;
 
     public void CloseWorkspaceTab(WorkspaceTabViewModel? tab)
     {

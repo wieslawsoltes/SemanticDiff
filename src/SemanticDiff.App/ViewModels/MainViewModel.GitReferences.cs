@@ -349,6 +349,7 @@ public sealed partial class MainViewModel
         AuxiliaryWorkspaceVisibility = isGraph ? Visibility.Collapsed : Visibility.Visible;
         if (isGraph && value is not null)
         {
+            lastSelectedGraphWorkspaceTabId = value.Id;
             RestoreGraphWorkspaceState(value);
         }
 
