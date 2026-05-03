@@ -28,8 +28,11 @@ public sealed partial class MainPage : Page
     }
 
     private const double MinimumLeftPaneWidth = 220;
-    private const double MaximumLeftPaneWidth = 520;
     private const double MinimumCanvasWidth = 480;
+    private const double MinimumSettingsFlyoutWidth = 320;
+    private const double SettingsFlyoutWidthRatio = 0.38;
+    private const double SettingsFlyoutHorizontalMargin = 48;
+    private const double SettingsFlyoutVerticalMargin = 96;
     private const double DefaultSymbolFacetsHeight = 220;
     private const double MinimumSymbolFacetsHeight = 140;
     private const double MaximumSymbolFacetsHeight = 420;
@@ -42,6 +45,7 @@ public sealed partial class MainPage : Page
     private double paneSplitterStartWidth;
     private bool isSymbolFacetSplitterDragging;
     private bool isSymbolFacetSplitterPointerOver;
+    private bool isWorkspaceSettingsFlyoutOpen;
     private double symbolFacetSplitterStartY;
     private double symbolFacetSplitterStartHeight;
     private ScrollViewer? workspaceTabsScrollViewer;
@@ -411,6 +415,7 @@ public sealed partial class MainPage : Page
     private void OnRootShellGridSizeChanged(object sender, SizeChangedEventArgs args)
     {
         ApplyLeftPaneWidth(LeftPaneColumn.ActualWidth > 0 ? LeftPaneColumn.ActualWidth : ViewModel.LeftPaneWidth);
+        UpdateWorkspaceSettingsFlyoutSize();
     }
 
     private void OnPaneSplitterPointerPressed(object sender, PointerRoutedEventArgs args)
@@ -586,9 +591,42 @@ public sealed partial class MainPage : Page
     {
         var shellWidth = RootShellGrid.ActualWidth;
         var splitterWidth = PaneSplitterColumn.ActualWidth > 0 ? PaneSplitterColumn.ActualWidth : PaneSplitterColumn.Width.Value;
-        var maximumFromCanvas = shellWidth > 0 ? shellWidth - splitterWidth - MinimumCanvasWidth : MaximumLeftPaneWidth;
-        var maximumWidth = Math.Max(MinimumLeftPaneWidth, Math.Min(MaximumLeftPaneWidth, maximumFromCanvas));
+        var maximumWidth = shellWidth > 0
+            ? Math.Max(MinimumLeftPaneWidth, shellWidth - splitterWidth - MinimumCanvasWidth)
+            : Math.Max(MinimumLeftPaneWidth, ViewModel.LeftPaneWidth);
         return Math.Clamp(double.IsFinite(requestedWidth) ? requestedWidth : ViewModel.LeftPaneWidth, MinimumLeftPaneWidth, maximumWidth);
+    }
+
+    private void OnWorkspaceSettingsFlyoutOpened(object sender, object args)
+    {
+        isWorkspaceSettingsFlyoutOpen = true;
+        UpdateWorkspaceSettingsFlyoutSize();
+    }
+
+    private void OnWorkspaceSettingsFlyoutClosed(object sender, object args)
+    {
+        isWorkspaceSettingsFlyoutOpen = false;
+    }
+
+    private void UpdateWorkspaceSettingsFlyoutSize()
+    {
+        if (!isWorkspaceSettingsFlyoutOpen)
+        {
+            return;
+        }
+
+        var shellWidth = RootShellGrid.ActualWidth;
+        var availableWidth = shellWidth > 0
+            ? Math.Max(MinimumSettingsFlyoutWidth, shellWidth - SettingsFlyoutHorizontalMargin)
+            : MinimumSettingsFlyoutWidth;
+        var preferredWidth = Math.Max(MinimumSettingsFlyoutWidth, availableWidth * SettingsFlyoutWidthRatio);
+        WorkspaceSettingsFlyoutContent.Width = Math.Min(preferredWidth, availableWidth);
+
+        var shellHeight = RootShellGrid.ActualHeight;
+        if (shellHeight > 0)
+        {
+            WorkspaceSettingsFlyoutContent.MaxHeight = Math.Max(280, shellHeight - SettingsFlyoutVerticalMargin);
+        }
     }
 
     private async Task OpenRepositoryFromPickerAsync()
@@ -1116,6 +1154,30 @@ public sealed partial class MainPage : Page
     {
         KeepSelectedToggleChecked(sender);
         await ViewModel.SetCodeCompletionModeAsync(CodeCompletionMode.DocumentOnly);
+    }
+
+    private async void OnTokenizationClicked(object sender, RoutedEventArgs args)
+    {
+        var isEnabled = sender is ToggleButton { IsChecked: true };
+        await ViewModel.SetTokenizationAsync(isEnabled);
+    }
+
+    private async void OnFileTypeFilterClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.FileTypeFilterOptionViewModel option })
+        {
+            await ViewModel.ToggleFileTypeFilterAsync(option);
+        }
+    }
+
+    private async void OnFileTypeFilterAllClicked(object sender, RoutedEventArgs args)
+    {
+        await ViewModel.IncludeAllFileTypesAsync();
+    }
+
+    private async void OnFileTypeFilterNoneClicked(object sender, RoutedEventArgs args)
+    {
+        await ViewModel.IncludeNoFileTypesAsync();
     }
 
     private async void OnLayoutModeSelectionChanged(object sender, SelectionChangedEventArgs args)
@@ -1647,6 +1709,33 @@ public sealed partial class MainPage : Page
         collapseAllItem.Click += OnExplorerTreeCollapseAllClicked;
         menu.Items.Add(collapseAllItem);
 
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var openSubsetWorkspaceItem = new MenuFlyoutItem
+        {
+            Text = item.IsFile ? "Open file diff workspace" : "Open folder diff workspace",
+            Tag = item
+        };
+        openSubsetWorkspaceItem.Click += OnExplorerNodeOpenSubsetWorkspaceClicked;
+        menu.Items.Add(openSubsetWorkspaceItem);
+
+        var filterCanvasItem = new MenuFlyoutItem
+        {
+            Text = item.IsFile ? "Filter canvas to this file" : "Filter canvas to this folder",
+            Tag = item
+        };
+        filterCanvasItem.Click += OnExplorerNodeFilterCanvasClicked;
+        menu.Items.Add(filterCanvasItem);
+
+        if (ViewModel.HasActiveGraphSubsetFilter)
+        {
+            var clearCanvasFilterItem = new MenuFlyoutItem
+            {
+                Text = "Clear canvas file filter"
+            };
+            clearCanvasFilterItem.Click += OnExplorerNodeClearCanvasFilterClicked;
+            menu.Items.Add(clearCanvasFilterItem);
+        }
+
         if (item.IsFile)
         {
             menu.Items.Add(new MenuFlyoutSeparator());
@@ -1726,6 +1815,25 @@ public sealed partial class MainPage : Page
 
     private void OnExplorerTreeCollapseAllClicked(object sender, RoutedEventArgs args) =>
         ViewModel.CollapseAllExplorerNodes();
+
+    private async void OnExplorerNodeOpenSubsetWorkspaceClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
+        {
+            await ViewModel.OpenSubsetDiffWorkspaceTabAsync(item);
+        }
+    }
+
+    private async void OnExplorerNodeFilterCanvasClicked(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
+        {
+            await ViewModel.ApplyCanvasSubsetFilterAsync(item);
+        }
+    }
+
+    private void OnExplorerNodeClearCanvasFilterClicked(object sender, RoutedEventArgs args) =>
+        ViewModel.ClearCanvasSubsetFilter();
 
     private void OnExplorerTreeNodeDragStarting(UIElement sender, DragStartingEventArgs args)
     {

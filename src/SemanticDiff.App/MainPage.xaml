@@ -331,6 +331,7 @@
                                            CompletionLanguage="{Binding FileDiff.Language}"
                                            CompletionPath="{Binding FileDiff.Path}"
                                            CompletionRepositoryPath="{Binding FileDiff.RepositoryPath}"
+                                           IsTokenizationEnabled="{Binding FileDiff.IsTokenizationEnabled}"
                                            RefreshKey="{Binding FileDiff.RefreshKey}"
                                            LineContextRequested="OnFileViewerLineContextRequested" />
             </Grid>
@@ -351,6 +352,7 @@
                                            CompletionLanguage="{Binding FileDiff.Language}"
                                            CompletionPath="{Binding FileDiff.Path}"
                                            CompletionRepositoryPath="{Binding FileDiff.RepositoryPath}"
+                                           IsTokenizationEnabled="{Binding FileDiff.IsTokenizationEnabled}"
                                            RefreshKey="{Binding FileDiff.RefreshKey}"
                                            LineContextRequested="OnFileViewerLineContextRequested" />
             </Grid>
@@ -1327,8 +1329,13 @@
       </Grid>
     </DataTemplate>
     <DataTemplate x:Key="SettingsPanelTemplate" x:DataType="viewModels:MainViewModel">
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
-              <StackPanel Spacing="12" Padding="0,8,4,6">
+            <ScrollViewer HorizontalAlignment="Stretch"
+                          VerticalAlignment="Stretch"
+                          HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto">
+              <StackPanel Spacing="12"
+                          Padding="0,8,4,6"
+                          HorizontalAlignment="Stretch">
                 <StackPanel Spacing="8">
                   <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Text="Diff Scope" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
@@ -1386,6 +1393,45 @@
                     <ToggleButton Content="Language services" IsChecked="{x:Bind IsCompletionLanguageServicesModeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnCompletionLanguageServicesModeClicked" />
                     <ToggleButton Grid.Column="1" Content="Document" IsChecked="{x:Bind IsCompletionDocumentModeSelected, Mode=OneWay}" Style="{StaticResource CompactToggleStyle}" Click="OnCompletionDocumentModeClicked" />
                   </Grid>
+                  <Grid RowDefinitions="Auto,Auto" RowSpacing="3" Margin="0,4,0,0">
+                    <ToggleButton Content="{x:Bind TokenizationText, Mode=OneWay}"
+                                  IsChecked="{x:Bind IsTokenizationEnabled, Mode=OneWay}"
+                                  Style="{StaticResource CompactToggleStyle}"
+                                  Click="OnTokenizationClicked" />
+                    <TextBlock Grid.Row="1"
+                               Text="Controls TextMate tokenization for diff graphs, file tabs, editor canvases, and edit-mode retokenization."
+                               Foreground="{ThemeResource TertiaryTextBrush}"
+                               FontSize="10"
+                               TextWrapping="WrapWholeWords" />
+                  </Grid>
+                  <Grid ColumnDefinitions="*,Auto" Margin="0,4,0,0">
+                    <TextBlock Text="File Type Filters" Foreground="{ThemeResource TertiaryTextBrush}" FontSize="10" FontWeight="SemiBold" />
+                    <TextBlock Grid.Column="1" Text="{x:Bind FileTypeFilterSummaryText, Mode=OneWay}" Foreground="{ThemeResource AccentBrush}" FontSize="10" />
+                  </Grid>
+                  <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
+                    <Button Content="All types" Style="{StaticResource ChromeButtonStyle}" Click="OnFileTypeFilterAllClicked" />
+                    <Button Grid.Column="1" Content="No types" Style="{StaticResource ChromeButtonStyle}" Click="OnFileTypeFilterNoneClicked" />
+                  </Grid>
+                  <ListView ItemsSource="{x:Bind FileTypeFilterOptions, Mode=OneWay}"
+                            SelectionMode="None"
+                            MaxHeight="150"
+                            Padding="0"
+                            BorderThickness="0"
+                            Background="Transparent">
+                    <ListView.ItemTemplate>
+                      <DataTemplate x:DataType="viewModels:FileTypeFilterOptionViewModel">
+                        <ToggleButton Tag="{Binding}"
+                                      IsChecked="{x:Bind IsSelected, Mode=OneWay}"
+                                      Style="{StaticResource CompactToggleStyle}"
+                                      Click="OnFileTypeFilterClicked">
+                          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                            <TextBlock Text="{x:Bind DisplayName}" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Grid.Column="1" Text="{x:Bind CountText}" Foreground="{ThemeResource SecondaryTextBrush}" />
+                          </Grid>
+                        </ToggleButton>
+                      </DataTemplate>
+                    </ListView.ItemTemplate>
+                  </ListView>
                 </StackPanel>
 
                 <StackPanel Spacing="8">
@@ -1489,7 +1535,7 @@
 
   <Grid x:Name="RootShellGrid" RowDefinitions="40,*,44" Background="{ThemeResource AppBackgroundBrush}">
     <Grid.ColumnDefinitions>
-      <ColumnDefinition x:Name="LeftPaneColumn" Width="260" MinWidth="220" MaxWidth="520" />
+      <ColumnDefinition x:Name="LeftPaneColumn" Width="260" MinWidth="220" />
       <ColumnDefinition x:Name="PaneSplitterColumn" Width="6" />
       <ColumnDefinition Width="*" />
     </Grid.ColumnDefinitions>
@@ -1844,6 +1890,10 @@
 
           <TabViewItem Header="Settings" IsClosable="False">
             <ContentControl Content="{x:Bind ViewModel, Mode=OneWay}"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Stretch"
+                            HorizontalContentAlignment="Stretch"
+                            VerticalContentAlignment="Stretch"
                             ContentTemplate="{StaticResource SettingsPanelTemplate}" />
           </TabViewItem>
         </TabView>
@@ -2035,16 +2085,23 @@
                   VerticalAlignment="Center"
                   AutomationProperties.Name="Open workspace settings">
             <Button.Flyout>
-              <Flyout Placement="BottomEdgeAlignedRight">
+              <Flyout Placement="BottomEdgeAlignedRight"
+                      Opened="OnWorkspaceSettingsFlyoutOpened"
+                      Closed="OnWorkspaceSettingsFlyoutClosed">
                 <Flyout.FlyoutPresenterStyle>
                   <Style TargetType="FlyoutPresenter">
                     <Setter Property="Padding" Value="12" />
-                    <Setter Property="MaxWidth" Value="440" />
                     <Setter Property="MaxHeight" Value="760" />
                   </Style>
                 </Flyout.FlyoutPresenterStyle>
-                <Grid Width="396" MaxHeight="720">
+                <Grid x:Name="WorkspaceSettingsFlyoutContent"
+                      MinWidth="320"
+                      HorizontalAlignment="Stretch">
                   <ContentControl Content="{x:Bind ViewModel, Mode=OneWay}"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  HorizontalContentAlignment="Stretch"
+                                  VerticalContentAlignment="Stretch"
                                   ContentTemplate="{StaticResource SettingsPanelTemplate}" />
                 </Grid>
               </Flyout>

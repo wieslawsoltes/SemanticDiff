@@ -140,7 +140,7 @@ public sealed partial class MainViewModel
             }
 
             ReportProgress(0.25, "Loading Git diff", cancellationToken);
-            var loadedDiff = await repositoryDiffLoader.LoadAsync(
+            var unfilteredDiff = await repositoryDiffLoader.LoadAsync(
                 new RepositoryDiffLoadRequest(
                     repositoryRoot,
                     appState.DiffScope,
@@ -151,14 +151,15 @@ public sealed partial class MainViewModel
                     appState.CollapseUnchangedContext),
                 cancellationToken);
             EnsureCurrentRepositoryRequest(requestId, cancellationToken);
+            var loadedDiff = ApplyFileTypeFilter(unfilteredDiff, refreshOptions: true);
 
             if (loadedDiff.Documents.Length == 0)
             {
                 var emptyScopeText = FormatDiffScope(appState.DiffScope);
                 ResetRepositoryPresentation(
                     Path.GetFileName(repositoryRoot),
-                    $"{Path.GetFileName(repositoryRoot)} | no {emptyScopeText} changes | {FormatDiffContextMode(appState.DiffContextMode)} | base {loadedDiff.GitSnapshot.DefaultBranch ?? "unknown"}",
-                    $"{Path.GetFileName(repositoryRoot)} | no {emptyScopeText} changes",
+                    $"{Path.GetFileName(repositoryRoot)} | no {emptyScopeText} changes{FormatFileTypeFilterStatus(loadedDiff.GitSnapshot.Files.Length, unfilteredDiff.GitSnapshot.Files.Length)} | {FormatDiffContextMode(appState.DiffContextMode)} | base {loadedDiff.GitSnapshot.DefaultBranch ?? "unknown"}",
+                    $"{Path.GetFileName(repositoryRoot)} | no {emptyScopeText} changes{FormatFileTypeFilterStatus(loadedDiff.GitSnapshot.Files.Length, unfilteredDiff.GitSnapshot.Files.Length)}",
                     isRepository: true);
                 await SaveOptionsAsync(cancellationToken);
                 EnsureCurrentRepositoryRequest(requestId, cancellationToken);
@@ -175,7 +176,7 @@ public sealed partial class MainViewModel
             EnsureCurrentRepositoryRequest(requestId, cancellationToken);
             await SetDocumentsAsync(
                 loadedDiff.Documents,
-                $"{Path.GetFileName(repositoryRoot)} | {loadedDiff.GitSnapshot.Files.Length} {FormatDiffScope(appState.DiffScope)} changes | {FormatDiffContextMode(appState.DiffContextMode)} | {FormatReviewMode(appState.ReviewMode)} | {FormatReferenceText(request, loadedDiff.GitSnapshot.DefaultBranch)}",
+                $"{Path.GetFileName(repositoryRoot)} | {loadedDiff.GitSnapshot.Files.Length} {FormatDiffScope(appState.DiffScope)} changes{FormatFileTypeFilterStatus(loadedDiff.GitSnapshot.Files.Length, unfilteredDiff.GitSnapshot.Files.Length)} | {FormatDiffContextMode(appState.DiffContextMode)} | {FormatReviewMode(appState.ReviewMode)} | {FormatReferenceText(request, loadedDiff.GitSnapshot.DefaultBranch)}",
                 repositoryRoot,
                 loadedDiff.GitSnapshot,
                 preservedSceneState,
@@ -290,36 +291,45 @@ public sealed partial class MainViewModel
             statusPrefix,
             documents.Length,
             0);
-        StatusText = $"{statusPrefix} | {documents.Length} nodes | document graph ready | tokenizing";
+        StatusText = appState.EnableTokenization
+            ? $"{statusPrefix} | {documents.Length} nodes | document graph ready | tokenizing"
+            : $"{statusPrefix} | {documents.Length} nodes | document graph ready | tokenization off";
 
-        ReportProgress(0.6, "Tokenizing documents", cancellationToken);
-        var tokenizationProgress = new Progress<(double Value, string Message)>(update =>
-            ReportProgress(0.6 + update.Value * 0.14, update.Message, cancellationToken));
-        var tokenizedDocuments = await TokenizeAsync(documents, cancellationToken, tokenizationProgress);
-        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+        var analysisDocuments = documents;
+        if (appState.EnableTokenization)
+        {
+            ReportProgress(0.6, "Tokenizing documents", cancellationToken);
+            var tokenizationProgress = new Progress<(double Value, string Message)>(update =>
+                ReportProgress(0.6 + update.Value * 0.14, update.Message, cancellationToken));
+            analysisDocuments = await TokenizeAsync(documents, cancellationToken, tokenizationProgress);
+            EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
 
-        var tokenizedViewState = Scene.CaptureViewState();
-        currentDocuments = tokenizedDocuments;
-        UpdateChangeNavigation(tokenizedDocuments);
-        var tokenizedScene = CreateScene(tokenizedDocuments, SemanticGraph.Empty, previousLayout);
-        tokenizedScene.ApplyViewState(tokenizedViewState);
-        Scene = tokenizedScene;
-        CaptureLayoutState(Scene);
-        SetExplorerItems(explorerItems, explorerTreeRoots);
-        RestoreSelectedExplorerItem(preservedSelectedDocumentId);
+            var tokenizedViewState = Scene.CaptureViewState();
+            currentDocuments = analysisDocuments;
+            UpdateChangeNavigation(analysisDocuments);
+            var tokenizedScene = CreateScene(analysisDocuments, SemanticGraph.Empty, previousLayout);
+            tokenizedScene.ApplyViewState(tokenizedViewState);
+            Scene = tokenizedScene;
+            CaptureLayoutState(Scene);
+            SetExplorerItems(explorerItems, explorerTreeRoots);
+            RestoreSelectedExplorerItem(preservedSelectedDocumentId);
+        }
+
         var initialSemanticAnalysisMode = GetInitialSemanticAnalysisMode(appState.SemanticAnalysisMode);
-        StatusText = $"{statusPrefix} | {tokenizedDocuments.Length} nodes | syntax coloring ready | analyzing semantics";
+        StatusText = appState.EnableTokenization
+            ? $"{statusPrefix} | {analysisDocuments.Length} nodes | syntax coloring ready | analyzing semantics"
+            : $"{statusPrefix} | {analysisDocuments.Length} nodes | tokenization off | analyzing semantics";
 
         ReportProgress(0.76, $"Analyzing semantics ({FormatSemanticAnalysisMode(initialSemanticAnalysisMode)})", cancellationToken);
-        var semanticGraph = await AnalyzeSemanticsAsync(repositoryPath, gitSnapshot, tokenizedDocuments, initialSemanticAnalysisMode, cancellationToken);
+        var semanticGraph = await AnalyzeSemanticsAsync(repositoryPath, gitSnapshot, analysisDocuments, initialSemanticAnalysisMode, cancellationToken);
         EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         currentSemanticGraph = semanticGraph;
         ReportProgress(0.88, "Running semantic layout", cancellationToken);
-        var layout = await LayoutDocumentsAsync(tokenizedDocuments, semanticGraph, cancellationToken);
+        var layout = await LayoutDocumentsAsync(analysisDocuments, semanticGraph, cancellationToken);
         EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         var finalViewState = preservedSceneState is not null ? Scene.CaptureViewState() : null;
         previousLayout = layout;
-        Scene = CreateScene(tokenizedDocuments, semanticGraph, layout);
+        Scene = CreateScene(analysisDocuments, semanticGraph, layout);
         if (finalViewState is not null)
         {
             Scene.ApplyViewState(finalViewState);
@@ -328,27 +338,27 @@ public sealed partial class MainViewModel
 
         SetExplorerItems(explorerItems, explorerTreeRoots);
         RestoreSelectedExplorerItem(preservedSelectedDocumentId);
-        UpdateSemanticNavigation(semanticGraph, tokenizedDocuments);
-        var impactSummary = UpdateImpactSummary(tokenizedDocuments, semanticGraph);
+        UpdateSemanticNavigation(semanticGraph, analysisDocuments);
+        var impactSummary = UpdateImpactSummary(analysisDocuments, semanticGraph);
         UpdateWorkspaceSummary(
             string.IsNullOrWhiteSpace(repositoryPath) ? "SemanticDiff" : Path.GetFileName(repositoryPath),
             statusPrefix,
-            tokenizedDocuments.Length,
+            analysisDocuments.Length,
             semanticGraph.Edges.Length);
-        StatusText = $"{statusPrefix} | {tokenizedDocuments.Length} nodes | {semanticGraph.Edges.Length} semantic edges | {FormatImpactStatus(impactSummary)} | layout ready";
+        StatusText = $"{statusPrefix} | {analysisDocuments.Length} nodes | {semanticGraph.Edges.Length} semantic edges | {FormatImpactStatus(impactSummary)} | layout ready";
         ReportProgress(0.95, "Saving app state", cancellationToken);
         await SaveStateAsync(cancellationToken);
         EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         await RestartRepositoryWatcherAsync(repositoryPath, cancellationToken);
         EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
         AddDiagnostic("Info", preservedSceneState is null
-            ? $"Loaded {tokenizedDocuments.Length} document nodes, {semanticGraph.Edges.Length} semantic edges, {impactSummary.ChangedSymbolCount} changed symbols"
-            : $"Smart refresh synced {tokenizedDocuments.Length} document nodes without resetting the canvas view");
+            ? $"Loaded {analysisDocuments.Length} document nodes, {semanticGraph.Edges.Length} semantic edges, {impactSummary.ChangedSymbolCount} changed symbols"
+            : $"Smart refresh synced {analysisDocuments.Length} document nodes without resetting the canvas view");
         CacheCurrentDiffView();
 
         if (appState.SemanticAnalysisMode == SemanticAnalysisMode.WorkspaceThenSyntax)
         {
-            _ = RefineWorkspaceSemanticsAsync(tokenizedDocuments, statusPrefix, repositoryPath, gitSnapshot, repositoryRequestId);
+            _ = RefineWorkspaceSemanticsAsync(analysisDocuments, statusPrefix, repositoryPath, gitSnapshot, repositoryRequestId);
         }
     }
 
@@ -469,7 +479,7 @@ public sealed partial class MainViewModel
         Action<double, string> progress)
     {
         const int tokenPageSize = 128;
-        var tokenizer = new TextMateDocumentTokenizer(tokenPageSize);
+        var tokenizer = new AdaptiveDocumentTokenizer(tokenPageSize);
         var documentBuilder = ImmutableArray.CreateBuilder<DiffDocumentSnapshot>(documents.Length);
 
         for (var documentIndex = 0; documentIndex < documents.Length; documentIndex++)
@@ -573,6 +583,8 @@ public sealed partial class MainViewModel
             SelectedBranchRef = appState.SelectedBranchRef,
             SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
             UseInteractiveLevelOfDetail = UseInteractiveLevelOfDetail,
+            EnableTokenization = IsTokenizationEnabled,
+            IncludedFileTypeKeys = appState.IncludedFileTypeKeys,
             CodeCompletionMode = appState.CodeCompletionMode,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth),
             LayoutNodes = currentDocumentsAreRepositoryDocuments ? layoutNodes : appState.LayoutNodes,
@@ -604,6 +616,8 @@ public sealed partial class MainViewModel
             SelectedBranchRef = appState.SelectedBranchRef,
             SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
             UseInteractiveLevelOfDetail = UseInteractiveLevelOfDetail,
+            EnableTokenization = IsTokenizationEnabled,
+            IncludedFileTypeKeys = appState.IncludedFileTypeKeys,
             CodeCompletionMode = appState.CodeCompletionMode,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth),
             WorkspaceSession = workspaceSession
@@ -675,7 +689,9 @@ public sealed partial class MainViewModel
         appState.SemanticAnalysisMode,
         appState.LayoutMode,
         appState.GroupingMode,
-        appState.ShowSemanticEdges);
+        appState.ShowSemanticEdges,
+        appState.EnableTokenization,
+        CreateFileTypeFilterCacheKey());
 
     private void UpdateDiffViewCacheText()
     {
@@ -710,6 +726,9 @@ public sealed partial class MainViewModel
         IsSemanticEdgesEnabled = appState.ShowSemanticEdges;
         SemanticEdgesText = appState.ShowSemanticEdges ? "Edges on" : "Edges off";
         UseInteractiveLevelOfDetail = appState.UseInteractiveLevelOfDetail;
+        IsTokenizationEnabled = appState.EnableTokenization;
+        TokenizationText = appState.EnableTokenization ? "Tokenization on" : "Tokenization off";
+        RefreshFileTypeFilterPresentation();
         SemanticAnalysisModeText = FormatSemanticAnalysisMode(appState.SemanticAnalysisMode);
         CodeCompletionProvider = CreateCodeCompletionProvider(appState.CodeCompletionMode);
         CodeCompletionModeText = FormatCodeCompletionMode(appState.CodeCompletionMode);

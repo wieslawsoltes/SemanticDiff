@@ -1,5 +1,6 @@
 using SemanticDiff.Core;
 using Microsoft.UI.Xaml;
+using System.Globalization;
 
 namespace SemanticDiff.App.ViewModels;
 
@@ -67,6 +68,17 @@ public sealed record GitBranchOptionViewModel(
         var separator = referenceName.IndexOf('/');
         return separator <= 0 ? "origin" : referenceName[..separator];
     }
+}
+
+public sealed partial record FileTypeFilterOptionViewModel(
+    string Key,
+    string DisplayName,
+    int Count,
+    bool IsSelected)
+{
+    public string CountText => Count.ToString("N0", CultureInfo.InvariantCulture);
+
+    public string DetailText => $"{CountText} files";
 }
 
 public sealed record GitPullRequestOptionViewModel(

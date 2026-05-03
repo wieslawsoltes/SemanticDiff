@@ -14,7 +14,7 @@ public sealed class BuiltinPluginModule : IPluginModule
     public void Register(IPluginRegistry registry)
     {
         registry.Add<IDiffDocumentFactory>(new DiffDocumentFactory());
-        registry.Add<IDocumentTokenizer>(new TextMateDocumentTokenizer());
+        registry.Add<IDocumentTokenizer>(new AdaptiveDocumentTokenizer());
         registry.Add<IGitRepositoryDiscovery>(new GitRepositoryDiscovery());
         registry.Add<IGitDiffService>(new GitDiffService());
         registry.Add<IGitDiffDocumentService>(new GitDiffDocumentService());

@@ -99,6 +99,163 @@ public sealed partial class MainViewModel
             : OpenBlameTabAsync(node.DocumentId);
     }
 
+    public bool HasActiveGraphSubsetFilter => GetTargetGraphWorkspaceTab()?.HasGraphFileSubsetFilter == true;
+
+    public async Task OpenSubsetDiffWorkspaceTabAsync(FileExplorerNodeViewModel? node)
+    {
+        if (node is null)
+        {
+            return;
+        }
+
+        var sourceTab = GetTargetGraphWorkspaceTab();
+        var sourceState = GetGraphSubsetSourceState(sourceTab);
+        if (sourceState is null)
+        {
+            AddDiagnostic("Warning", "Open a diff workspace before creating a file subset workspace");
+            return;
+        }
+
+        if (sourceState.Request is null)
+        {
+            AddDiagnostic("Warning", "The current diff workspace has no git request to clone");
+            return;
+        }
+
+        var documents = GetSubsetDocumentsForExplorerNode(node, sourceState.Documents);
+        if (documents.IsDefaultOrEmpty)
+        {
+            AddDiagnostic("Info", $"{FormatExplorerNodeLabel(node)} has no changed files in the active diff workspace");
+            return;
+        }
+
+        var label = FormatExplorerNodeLabel(node);
+        var tabId = $"graph-subset:{sourceTab?.Id ?? "graph"}:{CreateStableSubsetKey(node.Path)}:{documents.Length}";
+        if (SelectWorkspaceTab(tabId))
+        {
+            return;
+        }
+
+        var tab = WorkspaceTabViewModel.CreateGraphWorkspace(
+            tabId,
+            $"Diff {ShortenPath(label)}",
+            $"{documents.Length:N0} changed files under {label}",
+            sourceState.Request,
+            sourceTab?.GraphBranchReferenceName,
+            sourceState.ReviewRequest);
+        AddWorkspaceTab(tab);
+
+        var operation = BeginTabOperation(tab, $"Creating subset workspace for {label}", logDiagnostic: true);
+        try
+        {
+            ReportProgress(operation, 0.18, "Filtering semantic graph");
+            var subsetState = await BuildSubsetGraphWorkspaceStateAsync(sourceState, documents, label, operation.Token);
+            tab.GraphState = subsetState;
+            tab.StatusText = subsetState.StatusText;
+            tab.GraphUnfilteredState = null;
+            tab.GraphFileSubsetLabel = label;
+            RestoreGraphWorkspaceState(tab);
+            CompleteOperation(operation, "Subset workspace ready");
+            AddDiagnostic("Info", $"Opened diff workspace for {documents.Length:N0} changed files under {label}");
+        }
+        catch (OperationCanceledException)
+        {
+            CompleteOperation(operation, "Subset workspace canceled");
+        }
+        catch (Exception exception)
+        {
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "Subset workspace failed");
+        }
+    }
+
+    public async Task ApplyCanvasSubsetFilterAsync(FileExplorerNodeViewModel? node)
+    {
+        if (node is null)
+        {
+            return;
+        }
+
+        var tab = GetTargetGraphWorkspaceTab();
+        if (tab is null)
+        {
+            AddDiagnostic("Warning", "Open a diff workspace before filtering the canvas");
+            return;
+        }
+
+        var sourceState = GetGraphSubsetSourceState(tab);
+        if (sourceState is null)
+        {
+            AddDiagnostic("Warning", "The active diff workspace is not ready yet");
+            return;
+        }
+
+        var documents = GetSubsetDocumentsForExplorerNode(node, sourceState.Documents);
+        if (documents.IsDefaultOrEmpty)
+        {
+            AddDiagnostic("Info", $"{FormatExplorerNodeLabel(node)} has no changed files in the active diff workspace");
+            return;
+        }
+
+        var label = FormatExplorerNodeLabel(node);
+        var operation = BeginTabOperation(tab, $"Filtering canvas to {label}", logDiagnostic: true);
+        try
+        {
+            ReportProgress(operation, 0.2, "Building filtered canvas");
+            var subsetState = await BuildSubsetGraphWorkspaceStateAsync(sourceState, documents, label, operation.Token);
+            tab.GraphUnfilteredState ??= sourceState;
+            tab.GraphFileSubsetLabel = label;
+            tab.GraphState = subsetState;
+            tab.StatusText = subsetState.StatusText;
+            if (!ReferenceEquals(SelectedWorkspaceTab, tab))
+            {
+                SelectedWorkspaceTab = tab;
+            }
+            else
+            {
+                RestoreGraphWorkspaceState(tab);
+            }
+
+            OnPropertyChanged(nameof(HasActiveGraphSubsetFilter));
+            CompleteOperation(operation, "Canvas filter applied");
+            AddDiagnostic("Info", $"Filtered canvas to {documents.Length:N0} changed files under {label}");
+        }
+        catch (OperationCanceledException)
+        {
+            CompleteOperation(operation, "Canvas filter canceled");
+        }
+        catch (Exception exception)
+        {
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "Canvas filter failed");
+        }
+    }
+
+    public void ClearCanvasSubsetFilter()
+    {
+        var tab = GetTargetGraphWorkspaceTab();
+        if (tab?.GraphUnfilteredState is not { } unfilteredState)
+        {
+            return;
+        }
+
+        tab.GraphState = unfilteredState;
+        tab.GraphUnfilteredState = null;
+        tab.GraphFileSubsetLabel = null;
+        tab.StatusText = unfilteredState.StatusText;
+        if (!ReferenceEquals(SelectedWorkspaceTab, tab))
+        {
+            SelectedWorkspaceTab = tab;
+        }
+        else
+        {
+            RestoreGraphWorkspaceState(tab);
+        }
+
+        OnPropertyChanged(nameof(HasActiveGraphSubsetFilter));
+        AddDiagnostic("Info", "Cleared canvas file subset filter");
+    }
+
     public async Task OpenFileDiffTabAsync(string documentId, FileDiffDisplayMode displayMode)
     {
         if (string.IsNullOrWhiteSpace(documentId))
@@ -233,6 +390,192 @@ public sealed partial class MainViewModel
                 string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedPath, StringComparison.OrdinalIgnoreCase)));
     }
 
+    private WorkspaceTabViewModel? GetTargetGraphWorkspaceTab()
+    {
+        if (SelectedWorkspaceTab?.Kind == WorkspaceTabKind.Graph)
+        {
+            return SelectedWorkspaceTab;
+        }
+
+        return WorkspaceTabs.FirstOrDefault(tab => tab.Kind == WorkspaceTabKind.Graph && tab.GraphState is not null) ??
+            WorkspaceTabs.FirstOrDefault(tab => tab.Kind == WorkspaceTabKind.Graph);
+    }
+
+    private GraphWorkspaceState? GetGraphSubsetSourceState(WorkspaceTabViewModel? tab)
+    {
+        if (tab is null)
+        {
+            return null;
+        }
+
+        if (ReferenceEquals(SelectedWorkspaceTab, tab))
+        {
+            CaptureGraphWorkspaceState(tab);
+        }
+
+        return tab.GraphUnfilteredState ?? tab.GraphState;
+    }
+
+    private static ImmutableArray<DiffDocumentSnapshot> GetSubsetDocumentsForExplorerNode(
+        FileExplorerNodeViewModel node,
+        ImmutableArray<DiffDocumentSnapshot> sourceDocuments)
+    {
+        if (sourceDocuments.IsDefaultOrEmpty || string.IsNullOrWhiteSpace(node.Path))
+        {
+            return [];
+        }
+
+        var normalizedPath = NormalizeRepositoryPath(node.Path);
+        if (node.IsFile)
+        {
+            return sourceDocuments
+                .Where(document => MatchesDocumentPath(document, normalizedPath))
+                .ToImmutableArray();
+        }
+
+        var prefix = string.IsNullOrWhiteSpace(normalizedPath) ? string.Empty : $"{normalizedPath.TrimEnd('/')}/";
+        return sourceDocuments
+            .Where(document => IsDocumentUnderFolder(document, normalizedPath, prefix))
+            .ToImmutableArray();
+    }
+
+    private static bool MatchesDocumentPath(DiffDocumentSnapshot document, string normalizedPath) =>
+        string.Equals(NormalizeRepositoryPath(document.Metadata.Path), normalizedPath, StringComparison.OrdinalIgnoreCase) ||
+        (!string.IsNullOrWhiteSpace(document.Metadata.OldPath) &&
+            string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedPath, StringComparison.OrdinalIgnoreCase)) ||
+        string.Equals(document.Id.Value, normalizedPath, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsDocumentUnderFolder(DiffDocumentSnapshot document, string normalizedFolderPath, string normalizedFolderPrefix) =>
+        string.IsNullOrWhiteSpace(normalizedFolderPrefix) ||
+        IsPathUnderFolder(document.Metadata.Path, normalizedFolderPath, normalizedFolderPrefix) ||
+        (!string.IsNullOrWhiteSpace(document.Metadata.OldPath) &&
+            IsPathUnderFolder(document.Metadata.OldPath, normalizedFolderPath, normalizedFolderPrefix));
+
+    private static bool IsPathUnderFolder(string path, string normalizedFolderPath, string normalizedFolderPrefix)
+    {
+        var normalizedPath = NormalizeRepositoryPath(path);
+        return string.Equals(normalizedPath, normalizedFolderPath, StringComparison.OrdinalIgnoreCase) ||
+            normalizedPath.StartsWith(normalizedFolderPrefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<GraphWorkspaceState> BuildSubsetGraphWorkspaceStateAsync(
+        GraphWorkspaceState sourceState,
+        ImmutableArray<DiffDocumentSnapshot> documents,
+        string label,
+        CancellationToken cancellationToken)
+    {
+        var documentIds = documents.Select(document => document.Id).ToImmutableHashSet();
+        var semanticGraph = FilterSemanticGraph(sourceState.SemanticGraph, documentIds);
+        var explorerItems = CreateExplorerItems(documents);
+        var explorerTreeTask = BuildExplorerTreeAsync(explorerItems, cancellationToken);
+        var semanticNavigationTask = BuildSemanticNavigationStateAsync(documents, semanticGraph, cancellationToken);
+        var layout = await LayoutDocumentsForWorkspaceTabAsync(
+            documents,
+            semanticGraph,
+            SelectedLayoutModeOption?.Mode ?? GraphLayoutMode.Layered,
+            cancellationToken);
+        var reviewThreads = FilterReviewThreads(sourceState.ReviewThreads, documents);
+        var scene = CreateScene(documents, semanticGraph, layout, reviewThreads);
+        scene.SetShowFullFileNodes(sourceState.Scene.ShowFullFileNodes);
+        scene.SetNodeEditingEnabled(sourceState.Scene.EnableNodeEditing);
+        var semanticNavigationState = await semanticNavigationTask;
+        var explorerTreeRoots = await explorerTreeTask;
+        var impactSummary = new SemanticImpactAnalyzer().Analyze(documents, semanticGraph);
+        var statusText = $"{sourceState.StatusPrefix} | filtered to {label} | {documents.Length:N0} nodes | {semanticGraph.Edges.Length:N0} semantic edges | {FormatImpactStatus(impactSummary)}";
+
+        return sourceState with
+        {
+            ContextText = $"{sourceState.ContextText} | subset {label}",
+            StatusText = statusText,
+            Documents = documents,
+            ExplorerItems = explorerItems,
+            ExplorerTreeRoots = explorerTreeRoots,
+            SemanticNavigationItems = semanticNavigationState.Items,
+            SymbolInsight = semanticNavigationState.SymbolInsight,
+            SemanticDocumentInsights = semanticNavigationState.DocumentInsights,
+            SemanticGraph = semanticGraph,
+            PreviousLayout = layout,
+            PinnedDocumentIds = sourceState.PinnedDocumentIds.Intersect(documentIds),
+            Scene = scene,
+            SelectedDocumentId = documents.FirstOrDefault()?.Id.Value,
+            ReviewThreadItems = FilterReviewThreadItems(sourceState.ReviewThreadItems, documents),
+            ReviewThreads = reviewThreads
+        };
+    }
+
+    private static SemanticGraph FilterSemanticGraph(SemanticGraph graph, ImmutableHashSet<DiffDocumentId> documentIds)
+    {
+        if (graph.Anchors.IsDefaultOrEmpty || documentIds.IsEmpty)
+        {
+            return SemanticGraph.Empty;
+        }
+
+        var anchors = graph.Anchors
+            .Where(anchor => documentIds.Contains(anchor.DocumentId))
+            .ToImmutableArray();
+        var anchorIds = anchors.Select(anchor => anchor.Id).ToImmutableHashSet(StringComparer.Ordinal);
+        var edges = graph.Edges.IsDefaultOrEmpty
+            ? ImmutableArray<SemanticEdge>.Empty
+            : graph.Edges
+                .Where(edge => anchorIds.Contains(edge.SourceAnchorId) && anchorIds.Contains(edge.TargetAnchorId))
+                .ToImmutableArray();
+        return new SemanticGraph(anchors, edges);
+    }
+
+    private static ImmutableArray<ReviewThreadItemViewModel> FilterReviewThreadItems(
+        ImmutableArray<ReviewThreadItemViewModel> threads,
+        ImmutableArray<DiffDocumentSnapshot> documents)
+    {
+        if (threads.IsDefaultOrEmpty)
+        {
+            return [];
+        }
+
+        return threads
+            .Where(thread => string.IsNullOrWhiteSpace(thread.Path) || ContainsDocumentPath(documents, thread.Path))
+            .ToImmutableArray();
+    }
+
+    private static ImmutableArray<GitReviewThreadInfo> FilterReviewThreads(
+        ImmutableArray<GitReviewThreadInfo> threads,
+        ImmutableArray<DiffDocumentSnapshot> documents)
+    {
+        if (threads.IsDefaultOrEmpty)
+        {
+            return [];
+        }
+
+        return threads
+            .Where(thread => string.IsNullOrWhiteSpace(thread.Path) || ContainsDocumentPath(documents, thread.Path))
+            .ToImmutableArray();
+    }
+
+    private static bool ContainsDocumentPath(ImmutableArray<DiffDocumentSnapshot> documents, string path)
+    {
+        var normalizedPath = NormalizeRepositoryPath(path);
+        return documents.Any(document => MatchesDocumentPath(document, normalizedPath));
+    }
+
+    private static string FormatExplorerNodeLabel(FileExplorerNodeViewModel node) =>
+        string.IsNullOrWhiteSpace(node.Path)
+            ? node.Name
+            : node.IsFile ? node.Path : $"{node.Path.TrimEnd('/')}/";
+
+    private static string CreateStableSubsetKey(string value)
+    {
+        unchecked
+        {
+            uint hash = 2166136261;
+            foreach (var character in value.AsSpan())
+            {
+                hash ^= character;
+                hash *= 16777619;
+            }
+
+            return hash.ToString("x8", System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
     private async Task<DiffDocumentSnapshot?> CreateWorkspaceFileDocumentAsync(string path, CancellationToken cancellationToken)
     {
         if (currentGitSnapshot is null || string.IsNullOrWhiteSpace(currentRepositoryPath))
@@ -268,7 +611,7 @@ public sealed partial class MainViewModel
             0,
             0);
         var document = new DiffDocumentFactory().CreateFromText(metadata, text, DiffLineKind.Context);
-        return await CreateTokenizedFullFileDocumentAsync(document, text, cancellationToken);
+        return await CreateFullFileDocumentAsync(document, text, appState.EnableTokenization, cancellationToken);
     }
 
     private async Task<bool> HasRepositoryFileAsync(string path, CancellationToken cancellationToken)
@@ -319,6 +662,7 @@ public sealed partial class MainViewModel
         if (FindWorkspaceTab(tabId) is { FileDiff: not null } existingTab)
         {
             existingTab.FileDiff.SetDisplayMode(displayMode);
+            existingTab.FileDiff.SetTokenizationEnabled(appState.EnableTokenization);
             SelectedWorkspaceTab = existingTab;
             return;
         }
@@ -328,8 +672,8 @@ public sealed partial class MainViewModel
         {
             ReportProgress(operation, 0.18, $"Loading full text for {document.Metadata.Path}");
             var fullText = await LoadFullFileTextAsync(document, operation.Token);
-            ReportProgress(operation, 0.46, "Tokenizing file view");
-            var fullFileDocument = await CreateTokenizedFullFileDocumentAsync(document, fullText, operation.Token);
+            ReportProgress(operation, 0.46, appState.EnableTokenization ? "Tokenizing file view" : "Preparing plain file view");
+            var fullFileDocument = await CreateFullFileDocumentAsync(document, fullText, appState.EnableTokenization, operation.Token);
             ReportProgress(operation, 0.72, "Preparing folding and diff annotations");
             var foldRegions = CreateFoldRegions(fullFileDocument, operation.Token);
             var fileDiff = FileDiffTabViewModel.FromDocument(
@@ -341,6 +685,7 @@ public sealed partial class MainViewModel
                 displayMode,
                 currentRepositoryPath,
                 CodeCompletionProvider);
+            fileDiff.SetTokenizationEnabled(appState.EnableTokenization);
             var tab = WorkspaceTabViewModel.CreateFileDiff(tabId, Path.GetFileName(document.Metadata.Path), document.Metadata.Path, fileDiff);
             AddWorkspaceTab(tab);
             AddDiagnostic("Info", $"Opened file diff tab for {document.Metadata.Path}");
@@ -378,6 +723,14 @@ public sealed partial class MainViewModel
         foreach (var tab in WorkspaceTabs)
         {
             tab.FileDiff?.SetCompletionProvider(CodeCompletionProvider);
+        }
+    }
+
+    private void UpdateOpenFileDiffTokenizationSettings()
+    {
+        foreach (var tab in WorkspaceTabs)
+        {
+            tab.FileDiff?.SetTokenizationEnabled(appState.EnableTokenization);
         }
     }
 

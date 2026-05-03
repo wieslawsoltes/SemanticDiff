@@ -48,14 +48,20 @@ public sealed partial class MainViewModel
         }
     }
 
-    private static async Task<DiffDocumentSnapshot> CreateTokenizedFullFileDocumentAsync(
+    private static async Task<DiffDocumentSnapshot> CreateFullFileDocumentAsync(
         DiffDocumentSnapshot sourceDocument,
         string fullText,
+        bool enableTokenization,
         CancellationToken cancellationToken)
     {
         const int tokenPageSize = 128;
         var document = new DiffDocumentFactory().CreateFromText(sourceDocument.Metadata, fullText, DiffLineKind.Context);
-        var tokenizer = new TextMateDocumentTokenizer(tokenPageSize);
+        if (!enableTokenization)
+        {
+            return document;
+        }
+
+        var tokenizer = new AdaptiveDocumentTokenizer(tokenPageSize);
         var lineBuilder = ImmutableArray.CreateBuilder<DiffLine>(document.LineCount);
 
         for (var firstLineIndex = 0; firstLineIndex < document.LineCount; firstLineIndex += tokenPageSize)
@@ -78,14 +84,21 @@ public sealed partial class MainViewModel
         return new CodeFoldingService().CreateFoldRegions(document);
     }
 
-    private DiffCanvasScene CreateScene(ImmutableArray<DiffDocumentSnapshot> documents, SemanticGraph semanticGraph, GraphLayoutResult? layout)
+    private DiffCanvasScene CreateScene(ImmutableArray<DiffDocumentSnapshot> documents, SemanticGraph semanticGraph, GraphLayoutResult? layout) =>
+        CreateScene(documents, semanticGraph, layout, reviewWorkflow.Threads);
+
+    private DiffCanvasScene CreateScene(
+        ImmutableArray<DiffDocumentSnapshot> documents,
+        SemanticGraph semanticGraph,
+        GraphLayoutResult? layout,
+        ImmutableArray<GitReviewThreadInfo> reviewThreads)
     {
         var scene = DiffCanvasScene.FromDocuments(
             documents,
             semanticGraph,
             layout,
             CreateEdgeOptions(),
-            CreateAnnotations(documents, semanticGraph),
+            CreateAnnotations(documents, semanticGraph, reviewThreads),
             appState.EffectiveAnnotationVisibility,
             appState.GroupingMode);
         scene.SetShowFullFileNodes(IsFullCodeWorkspaceEnabled);
@@ -204,7 +217,7 @@ public sealed partial class MainViewModel
                     0.1 + (double)index / missingNodes.Length * 0.8,
                     $"Loading full-code node {index + 1:N0}/{missingNodes.Length:N0}: {ShortenPath(node.DiffDocument.Metadata.Path)}");
                 var fullText = await LoadFullFileTextAsync(node.DiffDocument, operation.Token);
-                var fullDocument = await CreateTokenizedFullFileDocumentAsync(node.DiffDocument, fullText, operation.Token);
+                var fullDocument = await CreateFullFileDocumentAsync(node.DiffDocument, fullText, appState.EnableTokenization, operation.Token);
                 var foldRegions = CreateFoldRegions(fullDocument, operation.Token);
                 var fileView = fileDiffDocumentBuilder.Build(node.DiffDocument, fullDocument, fullText, foldRegions);
                 var annotatedFullDocument = fullDocument with { Lines = fileView.AnnotatedFullFileLines };
@@ -237,7 +250,13 @@ public sealed partial class MainViewModel
         Scene = Scene.WithAnnotations(CreateAnnotations(currentDocuments, currentSemanticGraph), appState.EffectiveAnnotationVisibility);
     }
 
-    private ImmutableArray<DiffAnnotation> CreateAnnotations(ImmutableArray<DiffDocumentSnapshot> documents, SemanticGraph semanticGraph)
+    private ImmutableArray<DiffAnnotation> CreateAnnotations(ImmutableArray<DiffDocumentSnapshot> documents, SemanticGraph semanticGraph) =>
+        CreateAnnotations(documents, semanticGraph, reviewWorkflow.Threads);
+
+    private ImmutableArray<DiffAnnotation> CreateAnnotations(
+        ImmutableArray<DiffDocumentSnapshot> documents,
+        SemanticGraph semanticGraph,
+        ImmutableArray<GitReviewThreadInfo> reviewThreads)
     {
         if (documents.IsDefaultOrEmpty)
         {
@@ -245,7 +264,7 @@ public sealed partial class MainViewModel
         }
 
         var context = CreateAnnotationContext();
-        var request = new DiffAnnotationRequest(documents, semanticGraph, context, reviewWorkflow.Threads);
+        var request = new DiffAnnotationRequest(documents, semanticGraph, context, reviewThreads);
         return annotationProviders
             .SelectMany(provider => provider.CreateAnnotations(request))
             .GroupBy(annotation => annotation.Id, StringComparer.Ordinal)

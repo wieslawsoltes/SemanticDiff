@@ -104,6 +104,12 @@ public sealed class CodeFileViewerControl : Grid
         typeof(CodeFileViewerControl),
         new PropertyMetadata(false, OnEditableStateChanged));
 
+    public static readonly DependencyProperty IsTokenizationEnabledProperty = DependencyProperty.Register(
+        nameof(IsTokenizationEnabled),
+        typeof(bool),
+        typeof(CodeFileViewerControl),
+        new PropertyMetadata(true, OnTokenizationConfigurationChanged));
+
     public static readonly DependencyProperty TextProperty = DependencyProperty.Register(
         nameof(Text),
         typeof(string),
@@ -173,7 +179,7 @@ public sealed class CodeFileViewerControl : Grid
     private readonly ListView completionList;
     private readonly TextBlock completionStatusText;
     private readonly CodeTextEditorDocument editorDocument = new();
-    private readonly TextMateDocumentTokenizer editableTokenizer = new();
+    private readonly AdaptiveDocumentTokenizer editableTokenizer = new();
     private readonly PlainTextDocumentTokenizer editableFallbackTokenizer = new();
     private readonly HashSet<int> collapsedFoldStarts = [];
     private ImmutableArray<VisibleCodeRow> visibleRows = [];
@@ -300,6 +306,12 @@ public sealed class CodeFileViewerControl : Grid
     {
         get => (bool)GetValue(IsEditableProperty);
         set => SetValue(IsEditableProperty, value);
+    }
+
+    public bool IsTokenizationEnabled
+    {
+        get => (bool)GetValue(IsTokenizationEnabledProperty);
+        set => SetValue(IsTokenizationEnabledProperty, value);
     }
 
     public string? Text
@@ -551,6 +563,16 @@ public sealed class CodeFileViewerControl : Grid
             control.visibleRowsDirty = true;
             control.isDraggingHorizontalScrollbar = false;
             control.ClampScrollOffset();
+            control.RequestDeferredRender();
+        }
+    }
+
+    private static void OnTokenizationConfigurationChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        if (dependencyObject is CodeFileViewerControl control)
+        {
+            control.editableLinesVersion = -1;
+            control.editableLines = [];
             control.RequestDeferredRender();
         }
     }
@@ -4239,6 +4261,11 @@ public sealed class CodeFileViewerControl : Grid
     private ImmutableArray<DiffLine> TokenizeEditableLines(ImmutableArray<DiffLine> lines)
     {
         if (lines.IsDefaultOrEmpty)
+        {
+            return lines;
+        }
+
+        if (!IsTokenizationEnabled)
         {
             return lines;
         }

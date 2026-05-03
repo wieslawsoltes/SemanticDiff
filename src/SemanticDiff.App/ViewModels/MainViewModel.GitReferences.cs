@@ -352,6 +352,7 @@ public sealed partial class MainViewModel
             RestoreGraphWorkspaceState(value);
         }
 
+        OnPropertyChanged(nameof(HasActiveGraphSubsetFilter));
         RequestWorkspaceSessionSave();
     }
 
@@ -614,7 +615,7 @@ public sealed partial class MainViewModel
         var reviewMode = appState.ReviewMode;
         var collapseUnchangedContext = appState.CollapseUnchangedContext;
         var layoutMode = appState.LayoutMode;
-        var loadedDiff = await Task.Run(async () => await repositoryDiffLoader.LoadAsync(
+        var unfilteredDiff = await Task.Run(async () => await repositoryDiffLoader.LoadAsync(
             new RepositoryDiffLoadRequest(
                 request.RepositoryPath,
                 request.Scope,
@@ -624,9 +625,10 @@ public sealed partial class MainViewModel
                 reviewMode,
                 collapseUnchangedContext),
             operation.Token).ConfigureAwait(false), operation.Token);
+        var loadedDiff = ApplyFileTypeFilter(unfilteredDiff, refreshOptions: false);
 
         var repositoryName = Path.GetFileName(request.RepositoryPath);
-        var statusPrefix = $"{repositoryName} | {loadedDiff.GitSnapshot.Files.Length:N0} {FormatDiffScope(request.Scope)} changes | {FormatDiffContextMode(diffContextMode)} | {FormatReviewMode(reviewMode)} | {FormatReferenceText(loadedDiff.Request, loadedDiff.GitSnapshot.DefaultBranch)}";
+        var statusPrefix = $"{repositoryName} | {loadedDiff.GitSnapshot.Files.Length:N0} {FormatDiffScope(request.Scope)} changes{FormatFileTypeFilterStatus(loadedDiff.GitSnapshot.Files.Length, unfilteredDiff.GitSnapshot.Files.Length)} | {FormatDiffContextMode(diffContextMode)} | {FormatReviewMode(reviewMode)} | {FormatReferenceText(loadedDiff.Request, loadedDiff.GitSnapshot.DefaultBranch)}";
 
         if (loadedDiff.Documents.IsDefaultOrEmpty)
         {
@@ -657,34 +659,42 @@ public sealed partial class MainViewModel
                 reviewRequest?.Kind ?? gitReferenceBrowser.ReviewRequestKind);
         }
 
-        ReportProgress(operation, 0.34, "Tokenizing workspace tab");
-        var tokenizationProgress = new Progress<(double Value, string Message)>(update =>
-            ReportProgress(operation, 0.34 + update.Value * 0.24, update.Message));
-        var tokenizedDocuments = await TokenizeAsync(loadedDiff.Documents, operation.Token, tokenizationProgress);
+        var analysisDocuments = loadedDiff.Documents;
+        if (appState.EnableTokenization)
+        {
+            ReportProgress(operation, 0.34, "Tokenizing workspace tab");
+            var tokenizationProgress = new Progress<(double Value, string Message)>(update =>
+                ReportProgress(operation, 0.34 + update.Value * 0.24, update.Message));
+            analysisDocuments = await TokenizeAsync(loadedDiff.Documents, operation.Token, tokenizationProgress);
+        }
+        else
+        {
+            ReportProgress(operation, 0.42, "Tokenization disabled for workspace tab");
+        }
 
         var initialSemanticAnalysisMode = GetInitialSemanticAnalysisMode(appState.SemanticAnalysisMode);
         ReportProgress(operation, 0.62, $"Analyzing semantics ({FormatSemanticAnalysisMode(initialSemanticAnalysisMode)})");
         var semanticGraph = await AnalyzeSemanticsAsync(
             request.RepositoryPath,
             loadedDiff.GitSnapshot,
-            tokenizedDocuments,
+            analysisDocuments,
             initialSemanticAnalysisMode,
             operation.Token);
-        var explorerItems = CreateExplorerItems(tokenizedDocuments);
+        var explorerItems = CreateExplorerItems(analysisDocuments);
         var explorerTreeTask = BuildExplorerTreeAsync(explorerItems, operation.Token);
-        var semanticNavigationTask = BuildSemanticNavigationStateAsync(tokenizedDocuments, semanticGraph, operation.Token);
+        var semanticNavigationTask = BuildSemanticNavigationStateAsync(analysisDocuments, semanticGraph, operation.Token);
 
         ReportProgress(operation, 0.86, "Running semantic graph layout");
         var layout = await LayoutDocumentsForWorkspaceTabAsync(
-            tokenizedDocuments,
+            analysisDocuments,
             semanticGraph,
             layoutMode,
             operation.Token);
-        var scene = CreateScene(tokenizedDocuments, semanticGraph, layout);
+        var scene = CreateScene(analysisDocuments, semanticGraph, layout);
         var explorerTreeRoots = await explorerTreeTask;
         var semanticNavigationState = await semanticNavigationTask;
-        var impactSummary = new SemanticImpactAnalyzer().Analyze(tokenizedDocuments, semanticGraph);
-        var statusText = $"{statusPrefix} | {tokenizedDocuments.Length:N0} nodes | {semanticGraph.Edges.Length:N0} semantic edges | {FormatImpactStatus(impactSummary)} | workspace ready";
+        var impactSummary = new SemanticImpactAnalyzer().Analyze(analysisDocuments, semanticGraph);
+        var statusText = $"{statusPrefix} | {analysisDocuments.Length:N0} nodes | {semanticGraph.Edges.Length:N0} semantic edges | {FormatImpactStatus(impactSummary)} | workspace ready";
 
         return new GraphWorkspaceState(
             request.RepositoryPath,
@@ -695,7 +705,7 @@ public sealed partial class MainViewModel
             statusText,
             statusPrefix,
             true,
-            tokenizedDocuments,
+            analysisDocuments,
             explorerItems,
             explorerTreeRoots,
             semanticNavigationState.Items,

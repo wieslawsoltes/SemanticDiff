@@ -88,6 +88,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable, 
 
     public ObservableCollection<LoadingOperationViewModel> LoadingOperations { get; } = [];
 
+    public ObservableCollection<FileTypeFilterOptionViewModel> FileTypeFilterOptions { get; } = [];
+
     public MainViewModel()
         : this(JsonAppStateStore.CreateDefault())
     {
@@ -328,6 +330,15 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable, 
 
     [ObservableProperty]
     private bool useInteractiveLevelOfDetail = true;
+
+    [ObservableProperty]
+    private bool isTokenizationEnabled = true;
+
+    [ObservableProperty]
+    private string tokenizationText = "Tokenization on";
+
+    [ObservableProperty]
+    private string fileTypeFilterSummaryText = "All file types";
 
     [ObservableProperty]
     private string semanticAnalysisModeText = "MSBuild";

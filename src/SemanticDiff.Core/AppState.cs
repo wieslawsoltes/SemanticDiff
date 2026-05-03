@@ -24,6 +24,8 @@ public sealed record SemanticDiffAppState(
     string? SelectedBranchRef = null,
     int? SelectedPullRequestNumber = null,
     bool UseInteractiveLevelOfDetail = true,
+    bool EnableTokenization = true,
+    string[]? IncludedFileTypeKeys = null,
     CodeCompletionMode CodeCompletionMode = CodeCompletionMode.LanguageServicesThenDocument,
     double LeftPaneWidth = 260,
     WorkspaceSessionState? WorkspaceSession = null)
@@ -31,6 +33,8 @@ public sealed record SemanticDiffAppState(
     public DiffNodeLayoutState[] EffectiveLayoutNodes => LayoutNodes ?? [];
 
     public DiffAnnotationVisibilityState EffectiveAnnotationVisibility => AnnotationVisibility ?? DiffAnnotationVisibilityState.Default;
+
+    public string[]? EffectiveIncludedFileTypeKeys => IncludedFileTypeKeys;
 
     public WorkspaceSessionState EffectiveWorkspaceSession => WorkspaceSession ?? WorkspaceSessionState.Empty;
 }

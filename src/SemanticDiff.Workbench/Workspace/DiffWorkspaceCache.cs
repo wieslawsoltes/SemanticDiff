@@ -25,7 +25,9 @@ public sealed record DiffWorkspaceCacheKeyOptions(
     SemanticAnalysisMode SemanticAnalysisMode,
     GraphLayoutMode LayoutMode,
     GraphGroupingMode GroupingMode,
-    bool ShowSemanticEdges);
+    bool ShowSemanticEdges,
+    bool EnableTokenization = true,
+    string FileTypeFilterKey = "all");
 
 public sealed class DiffWorkspaceCache
 {
@@ -65,7 +67,9 @@ public sealed class DiffWorkspaceCache
             options.SemanticAnalysisMode.ToString(),
             options.LayoutMode.ToString(),
             options.GroupingMode.ToString(),
-            options.ShowSemanticEdges ? "edges" : "no-edges");
+            options.ShowSemanticEdges ? "edges" : "no-edges",
+            options.EnableTokenization ? "tokenized" : "plain",
+            string.IsNullOrWhiteSpace(options.FileTypeFilterKey) ? "all" : options.FileTypeFilterKey);
     }
 
     public bool TryGet(string repositoryPath, GitDiffRequest request, DiffWorkspaceCacheKeyOptions options, out DiffWorkspaceCacheEntry entry)

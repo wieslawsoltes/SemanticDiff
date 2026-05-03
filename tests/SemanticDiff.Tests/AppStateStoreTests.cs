@@ -13,6 +13,8 @@ public sealed class AppStateStoreTests
         Assert.Equal(GraphGroupingMode.Folder, state.GroupingMode);
         Assert.Equal(GitReviewRequestState.Open, state.ReviewRequestState);
         Assert.True(state.UseInteractiveLevelOfDetail);
+        Assert.True(state.EnableTokenization);
+        Assert.Null(state.EffectiveIncludedFileTypeKeys);
     }
 
     [Fact]
@@ -50,6 +52,8 @@ public sealed class AppStateStoreTests
             SelectedBranchRef: "origin/feature/work",
             SelectedPullRequestNumber: 42,
             UseInteractiveLevelOfDetail: false,
+            EnableTokenization: false,
+            IncludedFileTypeKeys: [".cs", ".xaml"],
             CodeCompletionMode: CodeCompletionMode.DocumentOnly,
             LeftPaneWidth: 344);
 
@@ -80,6 +84,9 @@ public sealed class AppStateStoreTests
             Assert.Equal("origin/feature/work", loaded.SelectedBranchRef);
             Assert.Equal(42, loaded.SelectedPullRequestNumber);
             Assert.False(loaded.UseInteractiveLevelOfDetail);
+            Assert.False(loaded.EnableTokenization);
+            Assert.NotNull(loaded.EffectiveIncludedFileTypeKeys);
+            Assert.Equal([".cs", ".xaml"], loaded.EffectiveIncludedFileTypeKeys);
             Assert.Equal(CodeCompletionMode.DocumentOnly, loaded.CodeCompletionMode);
             Assert.Equal(344, loaded.LeftPaneWidth);
             var node = Assert.Single(loaded.EffectiveLayoutNodes);

@@ -429,7 +429,7 @@ public sealed partial class MainViewModel
         string fullText,
         CancellationToken cancellationToken)
     {
-        var fullDocument = await CreateTokenizedFullFileDocumentAsync(sourceDocument, fullText, cancellationToken);
+        var fullDocument = await CreateFullFileDocumentAsync(sourceDocument, fullText, appState.EnableTokenization, cancellationToken);
         return CreateEditorCanvasDocument(fullDocument, fullText, cancellationToken);
     }
 

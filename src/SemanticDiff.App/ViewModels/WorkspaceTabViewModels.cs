@@ -150,6 +150,12 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
     [ObservableProperty]
     private GraphWorkspaceState? graphState;
 
+    public GraphWorkspaceState? GraphUnfilteredState { get; set; }
+
+    public string? GraphFileSubsetLabel { get; set; }
+
+    public bool HasGraphFileSubsetFilter => GraphUnfilteredState is not null;
+
     [ObservableProperty]
     private bool isLightTheme;
 
@@ -2029,12 +2035,17 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         DiffLines = diffLines;
         FullFileLines = fullFileLines;
         AnnotatedFullFileLines = annotatedFullFileLines;
+        PlainDiffOnlyLines = StripTokenSpans(diffOnlyLines);
+        PlainFullDiffLines = StripTokenSpans(fullDiffLines);
+        PlainFullFileLines = StripTokenSpans(fullFileLines);
+        PlainAnnotatedFullFileLines = StripTokenSpans(annotatedFullFileLines);
         FoldRegions = foldRegions;
         this.semanticInsight = semanticInsight;
         this.fullText = fullText;
         this.displayMode = displayMode;
         RepositoryPath = repositoryPath ?? string.Empty;
         CompletionProvider = completionProvider;
+        IsTokenizationEnabled = true;
     }
 
     public string DocumentId { get; }
@@ -2046,6 +2057,16 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
     public string RepositoryPath { get; }
 
     public ICodeCompletionProvider? CompletionProvider { get; private set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CurrentDiffOnlyLines))]
+    [NotifyPropertyChangedFor(nameof(CurrentFullFileLines))]
+    [NotifyPropertyChangedFor(nameof(SummaryText))]
+    [NotifyPropertyChangedFor(nameof(StatusText))]
+    [NotifyPropertyChangedFor(nameof(FullFileHeader))]
+    [NotifyPropertyChangedFor(nameof(DiffOnlyHeader))]
+    [NotifyPropertyChangedFor(nameof(RefreshKey))]
+    private bool isTokenizationEnabled = true;
 
     public string LineCommentPrefix => GetLineCommentTokens(Language, Path).Prefix;
 
@@ -2063,11 +2084,23 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
 
     public ImmutableArray<DiffLine> AnnotatedFullFileLines { get; }
 
+    private ImmutableArray<DiffLine> PlainDiffOnlyLines { get; }
+
+    private ImmutableArray<DiffLine> PlainFullDiffLines { get; }
+
+    private ImmutableArray<DiffLine> PlainFullFileLines { get; }
+
+    private ImmutableArray<DiffLine> PlainAnnotatedFullFileLines { get; }
+
     public ImmutableArray<CodeFoldRegion> FoldRegions { get; }
 
-    public ImmutableArray<DiffLine> CurrentDiffOnlyLines => DiffScopeMode == FileDiffScopeMode.FullFileDiff ? FullDiffLines : DiffOnlyLines;
+    public ImmutableArray<DiffLine> CurrentDiffOnlyLines => DiffScopeMode == FileDiffScopeMode.FullFileDiff
+        ? GetDisplayLines(FullDiffLines, PlainFullDiffLines)
+        : GetDisplayLines(DiffOnlyLines, PlainDiffOnlyLines);
 
-    public ImmutableArray<DiffLine> CurrentFullFileLines => IsDiffAnnotationEnabled ? AnnotatedFullFileLines : FullFileLines;
+    public ImmutableArray<DiffLine> CurrentFullFileLines => IsDiffAnnotationEnabled
+        ? GetDisplayLines(AnnotatedFullFileLines, PlainAnnotatedFullFileLines)
+        : GetDisplayLines(FullFileLines, PlainFullFileLines);
 
     public ImmutableArray<SemanticLineInsight> SemanticLineInsights => SemanticInsight.Lines;
 
@@ -2101,7 +2134,7 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         ? $"{Path} | full file diff | {CurrentDiffOnlyLines.Length:N0} lines | {SemanticSummaryText}"
         : $"{Path} | changed hunks | {CurrentDiffOnlyLines.Length:N0} lines | {SemanticSummaryText}";
 
-    public string RefreshKey => $"{DisplayMode}:{DiffScopeMode}:{IsDiffAnnotationEnabled}:{SemanticLineInsights.Length}";
+    public string RefreshKey => $"{DisplayMode}:{DiffScopeMode}:{IsDiffAnnotationEnabled}:{IsTokenizationEnabled}:{SemanticLineInsights.Length}";
 
     public ImmutableArray<double> CodeFontSizeOptions { get; } = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28];
 
@@ -2131,6 +2164,25 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         }
 
         return count;
+    }
+
+    private ImmutableArray<DiffLine> GetDisplayLines(ImmutableArray<DiffLine> tokenizedLines, ImmutableArray<DiffLine> plainLines) =>
+        IsTokenizationEnabled ? tokenizedLines : plainLines;
+
+    private static ImmutableArray<DiffLine> StripTokenSpans(ImmutableArray<DiffLine> lines)
+    {
+        if (lines.IsDefaultOrEmpty)
+        {
+            return lines;
+        }
+
+        var builder = ImmutableArray.CreateBuilder<DiffLine>(lines.Length);
+        foreach (var line in lines)
+        {
+            builder.Add(line.Tokens.IsDefaultOrEmpty ? line : line with { Tokens = ImmutableArray<TokenSpan>.Empty });
+        }
+
+        return builder.ToImmutable();
     }
 
     private static (string Prefix, string Suffix) GetLineCommentTokens(string language, string path)
@@ -2218,6 +2270,8 @@ public sealed partial class FileDiffTabViewModel : ObservableObject
         CompletionProvider = completionProvider;
         OnPropertyChanged(nameof(CompletionProvider));
     }
+
+    public void SetTokenizationEnabled(bool isEnabled) => IsTokenizationEnabled = isEnabled;
 
     public SemanticLineInsight? FindSemanticLineInsight(int? lineNumber)
     {

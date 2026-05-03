@@ -134,6 +134,76 @@ public sealed partial class MainViewModel
         AddDiagnostic("Info", isEnabled ? "Canvas LOD optimization enabled" : "Canvas LOD optimization disabled");
     }
 
+    public async Task SetTokenizationAsync(bool isEnabled)
+    {
+        if (appState.EnableTokenization == isEnabled)
+        {
+            ApplyAppStateToPresentation();
+            return;
+        }
+
+        CacheCurrentDiffView();
+        appState = appState with { EnableTokenization = isEnabled };
+        ApplyAppStateToPresentation();
+        UpdateOpenFileDiffTokenizationSettings();
+        await SaveOptionsAsync(CancellationToken.None);
+        AddDiagnostic("Info", isEnabled ? "Tokenization enabled" : "Tokenization disabled");
+        await LoadRepositoryAsync(loadAppState: false, operationMessage: "Reloading tokenization");
+    }
+
+    public async Task ToggleFileTypeFilterAsync(FileTypeFilterOptionViewModel option)
+    {
+        var key = DiffFileTypeClassifier.NormalizeFileTypeKey(option.Key);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return;
+        }
+
+        var selectedKeys = appState.IncludedFileTypeKeys is null
+            ? FileTypeFilterOptions.Select(current => current.Key).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : appState.IncludedFileTypeKeys.Select(DiffFileTypeClassifier.NormalizeFileTypeKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (selectedKeys.Contains(key))
+        {
+            selectedKeys.Remove(key);
+        }
+        else
+        {
+            selectedKeys.Add(key);
+        }
+
+        await SetIncludedFileTypeKeysAsync(NormalizeFileTypeFilterKeys(selectedKeys), "File type filter changed");
+    }
+
+    public Task IncludeAllFileTypesAsync() =>
+        SetIncludedFileTypeKeysAsync(null, "File type filter reset to all files");
+
+    public Task IncludeNoFileTypesAsync() =>
+        SetIncludedFileTypeKeysAsync([], "File type filter cleared");
+
+    private async Task SetIncludedFileTypeKeysAsync(string[]? includedFileTypeKeys, string diagnosticMessage)
+    {
+        var normalizedKeys = includedFileTypeKeys is null ? null : NormalizeFileTypeFilterKeys(includedFileTypeKeys);
+        if (FileTypeFilterKeysEqual(appState.IncludedFileTypeKeys, normalizedKeys))
+        {
+            ApplyAppStateToPresentation();
+            return;
+        }
+
+        CacheCurrentDiffView();
+        appState = appState with
+        {
+            IncludedFileTypeKeys = normalizedKeys,
+            LayoutNodes = null
+        };
+        previousLayout = null;
+        pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
+        ApplyAppStateToPresentation();
+        await SaveOptionsAsync(CancellationToken.None);
+        AddDiagnostic("Info", diagnosticMessage);
+        await LoadRepositoryAsync(loadAppState: false, operationMessage: "Reloading file type filters");
+    }
+
     public async Task SetSemanticAnalysisModeAsync(SemanticAnalysisMode analysisMode)
     {
         if (appState.SemanticAnalysisMode == analysisMode)
