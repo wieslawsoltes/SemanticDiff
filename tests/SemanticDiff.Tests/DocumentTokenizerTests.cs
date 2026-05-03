@@ -92,6 +92,70 @@ public sealed class DocumentTokenizerTests
     }
 
     [Fact]
+    public async Task AdaptiveDocumentTokenizer_TokenizePageAsync_KeepsTextMateForPreciseSmallCSharpFiles()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId("Sample.cs"), "Sample.cs", null, DiffFileStatus.Modified, "C#", 0, 0),
+            """
+            public sealed class Sample
+            {
+                public string Name => "Semantic";
+            }
+            """);
+        var tokenizer = new AdaptiveDocumentTokenizer(pageSize: 2);
+
+        var lines = await tokenizer.TokenizePageAsync(document, 0, document.LineCount, CancellationToken.None);
+        var tokens = lines.SelectMany(line => line.Tokens).ToArray();
+
+        Assert.Contains(tokens, token => token.Source == "textmate" && token.LanguageId == "csharp");
+    }
+
+    [Fact]
+    public async Task AdaptiveDocumentTokenizer_TokenizePageAsync_RoutesCppToFastFallback()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId("native.cpp"), "native.cpp", null, DiffFileStatus.Modified, "C++", 0, 0),
+            """
+            #include <vector>
+            class NativeRenderer final
+            {
+            public:
+                void Draw(int frame) const;
+            };
+            """);
+        var tokenizer = new AdaptiveDocumentTokenizer(pageSize: 2);
+
+        var lines = await tokenizer.TokenizePageAsync(document, 0, document.LineCount, CancellationToken.None);
+        var tokens = lines.SelectMany(line => line.Tokens).ToArray();
+
+        Assert.Contains(tokens, token => token.StyleId == "keyword" && token.LanguageId == "cpp" && token.Source == "fallback");
+        Assert.DoesNotContain(tokens, token => token.Source == "textmate");
+    }
+
+    [Fact]
+    public async Task AdaptiveDocumentTokenizer_TokenizePageAsync_RoutesLargeUnknownFilesToFastFallback()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId("generated.dsl"), "generated.dsl", null, DiffFileStatus.Modified, "CustomDsl", 0, 0),
+            """
+            step One()
+            step Two()
+            step Three()
+            """);
+        var options = new AdaptiveTokenizationOptions(LargeDocumentLineThreshold: 2);
+        var tokenizer = new AdaptiveDocumentTokenizer(pageSize: 2, options: options);
+
+        var lines = await tokenizer.TokenizePageAsync(document, 0, document.LineCount, CancellationToken.None);
+        var tokens = lines.SelectMany(line => line.Tokens).ToArray();
+
+        Assert.Contains(tokens, token => token.StyleId == "function" && token.Source == "fallback");
+        Assert.DoesNotContain(tokens, token => token.Source == "textmate");
+    }
+
+    [Fact]
     public async Task PlainTextDocumentTokenizer_TokenizePageAsync_FallbackAddsRichTokensForUnsupportedSemanticLanguage()
     {
         var factory = new DiffDocumentFactory();

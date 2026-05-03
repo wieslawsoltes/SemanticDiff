@@ -16,17 +16,17 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return new ValueTask<ImmutableArray<TokenSpan>>(TokenizeLine(document, line));
+        var descriptor = LanguageServiceRegistry.Identify(document);
+        return new ValueTask<ImmutableArray<TokenSpan>>(TokenizeLine(line, descriptor));
     }
 
-    private static ImmutableArray<TokenSpan> TokenizeLine(DiffDocumentSnapshot document, DiffLine line)
+    private static ImmutableArray<TokenSpan> TokenizeLine(DiffLine line, LanguageDescriptor descriptor)
     {
         if (line.Kind is DiffLineKind.Metadata or DiffLineKind.Imaginary || line.Text.Length == 0)
         {
             return ImmutableArray<TokenSpan>.Empty;
         }
 
-        var descriptor = LanguageServiceRegistry.Identify(document);
         return descriptor.Definition?.SyntaxKind switch
         {
             LanguageSyntaxKind.Xml => TokenizeXml(line.Text, descriptor.Id),
@@ -49,12 +49,13 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
         var firstLine = Math.Clamp(firstLineIndex, 0, document.LineCount);
         var lastLine = Math.Clamp(firstLine + Math.Max(0, lineCount), 0, document.LineCount);
         var builder = ImmutableArray.CreateBuilder<DiffLine>(lastLine - firstLine);
+        var descriptor = LanguageServiceRegistry.Identify(document);
 
         for (var lineIndex = firstLine; lineIndex < lastLine; lineIndex++)
         {
             var line = document.Lines[lineIndex];
             cancellationToken.ThrowIfCancellationRequested();
-            var tokens = TokenizeLine(document, line);
+            var tokens = TokenizeLine(line, descriptor);
             builder.Add(line with { Tokens = tokens });
         }
 
@@ -454,28 +455,36 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
 
     private static string? FindPrefix(string text, int column, ImmutableArray<string> prefixes)
     {
-        foreach (var prefix in prefixes.OrderByDescending(prefix => prefix.Length))
+        string? bestMatch = null;
+        foreach (var prefix in prefixes)
         {
             if (prefix.Length > 0 && text.AsSpan(column).StartsWith(prefix, StringComparison.Ordinal))
             {
-                return prefix;
+                if (bestMatch is null || prefix.Length > bestMatch.Length)
+                {
+                    bestMatch = prefix;
+                }
             }
         }
 
-        return null;
+        return bestMatch;
     }
 
     private static (string Open, string Close)? FindBlockComment(string text, int column, ImmutableArray<(string Open, string Close)> blockComments)
     {
-        foreach (var blockComment in blockComments.OrderByDescending(comment => comment.Open.Length))
+        (string Open, string Close)? bestMatch = null;
+        foreach (var blockComment in blockComments)
         {
             if (blockComment.Open.Length > 0 && text.AsSpan(column).StartsWith(blockComment.Open, StringComparison.Ordinal))
             {
-                return blockComment;
+                if (bestMatch is null || blockComment.Open.Length > bestMatch.Value.Open.Length)
+                {
+                    bestMatch = blockComment;
+                }
             }
         }
 
-        return null;
+        return bestMatch;
     }
 
     private static int ReadStringLength(string text, int startColumn, string delimiter)
@@ -591,6 +600,246 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
         }
 
         return -1;
+    }
+}
+
+public sealed record AdaptiveTokenizationOptions(
+    int LargeDocumentLineThreshold = 2_500,
+    int LargeDocumentCharacterThreshold = 300_000,
+    ImmutableHashSet<string>? PreferFastLanguageIds = null,
+    ImmutableHashSet<string>? PreferTextMateLanguageIds = null)
+{
+    public static AdaptiveTokenizationOptions Default { get; } = new();
+
+    private static readonly ImmutableHashSet<string> DefaultPreferFastLanguageIds =
+        ImmutableHashSet.Create(
+            StringComparer.OrdinalIgnoreCase,
+            "c",
+            "cc",
+            "cpp",
+            "c++",
+            "cxx",
+            "h",
+            "hh",
+            "hpp",
+            "hxx",
+            "objc",
+            "objective-c",
+            "xml",
+            "xaml",
+            "axaml",
+            "html",
+            "htm",
+            "json",
+            "jsonc",
+            "yaml",
+            "yml",
+            "toml",
+            "ini",
+            "properties",
+            "markdown",
+            "md",
+            "css",
+            "scss",
+            "sass",
+            "less",
+            "javascript",
+            "js",
+            "jsx",
+            "typescript",
+            "ts",
+            "tsx",
+            "python",
+            "py",
+            "ruby",
+            "rb",
+            "go",
+            "golang",
+            "rust",
+            "rs",
+            "java",
+            "kotlin",
+            "kt",
+            "php",
+            "shellscript",
+            "shell",
+            "bash",
+            "zsh",
+            "sh",
+            "powershell",
+            "ps1",
+            "sql",
+            "dockerfile",
+            "swift");
+
+    private static readonly ImmutableHashSet<string> DefaultPreferTextMateLanguageIds =
+        ImmutableHashSet.Create(
+            StringComparer.OrdinalIgnoreCase,
+            "csharp",
+            "cs");
+
+    internal ImmutableHashSet<string> EffectivePreferFastLanguageIds =>
+        PreferFastLanguageIds ?? DefaultPreferFastLanguageIds;
+
+    internal ImmutableHashSet<string> EffectivePreferTextMateLanguageIds =>
+        PreferTextMateLanguageIds ?? DefaultPreferTextMateLanguageIds;
+}
+
+public sealed class AdaptiveDocumentTokenizer : IDocumentTokenizer
+{
+    private const int DefaultPageSize = 128;
+
+    private readonly object gate = new();
+    private readonly TextMateDocumentTokenizer textMateTokenizer;
+    private readonly PlainTextDocumentTokenizer fastTokenizer;
+    private readonly AdaptiveTokenizationOptions options;
+    private readonly Dictionary<DiffDocumentSnapshot, bool> fastDecisions = new(DocumentReferenceComparer.Instance);
+
+    public AdaptiveDocumentTokenizer()
+        : this(DefaultPageSize)
+    {
+    }
+
+    public AdaptiveDocumentTokenizer(int pageSize, AdaptiveTokenizationOptions? options = null)
+    {
+        textMateTokenizer = new TextMateDocumentTokenizer(pageSize);
+        fastTokenizer = new PlainTextDocumentTokenizer();
+        this.options = options ?? AdaptiveTokenizationOptions.Default;
+    }
+
+    public string Id => "adaptive";
+
+    public void ClearCache()
+    {
+        lock (gate)
+        {
+            fastDecisions.Clear();
+            textMateTokenizer.ClearCache();
+        }
+    }
+
+    public ValueTask<ImmutableArray<TokenSpan>> TokenizeLineAsync(
+        DiffDocumentSnapshot document,
+        DiffLine line,
+        CancellationToken cancellationToken)
+    {
+        return ShouldUseFastTokenizer(document)
+            ? fastTokenizer.TokenizeLineAsync(document, line, cancellationToken)
+            : textMateTokenizer.TokenizeLineAsync(document, line, cancellationToken);
+    }
+
+    public ValueTask<ImmutableArray<DiffLine>> TokenizePageAsync(
+        DiffDocumentSnapshot document,
+        int firstLineIndex,
+        int lineCount,
+        CancellationToken cancellationToken)
+    {
+        return ShouldUseFastTokenizer(document)
+            ? fastTokenizer.TokenizePageAsync(document, firstLineIndex, lineCount, cancellationToken)
+            : textMateTokenizer.TokenizePageAsync(document, firstLineIndex, lineCount, cancellationToken);
+    }
+
+    private bool ShouldUseFastTokenizer(DiffDocumentSnapshot document)
+    {
+        lock (gate)
+        {
+            if (fastDecisions.TryGetValue(document, out var cachedDecision))
+            {
+                return cachedDecision;
+            }
+
+            var decision = ShouldUseFastTokenizerCore(document);
+            fastDecisions[document] = decision;
+            return decision;
+        }
+    }
+
+    private bool ShouldUseFastTokenizerCore(DiffDocumentSnapshot document)
+    {
+        var descriptor = LanguageServiceRegistry.Identify(document);
+        if (Matches(options.EffectivePreferFastLanguageIds, document, descriptor))
+        {
+            return true;
+        }
+
+        if (IsLargeDocument(document) && !Matches(options.EffectivePreferTextMateLanguageIds, document, descriptor))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool IsLargeDocument(DiffDocumentSnapshot document)
+    {
+        if (options.LargeDocumentLineThreshold > 0 && document.LineCount >= options.LargeDocumentLineThreshold)
+        {
+            return true;
+        }
+
+        if (options.LargeDocumentCharacterThreshold <= 0)
+        {
+            return false;
+        }
+
+        var characterCount = 0L;
+        foreach (var line in document.Lines)
+        {
+            characterCount += line.Text.Length;
+            if (characterCount >= options.LargeDocumentCharacterThreshold)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool Matches(
+        ImmutableHashSet<string> languageIds,
+        DiffDocumentSnapshot document,
+        LanguageDescriptor descriptor)
+    {
+        if (languageIds.Contains(descriptor.Id))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(descriptor.Extension) &&
+            languageIds.Contains(descriptor.Extension.TrimStart('.')))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(document.Metadata.Language) &&
+            languageIds.Contains(LanguageDefinition.Normalize(document.Metadata.Language)))
+        {
+            return true;
+        }
+
+        if (descriptor.Definition is null)
+        {
+            return false;
+        }
+
+        foreach (var alias in descriptor.Definition.Aliases)
+        {
+            if (languageIds.Contains(alias))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private sealed class DocumentReferenceComparer : IEqualityComparer<DiffDocumentSnapshot>
+    {
+        public static DocumentReferenceComparer Instance { get; } = new();
+
+        public bool Equals(DiffDocumentSnapshot? x, DiffDocumentSnapshot? y) => ReferenceEquals(x, y);
+
+        public int GetHashCode(DiffDocumentSnapshot obj) => RuntimeHelpers.GetHashCode(obj);
     }
 }
 
