@@ -13,8 +13,11 @@ internal sealed class FakeGitCommandRunner : IGitCommandRunner
 
     public List<IReadOnlyList<string>> Calls { get; } = [];
 
+    public List<string> RepositoryPaths { get; } = [];
+
     public Task<GitCommandResult> RunAsync(string repositoryPath, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
+        RepositoryPaths.Add(repositoryPath);
         Calls.Add(arguments.ToArray());
         return Task.FromResult(handler(arguments));
     }

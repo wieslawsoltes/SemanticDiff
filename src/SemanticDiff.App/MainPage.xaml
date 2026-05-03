@@ -109,6 +109,101 @@
       </Grid>
     </DataTemplate>
 
+    <DataTemplate x:Key="PatchCompareItemTemplate" x:DataType="viewModels:PatchCompareItemViewModel">
+      <Grid MinHeight="52" Padding="12,5">
+        <Grid ColumnDefinitions="34,42,86,42,86,*,160" ColumnSpacing="8">
+          <Border MinWidth="26"
+                  Padding="6,2"
+                  CornerRadius="4"
+                  Background="{ThemeResource AccentMutedBrush}"
+                  HorizontalAlignment="Left"
+                  VerticalAlignment="Top">
+            <TextBlock Text="{x:Bind StatusText}"
+                       Foreground="{ThemeResource AccentBrush}"
+                       FontWeight="Bold"
+                       FontSize="12"
+                       TextAlignment="Center" />
+          </Border>
+          <TextBlock Grid.Column="1"
+                     Text="{x:Bind OldIndexText}"
+                     Foreground="{ThemeResource SecondaryTextBrush}"
+                     FontFamily="Cascadia Mono, Consolas"
+                     FontSize="11"
+                     VerticalAlignment="Top"
+                     Margin="0,3,0,0" />
+          <TextBlock Grid.Column="2"
+                     Text="{x:Bind OldCommitText}"
+                     Foreground="{ThemeResource TertiaryTextBrush}"
+                     FontFamily="Cascadia Mono, Consolas"
+                     FontSize="11"
+                     TextTrimming="CharacterEllipsis"
+                     VerticalAlignment="Top"
+                     Margin="0,3,0,0" />
+          <TextBlock Grid.Column="3"
+                     Text="{x:Bind NewIndexText}"
+                     Foreground="{ThemeResource SecondaryTextBrush}"
+                     FontFamily="Cascadia Mono, Consolas"
+                     FontSize="11"
+                     VerticalAlignment="Top"
+                     Margin="0,3,0,0" />
+          <TextBlock Grid.Column="4"
+                     Text="{x:Bind NewCommitText}"
+                     Foreground="{ThemeResource TertiaryTextBrush}"
+                     FontFamily="Cascadia Mono, Consolas"
+                     FontSize="11"
+                     TextTrimming="CharacterEllipsis"
+                     VerticalAlignment="Top"
+                     Margin="0,3,0,0" />
+          <Grid Grid.Column="5" RowDefinitions="Auto,Auto" RowSpacing="3">
+            <TextBlock Text="{x:Bind Subject}"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       FontSize="12"
+                       FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" />
+            <TextBlock Grid.Row="1"
+                       Text="{x:Bind DetailText}"
+                       Foreground="{ThemeResource TertiaryTextBrush}"
+                       FontSize="10"
+                       TextTrimming="CharacterEllipsis" />
+          </Grid>
+          <TextBlock Grid.Column="6"
+                     Text="{x:Bind StatusDetail}"
+                     Foreground="{ThemeResource SecondaryTextBrush}"
+                     FontSize="10"
+                     TextAlignment="Right"
+                     TextTrimming="CharacterEllipsis"
+                     VerticalAlignment="Top"
+                     Margin="0,3,0,0" />
+        </Grid>
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate x:Key="PatchCompareRefTemplate" x:DataType="viewModels:PatchCompareWizardRefViewModel">
+      <Grid MinHeight="42" Padding="8,4" ColumnDefinitions="*,Auto" ColumnSpacing="10">
+        <StackPanel Spacing="2">
+          <TextBlock Text="{x:Bind DisplayName}"
+                     Foreground="{ThemeResource PrimaryTextBrush}"
+                     FontSize="12"
+                     FontWeight="SemiBold"
+                     TextTrimming="CharacterEllipsis" />
+          <TextBlock Text="{x:Bind DetailText}"
+                     Foreground="{ThemeResource TertiaryTextBrush}"
+                     FontSize="10"
+                     TextTrimming="CharacterEllipsis" />
+        </StackPanel>
+        <Border Grid.Column="1"
+                Padding="6,1"
+                CornerRadius="4"
+                Background="{ThemeResource AccentMutedBrush}"
+                VerticalAlignment="Top">
+          <TextBlock Text="{x:Bind BadgeText}"
+                     Foreground="{ThemeResource AccentBrush}"
+                     FontSize="9"
+                     FontWeight="SemiBold" />
+        </Border>
+      </Grid>
+    </DataTemplate>
+
     <DataTemplate x:Key="WorkspaceTabContentTemplate">
       <Grid Background="{ThemeResource CanvasBrush}"
             HorizontalAlignment="Stretch"
@@ -685,6 +780,256 @@
               </StackPanel>
             </Border>
             <Border HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    MaxWidth="420"
+                    Background="{ThemeResource ChromeBrush}"
+                    BorderBrush="{ThemeResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="18,12"
+                    IsHitTestVisible="False"
+                    Visibility="{Binding LoadingVisibility}">
+              <StackPanel Spacing="8">
+                <TextBlock Text="{Binding LoadingProgressText}"
+                           Foreground="{ThemeResource PrimaryTextBrush}"
+                           FontWeight="SemiBold"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap" />
+                <ProgressBar Minimum="0"
+                             Maximum="1"
+                             Value="{Binding LoadingProgress}"
+                             IsIndeterminate="{Binding IsLoadingIndeterminate}" />
+              </StackPanel>
+            </Border>
+          </Grid>
+        </Grid>
+
+        <Grid Visibility="{Binding PatchCompareVisibility}" RowDefinitions="Auto,*">
+          <Border Background="{ThemeResource ChromeBrush}"
+                  BorderBrush="{ThemeResource BorderBrush}"
+                  BorderThickness="0,0,0,1"
+                  Padding="16,10">
+            <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="8">
+              <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8">
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{Binding PatchCompare.Title}"
+                             Foreground="{ThemeResource PrimaryTextBrush}"
+                             FontSize="15"
+                             FontWeight="SemiBold"
+                             TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding PatchCompare.StatusText}"
+                             Foreground="{ThemeResource TertiaryTextBrush}"
+                             FontSize="10"
+                             TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Content="Inspect"
+                        Style="{StaticResource ChromeButtonStyle}"
+                        Click="OnDiscoverPatchCompareSourcesClicked" />
+                <Button Grid.Column="2"
+                        Content="Use current"
+                        Style="{StaticResource ChromeButtonStyle}"
+                        Click="OnPatchCompareUseCurrentRepositoryClicked" />
+                <Button Grid.Column="3"
+                        Content="Apply refs"
+                        Style="{StaticResource ChromeButtonStyle}"
+                        Click="OnApplyPatchCompareWizardSelectionClicked" />
+                <Button Grid.Column="4"
+                        Content="Run"
+                        Style="{StaticResource ChromeButtonStyle}"
+                        Click="OnRunPatchCompareClicked" />
+                <Button Grid.Column="5"
+                        Content="Clear"
+                        Style="{StaticResource ChromeButtonStyle}"
+                        Click="OnResetPatchCompareClicked" />
+              </Grid>
+              <Grid Grid.Row="1" ColumnDefinitions="2*,*" ColumnSpacing="10">
+                <StackPanel Spacing="3">
+                  <TextBlock Text="Repository source"
+                             Foreground="{ThemeResource SecondaryTextBrush}"
+                             FontSize="10"
+                             FontWeight="SemiBold" />
+                  <TextBox Text="{Binding PatchCompare.WizardRepositoryText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                           Style="{StaticResource CompactTextBoxStyle}"
+                           PlaceholderText="Blank = current repo, or enter /local/repo/path, https://host/org/repo.git, git@host:org/repo.git" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="3">
+                  <TextBlock Text="Filter discovered refs"
+                             Foreground="{ThemeResource SecondaryTextBrush}"
+                             FontSize="10"
+                             FontWeight="SemiBold" />
+                  <TextBox Text="{Binding PatchCompare.WizardFilterText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                           Style="{StaticResource CompactTextBoxStyle}"
+                           PlaceholderText="branch, tag, m119, release, sha" />
+                </StackPanel>
+              </Grid>
+              <Grid Grid.Row="2" ColumnDefinitions="*,*,*,*" ColumnSpacing="8">
+                <StackPanel Spacing="3">
+                  <TextBlock Text="Old base"
+                             Foreground="{ThemeResource SecondaryTextBrush}"
+                             FontSize="10"
+                             FontWeight="SemiBold" />
+                  <ComboBox ItemsSource="{Binding PatchCompare.FilteredWizardRefs}"
+                            SelectedItem="{Binding PatchCompare.SelectedOldBaseRef, Mode=TwoWay}"
+                            ItemTemplate="{StaticResource PatchCompareRefTemplate}"
+                            PlaceholderText="Select old base"
+                            HorizontalAlignment="Stretch"
+                            MaxDropDownHeight="420" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="3">
+                  <TextBlock Text="Old head"
+                             Foreground="{ThemeResource SecondaryTextBrush}"
+                             FontSize="10"
+                             FontWeight="SemiBold" />
+                  <ComboBox ItemsSource="{Binding PatchCompare.FilteredWizardRefs}"
+                            SelectedItem="{Binding PatchCompare.SelectedOldHeadRef, Mode=TwoWay}"
+                            ItemTemplate="{StaticResource PatchCompareRefTemplate}"
+                            PlaceholderText="Select old head"
+                            HorizontalAlignment="Stretch"
+                            MaxDropDownHeight="420" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="3">
+                  <TextBlock Text="New base"
+                             Foreground="{ThemeResource SecondaryTextBrush}"
+                             FontSize="10"
+                             FontWeight="SemiBold" />
+                  <ComboBox ItemsSource="{Binding PatchCompare.FilteredWizardRefs}"
+                            SelectedItem="{Binding PatchCompare.SelectedNewBaseRef, Mode=TwoWay}"
+                            ItemTemplate="{StaticResource PatchCompareRefTemplate}"
+                            PlaceholderText="Select new base"
+                            HorizontalAlignment="Stretch"
+                            MaxDropDownHeight="420" />
+                </StackPanel>
+                <StackPanel Grid.Column="3" Spacing="3">
+                  <TextBlock Text="New head"
+                             Foreground="{ThemeResource SecondaryTextBrush}"
+                             FontSize="10"
+                             FontWeight="SemiBold" />
+                  <ComboBox ItemsSource="{Binding PatchCompare.FilteredWizardRefs}"
+                            SelectedItem="{Binding PatchCompare.SelectedNewHeadRef, Mode=TwoWay}"
+                            ItemTemplate="{StaticResource PatchCompareRefTemplate}"
+                            PlaceholderText="Select new head"
+                            HorizontalAlignment="Stretch"
+                            MaxDropDownHeight="420" />
+                </StackPanel>
+              </Grid>
+              <Grid Grid.Row="3" ColumnDefinitions="*,*" ColumnSpacing="10">
+                <StackPanel Spacing="3">
+                  <TextBlock Text="Old patch series"
+                             Foreground="{ThemeResource SecondaryTextBrush}"
+                             FontSize="10"
+                             FontWeight="SemiBold" />
+                  <TextBox Text="{Binding PatchCompare.OldRangeText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                           Style="{StaticResource CompactTextBoxStyle}"
+                           PlaceholderText="base..head, tag..tag, sha..sha, upstream/main..feature" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="3">
+                  <TextBlock Text="New patch series"
+                             Foreground="{ThemeResource SecondaryTextBrush}"
+                             FontSize="10"
+                             FontWeight="SemiBold" />
+                  <TextBox Text="{Binding PatchCompare.NewRangeText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                           Style="{StaticResource CompactTextBoxStyle}"
+                           PlaceholderText="base..head, tag..tag, sha..sha, upstream/main..feature" />
+                </StackPanel>
+              </Grid>
+              <Grid Grid.Row="4" ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{Binding PatchCompare.RangeHintText}"
+                             Foreground="{ThemeResource TertiaryTextBrush}"
+                             FontSize="10"
+                             TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding PatchCompare.WizardStatusText}"
+                             Foreground="{ThemeResource SecondaryTextBrush}"
+                             FontSize="10"
+                             TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding PatchCompare.ComparisonRepositoryPath}"
+                             Foreground="{ThemeResource TertiaryTextBrush}"
+                             FontFamily="Cascadia Mono, Consolas"
+                             FontSize="9"
+                             TextTrimming="CharacterEllipsis"
+                             Visibility="{Binding PatchCompare.WizardRepositoryVisibility}" />
+                </StackPanel>
+                <TextBlock Grid.Column="1"
+                           Text="{Binding PatchCompare.WizardReferenceCountText}"
+                           Foreground="{ThemeResource SecondaryTextBrush}"
+                           FontSize="10"
+                           VerticalAlignment="Top" />
+              </Grid>
+            </Grid>
+          </Border>
+          <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,*,160">
+            <TextBlock Margin="16,10"
+                       Text="{Binding PatchCompare.SummaryText}"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       FontSize="11"
+                       TextTrimming="CharacterEllipsis" />
+            <ListView Grid.Row="1"
+                      Margin="16,0,16,8"
+                      MaxHeight="132"
+                      ItemsSource="{Binding PatchCompare.FilteredWizardRefs}"
+                      ItemTemplate="{StaticResource PatchCompareRefTemplate}"
+                      Background="{ThemeResource PanelBrush}"
+                      BorderThickness="1"
+                      SelectionMode="None"
+                      Visibility="{Binding PatchCompare.WizardRefsVisibility}" />
+            <Border Grid.Row="2"
+                    Margin="16,0,16,8"
+                    Padding="10,7"
+                    CornerRadius="6"
+                    Background="{ThemeResource WarningMutedBrush}"
+                    BorderBrush="{ThemeResource WarningBrush}"
+                    BorderThickness="1"
+                    Visibility="{Binding PatchCompare.ErrorVisibility}">
+              <TextBlock Text="{Binding PatchCompare.SummaryText}"
+                         Foreground="{ThemeResource WarningBrush}"
+                         FontSize="11"
+                         TextWrapping="Wrap" />
+            </Border>
+            <ListView Grid.Row="3"
+                      ItemsSource="{Binding PatchCompare.Items}"
+                      ItemTemplate="{StaticResource PatchCompareItemTemplate}"
+                      Background="Transparent"
+                      BorderThickness="0"
+                      SelectionMode="None"
+                      Visibility="{Binding PatchCompare.ContentVisibility}" />
+            <ScrollViewer Grid.Row="4"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Auto"
+                          Background="{ThemeResource PanelBrush}"
+                          Visibility="{Binding PatchCompare.ContentVisibility}">
+              <TextBlock Text="{Binding PatchCompare.RawRangeDiff}"
+                         Foreground="{ThemeResource PrimaryTextBrush}"
+                         FontFamily="Cascadia Mono, Consolas"
+                         FontSize="10"
+                         TextWrapping="NoWrap"
+                         Margin="14,10" />
+            </ScrollViewer>
+            <Border Grid.Row="3"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    MaxWidth="520"
+                    Background="{ThemeResource ChromeBrush}"
+                    BorderBrush="{ThemeResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="18"
+                    Visibility="{Binding PatchCompare.EmptyVisibility}">
+              <StackPanel Spacing="8">
+                <TextBlock Text="Compare any two patch series"
+                           Foreground="{ThemeResource PrimaryTextBrush}"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           TextAlignment="Center" />
+                <TextBlock Text="Enter two Git ranges and run range-diff to see which old patches are unchanged, modified, removed, or newly added in the newer stack."
+                           Foreground="{ThemeResource SecondaryTextBrush}"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           TextAlignment="Center" />
+              </StackPanel>
+            </Border>
+            <Border Grid.RowSpan="5"
+                    HorizontalAlignment="Center"
                     VerticalAlignment="Center"
                     MaxWidth="420"
                     Background="{ThemeResource ChromeBrush}"
@@ -1596,7 +1941,7 @@
               Background="{ThemeResource ChromeBrush}"
               BorderBrush="{ThemeResource BorderBrush}"
               BorderThickness="0,0,0,1">
-        <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+        <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
               MinHeight="40"
               Margin="8,3">
           <Button Grid.Column="1"
@@ -1615,7 +1960,15 @@
                   Click="OnNewQueryCanvasClicked"
                   AutomationProperties.Name="Open query canvas" />
 
-          <ToggleButton Grid.Column="3"
+          <Button Grid.Column="3"
+                  Content="Patch compare"
+                  Style="{StaticResource ChromeButtonStyle}"
+                  Margin="4,2,0,2"
+                  VerticalAlignment="Center"
+                  Click="OnNewPatchCompareClicked"
+                  AutomationProperties.Name="Open patch series comparison" />
+
+          <ToggleButton Grid.Column="4"
                         Content="Code nodes"
                         IsChecked="{x:Bind ViewModel.IsFullCodeWorkspaceEnabled, Mode=OneWay}"
                         Margin="4,2,0,2"
@@ -1623,7 +1976,7 @@
                         Click="OnFullCodeNodesClicked"
                         AutomationProperties.Name="Toggle full-code workspace nodes" />
 
-          <ToggleButton Grid.Column="4"
+          <ToggleButton Grid.Column="5"
                         Content="Edit nodes"
                         IsChecked="{x:Bind ViewModel.IsNodeEditingWorkspaceEnabled, Mode=OneWay}"
                         Margin="4,2,0,2"
@@ -1631,7 +1984,7 @@
                         Click="OnNodeEditingWorkspaceClicked"
                         AutomationProperties.Name="Toggle node editing" />
 
-          <Grid Grid.Column="5"
+          <Grid Grid.Column="6"
                 ColumnDefinitions="Auto,Auto"
                 ColumnSpacing="6"
                 Margin="12,2,0,2"
@@ -1651,7 +2004,7 @@
                       AutomationProperties.Name="Workspace layout mode" />
           </Grid>
 
-          <Grid Grid.Column="6"
+          <Grid Grid.Column="7"
                 ColumnDefinitions="Auto,Auto"
                 ColumnSpacing="6"
                 Margin="10,2,0,2"
@@ -1671,7 +2024,7 @@
                       AutomationProperties.Name="Workspace grouping mode" />
           </Grid>
 
-          <Button Grid.Column="7"
+          <Button Grid.Column="8"
                   Content="Export"
                   Style="{StaticResource ChromeButtonStyle}"
                   Margin="10,2,0,2"
@@ -1686,7 +2039,7 @@
             </Button.Flyout>
           </Button>
 
-          <Button Grid.Column="8"
+          <Button Grid.Column="9"
                   Content="Settings"
                   Style="{StaticResource ChromeButtonStyle}"
                   Margin="4,2,0,2"

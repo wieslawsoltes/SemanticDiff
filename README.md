@@ -49,6 +49,7 @@ Reusable SemanticDiff packages are published independently so apps can consume t
 | --- | --- |
 | Interactive diff graph | Skia-rendered canvas with draggable nodes, pannable viewport, zoom/fit controls, selectable graph nodes, persistent node layout, grouping containers, and SVG/PNG/PDF export. |
 | Git-native workflow | Worktree, unstaged, staged, branch, and custom range diff scopes backed by `git` commands. |
+| Patch-series comparison | Universal `git range-diff` workspace for comparing any two patch stacks, including fork/upstream branches, remote refs, tags, release branches, or commit SHA spans. |
 | Branch and review request discovery | Searchable Git tab with local branches, remote branches, GitHub pull requests, and GitLab merge requests. |
 | Review discussion workflow | Searchable Review tab for GitHub/GitLab threads, comments, replies, code navigation, comment annotations, and supported thread resolve/reopen operations. |
 | Branch/PR/MR workspaces | Open branches, GitHub PRs, or GitLab MRs as cached graph workspace tabs so multiple review contexts stay available without reloading each time. |
@@ -82,6 +83,7 @@ Reusable SemanticDiff packages are published independently so apps can consume t
 | Canvas | Viewport | Smooth drag, pan, zoom, and fit-to-scene interaction. |
 | Canvas | Export | Saves the current workspace graph as SVG, PNG, or PDF using Skia-backed rendering for full-fidelity output. |
 | Query Canvas | Live code-like queries | Query button opens an editable LINQ-style query tab with autocomplete, sample query picker, current-diff/MSBuild-workspace scope selector, live debounced execution, and canvas rendering. |
+| Patch Compare | Patch-series evolution | Patch compare button opens a closable `git range-diff` tab with a visual source/ref wizard for current repos, local repo paths, or remote Git URLs. |
 | Status bar | Diagnostics | Shows current operation, review signals, cache state, watch state, and navigation status. |
 
 ### Files Tab
@@ -111,6 +113,24 @@ Reusable SemanticDiff packages are published independently so apps can consume t
 | Workspace tabs | Right-click a branch, PR, or MR to open it as a cached graph workspace tab without replacing other open graph workspaces. |
 | History tabs | Right-click a branch, PR, or MR to open a visual commit timeline without replacing the graph tab. |
 | History context menu | Right-click a history commit to copy its hash or set it as the comparison range start/end. |
+
+### Patch Series Compare
+
+Patch Series Compare is a universal `git range-diff` workspace for migration and fork-maintenance reviews. It compares two patch stacks and classifies each logical patch as unchanged, modified, old-only, or new-only.
+
+| Feature | Details |
+| --- | --- |
+| Visual source wizard | Inspect the current repository, a local repository path, or a remote Git URL, then select old base/head and new base/head refs visually instead of typing ranges by hand. |
+| Remote repository support | Remote URLs are cloned as bare blobless caches and refreshed with fetch so branch/tag refs can be compared without manually cloning first. |
+| Ref discovery | Lists local branches, remote branches, tags, and available PR/MR refs when present in the inspected repository. |
+| Ref filtering | Filters discovered refs by branch, tag, release name, SHA, commit subject, or provider-style names before selecting comparison endpoints. |
+| Manual override | The generated `base..head` ranges remain editable, so advanced Git ranges and SHA spans can still be typed directly. |
+| Universal range input | Accepts any Git range expression supported by `git log`, `git diff`, and `git range-diff`, including `branch..branch`, `remote/branch..local/branch`, `tag..tag`, and `sha..sha`. |
+| Fork/upstream review | Handles workflows such as `chrome/m119..119` compared with `chrome/m147..147` to verify whether old carried patches survived a version uplift. |
+| Multiple comparison tabs | Each `Patch compare` action opens a new closable workspace tab so separate branch, release, or fork comparisons can stay open together. |
+| Patch classification | Parses `git range-diff` rows into unchanged, modified, old-only, and new-only patch counts. |
+| Series metadata | Loads commit summaries and touched-file counts for each range using Git-native commands. |
+| Raw audit output | Keeps the raw `git range-diff` text visible below the structured table for troubleshooting and exact Git parity. |
 
 ### History and Blame Tabs
 

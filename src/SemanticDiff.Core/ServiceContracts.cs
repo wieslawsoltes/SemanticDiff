@@ -41,6 +41,20 @@ public interface IGitHistoryService
     Task<GitHistorySnapshot> GetHistoryAsync(GitHistoryRequest request, CancellationToken cancellationToken);
 }
 
+public interface IGitPatchSeriesComparisonService
+{
+    Task<GitPatchSeriesComparisonSnapshot> CompareAsync(
+        GitPatchSeriesComparisonRequest request,
+        CancellationToken cancellationToken);
+}
+
+public interface IGitPatchSeriesDiscoveryService
+{
+    Task<GitPatchSeriesDiscoverySnapshot> DiscoverAsync(
+        GitPatchSeriesDiscoveryRequest request,
+        CancellationToken cancellationToken);
+}
+
 public interface IGitRepositoryDiscovery
 {
     Task<string?> DiscoverRootAsync(string startPath, CancellationToken cancellationToken);

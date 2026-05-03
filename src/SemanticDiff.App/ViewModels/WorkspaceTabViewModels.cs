@@ -23,7 +23,8 @@ public enum WorkspaceTabKind
     Blame,
     SymbolGraph,
     EditorCanvas,
-    QueryCanvas
+    QueryCanvas,
+    PatchCompare
 }
 
 public enum FileDiffDisplayMode
@@ -74,7 +75,7 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
 
     public bool IsClosable { get; }
 
-    public Visibility IconVisibility => Kind is WorkspaceTabKind.Graph or WorkspaceTabKind.GitHistory or WorkspaceTabKind.Blame or WorkspaceTabKind.SymbolGraph or WorkspaceTabKind.EditorCanvas or WorkspaceTabKind.QueryCanvas
+    public Visibility IconVisibility => Kind is WorkspaceTabKind.Graph or WorkspaceTabKind.GitHistory or WorkspaceTabKind.Blame or WorkspaceTabKind.SymbolGraph or WorkspaceTabKind.EditorCanvas or WorkspaceTabKind.QueryCanvas or WorkspaceTabKind.PatchCompare
         ? Visibility.Visible
         : Visibility.Collapsed;
 
@@ -93,6 +94,8 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
     public Visibility EditorCanvasVisibility => Kind == WorkspaceTabKind.EditorCanvas ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility QueryCanvasVisibility => Kind == WorkspaceTabKind.QueryCanvas ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility PatchCompareVisibility => Kind == WorkspaceTabKind.PatchCompare ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility LoadingVisibility => IsLoading ? Visibility.Visible : Visibility.Collapsed;
 
@@ -131,6 +134,9 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
 
     [ObservableProperty]
     private QueryCanvasTabViewModel? queryCanvas;
+
+    [ObservableProperty]
+    private PatchCompareTabViewModel? patchCompare;
 
     [ObservableProperty]
     private GitDiffRequest? graphRequest;
@@ -245,6 +251,426 @@ public sealed partial class WorkspaceTabViewModel : ObservableObject
         QueryCanvas = queryCanvas,
         StatusText = queryCanvas.StatusText
     };
+
+    public static WorkspaceTabViewModel CreatePatchCompare(string id, string header, string detailText, PatchCompareTabViewModel patchCompare) => new(
+        id,
+        WorkspaceTabKind.PatchCompare,
+        header,
+        detailText,
+        "\uE8EF",
+        isClosable: true)
+    {
+        PatchCompare = patchCompare,
+        StatusText = patchCompare.StatusText
+    };
+}
+
+public sealed partial class PatchCompareTabViewModel : ObservableObject
+{
+    private bool suppressRangeChangeNotifications;
+
+    public PatchCompareTabViewModel(string title, string description)
+    {
+        Title = title;
+        Description = description;
+        Reset();
+    }
+
+    public string Title { get; }
+
+    public string Description { get; }
+
+    public Visibility EmptyVisibility => Snapshot is null && !HasError ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility ContentVisibility => Snapshot is not null ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility ErrorVisibility => HasError ? Visibility.Visible : Visibility.Collapsed;
+
+    public string RangeHintText => "Use any Git range accepted by git log/range-diff, for example upstream/main..feature, tagA..tagB, sha1..sha2, or chrome/m119..119.";
+
+    public Visibility WizardRefsVisibility => FilteredWizardRefs.IsDefaultOrEmpty ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility WizardEmptyVisibility => FilteredWizardRefs.IsDefaultOrEmpty ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility WizardRepositoryVisibility => string.IsNullOrWhiteSpace(ComparisonRepositoryPath) ? Visibility.Collapsed : Visibility.Visible;
+
+    [ObservableProperty]
+    private string oldRangeText = string.Empty;
+
+    [ObservableProperty]
+    private string newRangeText = string.Empty;
+
+    [ObservableProperty]
+    private string wizardRepositoryText = string.Empty;
+
+    [ObservableProperty]
+    private string wizardFilterText = string.Empty;
+
+    [ObservableProperty]
+    private string wizardStatusText = "Enter a local path, remote Git URL, or use the current repository to discover branches and tags.";
+
+    [ObservableProperty]
+    private string wizardReferenceCountText = "No refs loaded";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(WizardRepositoryVisibility))]
+    private string? comparisonRepositoryPath;
+
+    [ObservableProperty]
+    private GitPatchSeriesDiscoverySnapshot? wizardSnapshot;
+
+    [ObservableProperty]
+    private ImmutableArray<PatchCompareWizardRefViewModel> wizardRefs = [];
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(WizardRefsVisibility))]
+    [NotifyPropertyChangedFor(nameof(WizardEmptyVisibility))]
+    private ImmutableArray<PatchCompareWizardRefViewModel> filteredWizardRefs = [];
+
+    [ObservableProperty]
+    private PatchCompareWizardRefViewModel? selectedOldBaseRef;
+
+    [ObservableProperty]
+    private PatchCompareWizardRefViewModel? selectedOldHeadRef;
+
+    [ObservableProperty]
+    private PatchCompareWizardRefViewModel? selectedNewBaseRef;
+
+    [ObservableProperty]
+    private PatchCompareWizardRefViewModel? selectedNewHeadRef;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(EmptyVisibility))]
+    [NotifyPropertyChangedFor(nameof(ContentVisibility))]
+    private GitPatchSeriesComparisonSnapshot? snapshot;
+
+    [ObservableProperty]
+    private ImmutableArray<PatchCompareItemViewModel> items = [];
+
+    [ObservableProperty]
+    private string statusText = "Patch comparison ready";
+
+    [ObservableProperty]
+    private string summaryText = "Compare any two Git patch series with git range-diff.";
+
+    [ObservableProperty]
+    private string oldSeriesText = "Old patch series: enter any Git range";
+
+    [ObservableProperty]
+    private string newSeriesText = "New patch series: enter any Git range";
+
+    [ObservableProperty]
+    private string rawRangeDiff = string.Empty;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(EmptyVisibility))]
+    [NotifyPropertyChangedFor(nameof(ErrorVisibility))]
+    private bool hasError;
+
+    public GitPatchSeriesDiscoveryRequest CreateDiscoveryRequest(string? fallbackRepositoryPath)
+    {
+        var sourceText = WizardRepositoryText.Trim();
+        var sourceKind = SemanticDiff.Git.GitPatchSeriesDiscoveryService.InferSourceKind(sourceText, fallbackRepositoryPath);
+        return new GitPatchSeriesDiscoveryRequest(
+            sourceKind,
+            sourceText,
+            fallbackRepositoryPath);
+    }
+
+    public void UseCurrentRepository(string? repositoryPath)
+    {
+        WizardRepositoryText = string.Empty;
+        ComparisonRepositoryPath = repositoryPath;
+        WizardStatusText = string.IsNullOrWhiteSpace(repositoryPath)
+            ? "Open a repository before using the current repository source."
+            : $"Current repository selected: {repositoryPath}";
+    }
+
+    public void SetWizardRunning(string sourceText)
+    {
+        WizardStatusText = string.IsNullOrWhiteSpace(sourceText)
+            ? "Inspecting current repository refs..."
+            : $"Inspecting {sourceText}...";
+        WizardReferenceCountText = "Loading refs...";
+        ComparisonRepositoryPath = null;
+        WizardSnapshot = null;
+        WizardRefs = [];
+        FilteredWizardRefs = [];
+        ClearWizardSelection();
+    }
+
+    public void SetWizardSnapshot(GitPatchSeriesDiscoverySnapshot snapshot)
+    {
+        WizardSnapshot = snapshot;
+        ComparisonRepositoryPath = snapshot.RepositoryPath;
+        WizardStatusText = snapshot.StatusMessage;
+        WizardReferenceCountText = $"{snapshot.RefCount:N0} refs discovered";
+        WizardRefs = snapshot.Refs.Select(PatchCompareWizardRefViewModel.FromRef).ToImmutableArray();
+        ApplyWizardFilter();
+        SelectDefaultWizardRefs();
+    }
+
+    public void SetWizardError(string message)
+    {
+        WizardSnapshot = null;
+        WizardRefs = [];
+        FilteredWizardRefs = [];
+        ClearWizardSelection();
+        ComparisonRepositoryPath = null;
+        WizardReferenceCountText = "No refs loaded";
+        WizardStatusText = message;
+    }
+
+    public void ApplyWizardSelection()
+    {
+        if (SelectedOldBaseRef is null || SelectedOldHeadRef is null || SelectedNewBaseRef is null || SelectedNewHeadRef is null)
+        {
+            throw new ArgumentException("Select old base/head and new base/head refs before applying the visual patch comparison.");
+        }
+
+        suppressRangeChangeNotifications = true;
+        try
+        {
+            OldRangeText = $"{SelectedOldBaseRef.RangeName}..{SelectedOldHeadRef.RangeName}";
+            NewRangeText = $"{SelectedNewBaseRef.RangeName}..{SelectedNewHeadRef.RangeName}";
+            Snapshot = null;
+            HasError = false;
+            RawRangeDiff = string.Empty;
+            Items = [];
+            StatusText = "Patch comparison ready";
+            SummaryText = "Visual refs applied. Run comparison to refresh results.";
+            OldSeriesText = CreateInputSeriesText("Old patch series", OldRangeText);
+            NewSeriesText = CreateInputSeriesText("New patch series", NewRangeText);
+        }
+        finally
+        {
+            suppressRangeChangeNotifications = false;
+        }
+    }
+
+    public void Reset()
+    {
+        suppressRangeChangeNotifications = true;
+        try
+        {
+            OldRangeText = string.Empty;
+            NewRangeText = string.Empty;
+            WizardRepositoryText = string.Empty;
+            WizardFilterText = string.Empty;
+            WizardStatusText = "Enter a local path, remote Git URL, or use the current repository to discover branches and tags.";
+            WizardReferenceCountText = "No refs loaded";
+            ComparisonRepositoryPath = null;
+            WizardSnapshot = null;
+            WizardRefs = [];
+            FilteredWizardRefs = [];
+            ClearWizardSelection();
+            Snapshot = null;
+            HasError = false;
+            StatusText = "Patch comparison ready";
+            SummaryText = "Compare any two Git patch series with git range-diff.";
+            OldSeriesText = "Old patch series: enter any Git range";
+            NewSeriesText = "New patch series: enter any Git range";
+            RawRangeDiff = string.Empty;
+            Items = [];
+        }
+        finally
+        {
+            suppressRangeChangeNotifications = false;
+        }
+    }
+
+    public GitPatchSeriesComparisonRequest CreateRequest(string repositoryPath)
+    {
+        var oldRange = OldRangeText.Trim();
+        var newRange = NewRangeText.Trim();
+        ArgumentException.ThrowIfNullOrWhiteSpace(oldRange, nameof(OldRangeText));
+        ArgumentException.ThrowIfNullOrWhiteSpace(newRange, nameof(NewRangeText));
+        var comparisonRepositoryPath = string.IsNullOrWhiteSpace(ComparisonRepositoryPath)
+            ? repositoryPath
+            : ComparisonRepositoryPath.Trim();
+        return new GitPatchSeriesComparisonRequest(comparisonRepositoryPath, oldRange, newRange);
+    }
+
+    public void SetRunning()
+    {
+        Snapshot = null;
+        HasError = false;
+        RawRangeDiff = string.Empty;
+        Items = [];
+        StatusText = "Running git range-diff...";
+        SummaryText = $"Comparing {OldRangeText} with {NewRangeText}";
+    }
+
+    public void SetResult(GitPatchSeriesComparisonSnapshot snapshot)
+    {
+        var hasError = snapshot.StatusMessage.StartsWith("Patch comparison failed:", StringComparison.Ordinal);
+        Snapshot = snapshot;
+        HasError = hasError;
+        StatusText = snapshot.StatusMessage;
+        SummaryText = hasError
+            ? snapshot.StatusMessage
+            : $"{snapshot.UnchangedCount:N0} unchanged | {snapshot.ModifiedCount:N0} modified | {snapshot.RemovedCount:N0} old-only | {snapshot.AddedCount:N0} new-only";
+        OldSeriesText = $"{snapshot.OldSeries.RangeText}: {snapshot.OldSeries.CommitCount:N0} commits, {snapshot.OldSeries.FileCount:N0} files";
+        NewSeriesText = $"{snapshot.NewSeries.RangeText}: {snapshot.NewSeries.CommitCount:N0} commits, {snapshot.NewSeries.FileCount:N0} files";
+        RawRangeDiff = snapshot.RawRangeDiff;
+        Items = snapshot.Items.Select(PatchCompareItemViewModel.FromItem).ToImmutableArray();
+    }
+
+    public void SetError(string message)
+    {
+        Snapshot = null;
+        HasError = true;
+        StatusText = "Patch comparison failed";
+        SummaryText = message;
+        RawRangeDiff = string.Empty;
+        Items = [];
+    }
+
+    partial void OnOldRangeTextChanged(string value) => MarkInputsChanged();
+
+    partial void OnNewRangeTextChanged(string value) => MarkInputsChanged();
+
+    partial void OnWizardFilterTextChanged(string value) => ApplyWizardFilter();
+
+    public void ApplyWizardFilter()
+    {
+        var refs = WizardRefs;
+        if (refs.IsDefaultOrEmpty)
+        {
+            FilteredWizardRefs = [];
+            return;
+        }
+
+        var filter = WizardFilterText.Trim();
+        FilteredWizardRefs = string.IsNullOrWhiteSpace(filter)
+            ? refs
+            : refs
+                .Where(item => item.SearchText.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                .ToImmutableArray();
+    }
+
+    private void MarkInputsChanged()
+    {
+        if (suppressRangeChangeNotifications)
+        {
+            return;
+        }
+
+        Snapshot = null;
+        HasError = false;
+        RawRangeDiff = string.Empty;
+        Items = [];
+        StatusText = "Patch comparison ready";
+        SummaryText = "Inputs changed. Run comparison to refresh results.";
+        OldSeriesText = CreateInputSeriesText("Old patch series", OldRangeText);
+        NewSeriesText = CreateInputSeriesText("New patch series", NewRangeText);
+    }
+
+    private static string CreateInputSeriesText(string label, string rangeText)
+    {
+        var trimmed = rangeText.Trim();
+        return string.IsNullOrWhiteSpace(trimmed)
+            ? $"{label}: enter any Git range"
+            : $"{label}: {trimmed}";
+    }
+
+    private void SelectDefaultWizardRefs()
+    {
+        if (FilteredWizardRefs.IsDefaultOrEmpty)
+        {
+            ClearWizardSelection();
+            return;
+        }
+
+        var defaultRef = FilteredWizardRefs.FirstOrDefault(item => item.IsCurrent) ??
+                         FilteredWizardRefs.FirstOrDefault(item => item.IsDefault) ??
+                         FilteredWizardRefs[0];
+        SelectedOldBaseRef ??= defaultRef;
+        SelectedNewBaseRef ??= defaultRef;
+        SelectedOldHeadRef ??= FilteredWizardRefs.FirstOrDefault(item => !ReferenceEquals(item, defaultRef)) ?? defaultRef;
+        SelectedNewHeadRef ??= SelectedOldHeadRef;
+    }
+
+    private void ClearWizardSelection()
+    {
+        SelectedOldBaseRef = null;
+        SelectedOldHeadRef = null;
+        SelectedNewBaseRef = null;
+        SelectedNewHeadRef = null;
+    }
+}
+
+public sealed record PatchCompareWizardRefViewModel(
+    string DisplayName,
+    string DetailText,
+    string RangeName,
+    string SearchText,
+    string KindText,
+    string Sha,
+    bool IsDefault,
+    bool IsCurrent)
+{
+    public string BadgeText => IsCurrent ? "current" : IsDefault ? "default" : KindText;
+
+    public string SelectionText => $"{DisplayName}  {RangeName}";
+
+    public static PatchCompareWizardRefViewModel FromRef(GitPatchSeriesRefInfo item)
+    {
+        var timeText = item.CommitTime is null ? "unknown time" : item.CommitTime.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+        var kindText = item.Kind switch
+        {
+            GitPatchSeriesRefKind.Branch => "branch",
+            GitPatchSeriesRefKind.RemoteBranch => "remote",
+            GitPatchSeriesRefKind.Tag => "tag",
+            GitPatchSeriesRefKind.PullRequest => "PR",
+            GitPatchSeriesRefKind.MergeRequest => "MR",
+            _ => "ref"
+        };
+        var subject = string.IsNullOrWhiteSpace(item.Subject) ? "No commit subject" : item.Subject;
+        var detail = $"{kindText} | {item.RangeName} | {item.Sha} | {timeText} | {subject}";
+        return new PatchCompareWizardRefViewModel(
+            item.DisplayName,
+            detail,
+            item.RangeName,
+            item.SearchText,
+            kindText,
+            item.Sha,
+            item.IsDefault,
+            item.IsCurrent);
+    }
+}
+
+public sealed record PatchCompareItemViewModel(
+    string StatusText,
+    string StatusDetail,
+    string OldIndexText,
+    string OldCommitText,
+    string NewIndexText,
+    string NewCommitText,
+    string Subject,
+    string DetailText)
+{
+    public static PatchCompareItemViewModel FromItem(GitPatchSeriesComparisonItem item)
+    {
+        var (status, detail) = item.Kind switch
+        {
+            GitPatchSeriesComparisonKind.Unchanged => ("=", "Present unchanged"),
+            GitPatchSeriesComparisonKind.Modified => ("!", "Present with changes"),
+            GitPatchSeriesComparisonKind.Removed => ("<", "Old-only patch"),
+            GitPatchSeriesComparisonKind.Added => (">", "New-only patch"),
+            _ => ("?", "Unclassified")
+        };
+
+        return new PatchCompareItemViewModel(
+            status,
+            detail,
+            item.OldIndex?.ToString() ?? "-",
+            item.OldCommit ?? "-------",
+            item.NewIndex?.ToString() ?? "-",
+            item.NewCommit ?? "-------",
+            item.Subject,
+            item.DetailText);
+    }
 }
 
 public sealed partial class QueryCanvasTabViewModel : ObservableObject
@@ -469,6 +895,7 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
         string initialScopeKey = AllKey,
         string initialKindKey = AllKey,
         string initialDocumentId = AllKey,
+        string initialEdgeKindKey = AllKey,
         GraphLayoutMode initialLayoutMode = GraphLayoutMode.Layered,
         GraphGroupingMode initialGroupingMode = GraphGroupingMode.Semantic,
         SymbolGraphViewMode initialViewMode = SymbolGraphViewMode.SymbolsOnly,
@@ -500,7 +927,7 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
         selectedScopeOption = ScopeOptions.FirstOrDefault(option => string.Equals(option.Key, initialScopeKey, StringComparison.OrdinalIgnoreCase)) ?? ScopeOptions[0];
         selectedKindOption = KindOptions.FirstOrDefault(option => string.Equals(option.Key, initialKindKey, StringComparison.OrdinalIgnoreCase)) ?? KindOptions[0];
         selectedDocumentOption = DocumentOptions.FirstOrDefault(option => string.Equals(option.Key, initialDocumentId, StringComparison.Ordinal)) ?? DocumentOptions[0];
-        selectedEdgeKindOption = EdgeKindOptions[0];
+        selectedEdgeKindOption = EdgeKindOptions.FirstOrDefault(option => string.Equals(option.Key, initialEdgeKindKey, StringComparison.OrdinalIgnoreCase)) ?? EdgeKindOptions[0];
         selectedLayoutOption = LayoutOptions.FirstOrDefault(option => option.Mode == initialLayoutMode) ?? LayoutOptions[1];
         selectedGroupingOption = GroupingOptions.FirstOrDefault(option => option.Mode == initialGroupingMode) ?? GroupingOptions[2];
         selectedViewModeOption = ViewModeOptions.FirstOrDefault(option => option.Mode == initialViewMode) ?? ViewModeOptions[0];
@@ -511,6 +938,8 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
     public string Title { get; }
 
     public string Description { get; }
+
+    public string? FocusAnchorId => focusAnchorId;
 
     public ImmutableArray<SymbolGraphFilterOptionViewModel> ScopeOptions { get; }
 

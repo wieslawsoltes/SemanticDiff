@@ -27,6 +27,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private readonly IGitBlameService gitBlameService;
     private readonly IGitReferenceDiscoveryService gitReferenceDiscoveryService;
     private readonly IGitHistoryService gitHistoryService;
+    private readonly IGitPatchSeriesComparisonService gitPatchSeriesComparisonService;
+    private readonly IGitPatchSeriesDiscoveryService gitPatchSeriesDiscoveryService;
     private readonly IReadOnlyList<IDiffAnnotationProvider> annotationProviders = [new BuiltInDiffAnnotationProvider()];
     private readonly LatestRequestGate repositoryLoadRequests = new();
     private readonly DiffWorkspaceCache diffViewCache = new(MaxCachedDiffViews);
@@ -130,7 +132,9 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         IGitReviewDiscussionService gitReviewDiscussionService,
         IGitBlameService gitBlameService,
         IGitReferenceDiscoveryService gitReferenceDiscoveryService,
-        IGitHistoryService gitHistoryService)
+        IGitHistoryService gitHistoryService,
+        IGitPatchSeriesComparisonService? gitPatchSeriesComparisonService = null,
+        IGitPatchSeriesDiscoveryService? gitPatchSeriesDiscoveryService = null)
     {
         this.appStateStore = appStateStore;
         this.repositoryFileWatcherFactory = repositoryFileWatcherFactory;
@@ -139,6 +143,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
         this.gitBlameService = gitBlameService;
         this.gitReferenceDiscoveryService = gitReferenceDiscoveryService;
         this.gitHistoryService = gitHistoryService;
+        this.gitPatchSeriesComparisonService = gitPatchSeriesComparisonService ?? new GitPatchSeriesComparisonService();
+        this.gitPatchSeriesDiscoveryService = gitPatchSeriesDiscoveryService ?? new GitPatchSeriesDiscoveryService();
         synchronizationContext = SynchronizationContext.Current;
         workspaceDocumentManager = new WorkspaceDocumentManager<WorkspaceTabViewModel>(WorkspaceTabs, tab => tab.Id, tab => tab.IsClosable);
         CodeCompletionProvider = CreateCodeCompletionProvider(appState.CodeCompletionMode);

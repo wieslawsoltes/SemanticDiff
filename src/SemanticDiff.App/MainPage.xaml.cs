@@ -971,6 +971,36 @@ public sealed partial class MainPage : Page
         ViewModel.OpenQueryCanvasTab();
     }
 
+    private void OnNewPatchCompareClicked(object sender, RoutedEventArgs args)
+    {
+        ViewModel.OpenPatchCompareTab();
+    }
+
+    private async void OnDiscoverPatchCompareSourcesClicked(object sender, RoutedEventArgs args)
+    {
+        await ViewModel.DiscoverPatchCompareSourcesAsync(ViewModel.SelectedWorkspaceTab);
+    }
+
+    private void OnPatchCompareUseCurrentRepositoryClicked(object sender, RoutedEventArgs args)
+    {
+        ViewModel.UseCurrentRepositoryForPatchCompare(ViewModel.SelectedWorkspaceTab);
+    }
+
+    private void OnApplyPatchCompareWizardSelectionClicked(object sender, RoutedEventArgs args)
+    {
+        ViewModel.ApplyPatchCompareWizardSelection(ViewModel.SelectedWorkspaceTab);
+    }
+
+    private async void OnRunPatchCompareClicked(object sender, RoutedEventArgs args)
+    {
+        await ViewModel.RunPatchCompareAsync(ViewModel.SelectedWorkspaceTab);
+    }
+
+    private void OnResetPatchCompareClicked(object sender, RoutedEventArgs args)
+    {
+        ViewModel.ResetPatchCompare(ViewModel.SelectedWorkspaceTab);
+    }
+
     private void OnRunQueryCanvasClicked(object sender, RoutedEventArgs args)
     {
         ViewModel.RunSelectedQueryCanvas();
