@@ -1600,19 +1600,6 @@ public sealed partial class MainPage : Page
         }
     }
 
-    private void OnExplorerTreeSelectionChanged(object sender, SelectionChangedEventArgs args)
-    {
-        if (ViewModel.IsUpdatingExplorerTree)
-        {
-            return;
-        }
-
-        if (sender is ListView { SelectedItem: ViewModels.FileExplorerNodeViewModel item })
-        {
-            FocusCanvas(ViewModel.FocusExplorerNode(item));
-        }
-    }
-
     private async void OnFileExplorerModeClicked(object sender, RoutedEventArgs args)
     {
         if (sender is FrameworkElement { Tag: string mode })
@@ -1621,6 +1608,14 @@ public sealed partial class MainPage : Page
                 string.Equals(mode, "Workspace", StringComparison.OrdinalIgnoreCase)
                     ? ViewModels.FileExplorerMode.Workspace
                     : ViewModels.FileExplorerMode.Diff);
+        }
+    }
+
+    private void OnExplorerTreeItemClick(object sender, ItemClickEventArgs args)
+    {
+        if (args.ClickedItem is ViewModels.FileExplorerNodeViewModel item)
+        {
+            FocusCanvas(ViewModel.FocusExplorerNode(item));
         }
     }
 

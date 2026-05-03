@@ -21,6 +21,11 @@ public sealed partial class MainViewModel
 {
     private void SelectExplorerItem(ExplorerItemViewModel? item)
     {
+        if (ExplorerItemsEqual(selectedExplorerItem, item))
+        {
+            return;
+        }
+
         selectedExplorerItem = item;
         UpdateSelectedExplorerTreeNode();
         currentBlameOperation?.Cancel();
@@ -35,6 +40,17 @@ public sealed partial class MainViewModel
         }
 
         RefreshSceneAnnotations();
+    }
+
+    private static bool ExplorerItemsEqual(ExplorerItemViewModel? left, ExplorerItemViewModel? right)
+    {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
+        }
+
+        return string.Equals(left.DocumentId, right.DocumentId, StringComparison.Ordinal) &&
+            string.Equals(left.Path, right.Path, StringComparison.Ordinal);
     }
 
     private async Task LoadBlameSummaryAsync(string path)

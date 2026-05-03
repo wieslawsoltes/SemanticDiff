@@ -1655,9 +1655,10 @@
               <ListView x:Name="ExplorerTreeList"
                         Grid.Row="3"
                         ItemsSource="{x:Bind ViewModel.ExplorerTreeItems, Mode=OneWay}"
-                        SelectedItem="{x:Bind ViewModel.SelectedExplorerTreeNode, Mode=TwoWay}"
+                        SelectedItem="{x:Bind ViewModel.SelectedExplorerTreeNode, Mode=OneWay}"
                         ItemTemplate="{StaticResource ExplorerTreeItemTemplate}"
                         ItemContainerStyle="{StaticResource CompactListViewItemStyle}"
+                        IsItemClickEnabled="True"
                         ScrollViewer.VerticalScrollMode="Enabled"
                         ScrollViewer.VerticalScrollBarVisibility="Auto"
                         ScrollViewer.HorizontalScrollMode="Disabled"
@@ -1667,7 +1668,7 @@
                         Padding="0"
                         SelectionMode="Single"
                         KeyDown="OnExplorerTreeKeyDown"
-                        SelectionChanged="OnExplorerTreeSelectionChanged">
+                        ItemClick="OnExplorerTreeItemClick">
                 <ListView.ItemsPanel>
                   <ItemsPanelTemplate>
                     <ItemsStackPanel Orientation="Vertical" />
