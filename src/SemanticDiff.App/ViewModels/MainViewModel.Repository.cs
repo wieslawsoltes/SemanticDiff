@@ -81,6 +81,7 @@ public sealed partial class MainViewModel
                 var loadedState = await appStateStore.LoadAsync(cancellationToken);
                 EnsureCurrentRepositoryRequest(requestId, cancellationToken);
                 appState = loadedState;
+                pendingWorkspaceSessionState = loadedState.WorkspaceSession;
             }
 
             EnsureCurrentRepositoryRequest(requestId, cancellationToken);
@@ -103,6 +104,7 @@ public sealed partial class MainViewModel
                 EnsureCurrentRepositoryRequest(requestId, cancellationToken);
                 InitializeSampleDocuments(SampleDiffDocuments.Create());
                 StatusText = "No Git repository found | showing sample diff graph";
+                await RestorePendingWorkspaceSessionAsync(cancellationToken);
                 AddDiagnostic("Info", "No Git repository found; using sample graph");
                 CompleteOperation(operation, "Sample graph ready");
                 return;
@@ -130,6 +132,8 @@ public sealed partial class MainViewModel
                 await SaveOptionsAsync(cancellationToken);
                 EnsureCurrentRepositoryRequest(requestId, cancellationToken);
                 await RestartRepositoryWatcherAsync(repositoryRoot, cancellationToken);
+                EnsureCurrentRepositoryRequest(requestId, cancellationToken);
+                await RestorePendingWorkspaceSessionAsync(cancellationToken);
                 EnsureCurrentRepositoryRequest(requestId, cancellationToken);
                 CompleteOperation(operation, "Cached diff ready");
                 return;
@@ -160,6 +164,8 @@ public sealed partial class MainViewModel
                 EnsureCurrentRepositoryRequest(requestId, cancellationToken);
                 await RestartRepositoryWatcherAsync(repositoryRoot, cancellationToken);
                 EnsureCurrentRepositoryRequest(requestId, cancellationToken);
+                await RestorePendingWorkspaceSessionAsync(cancellationToken);
+                EnsureCurrentRepositoryRequest(requestId, cancellationToken);
                 AddDiagnostic("Info", $"Repository has no {emptyScopeText} changes");
                 CompleteOperation(operation, "Repository has no changes");
                 return;
@@ -175,6 +181,8 @@ public sealed partial class MainViewModel
                 preservedSceneState,
                 requestId,
                 cancellationToken);
+            EnsureCurrentRepositoryRequest(requestId, cancellationToken);
+            await RestorePendingWorkspaceSessionAsync(cancellationToken);
             EnsureCurrentRepositoryRequest(requestId, cancellationToken);
             CompleteOperation(operation, "Repository diff ready");
         }
@@ -543,6 +551,7 @@ public sealed partial class MainViewModel
     private async Task SaveStateAsync(CancellationToken cancellationToken)
     {
         var layoutNodes = Scene.GetCurrentLayout().Select(DiffNodeLayoutState.FromLayout).ToArray();
+        var workspaceSession = CaptureWorkspaceSessionForSave();
         appState = appState with
         {
             RepositoryPath = currentRepositoryPath ?? appState.RepositoryPath,
@@ -566,13 +575,15 @@ public sealed partial class MainViewModel
             UseInteractiveLevelOfDetail = UseInteractiveLevelOfDetail,
             CodeCompletionMode = appState.CodeCompletionMode,
             LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth),
-            LayoutNodes = currentDocumentsAreRepositoryDocuments ? layoutNodes : appState.LayoutNodes
+            LayoutNodes = currentDocumentsAreRepositoryDocuments ? layoutNodes : appState.LayoutNodes,
+            WorkspaceSession = workspaceSession
         };
         await appStateStore.SaveAsync(appState, cancellationToken);
     }
 
     private async Task SaveOptionsAsync(CancellationToken cancellationToken)
     {
+        var workspaceSession = CaptureWorkspaceSessionForSave();
         appState = appState with
         {
             RepositoryPath = currentRepositoryPath ?? appState.RepositoryPath,
@@ -594,7 +605,8 @@ public sealed partial class MainViewModel
             SelectedPullRequestNumber = appState.SelectedPullRequestNumber,
             UseInteractiveLevelOfDetail = UseInteractiveLevelOfDetail,
             CodeCompletionMode = appState.CodeCompletionMode,
-            LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth)
+            LeftPaneWidth = NormalizeLeftPaneWidth(LeftPaneWidth),
+            WorkspaceSession = workspaceSession
         };
         await appStateStore.SaveAsync(appState, cancellationToken);
     }

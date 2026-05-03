@@ -20,7 +20,11 @@ public sealed partial class MainViewModel
             "Query Canvas",
             "Live LINQ graph",
             queryCanvas);
-        queryCanvas.QueryChanged += (_, _) => ScheduleQueryCanvasExecution(tab, TimeSpan.FromMilliseconds(260));
+        queryCanvas.QueryChanged += (_, _) =>
+        {
+            ScheduleQueryCanvasExecution(tab, TimeSpan.FromMilliseconds(260));
+            RequestWorkspaceSessionSave();
+        };
         AddWorkspaceTab(tab);
         ScheduleQueryCanvasExecution(tab, TimeSpan.Zero);
         AddDiagnostic("Info", "Opened query canvas");

@@ -176,3 +176,10 @@ public interface IGraphLayoutEngine
 
     ValueTask<GraphLayoutResult> LayoutAsync(GraphLayoutRequest request, CancellationToken cancellationToken);
 }
+
+public interface IWorkspaceSessionStateService
+{
+    WorkspaceSessionState CaptureWorkspaceSession();
+
+    Task RestoreWorkspaceSessionAsync(WorkspaceSessionState state, CancellationToken cancellationToken);
+}

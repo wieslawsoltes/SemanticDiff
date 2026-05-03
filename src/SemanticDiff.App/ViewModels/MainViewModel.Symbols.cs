@@ -367,6 +367,7 @@ public sealed partial class MainViewModel
             initialScopeKey,
             initialKindKey,
             initialDocumentId,
+            "All",
             SelectedLayoutModeOption?.Mode ?? GraphLayoutMode.Layered,
             GraphGroupingMode.Semantic,
             viewMode,

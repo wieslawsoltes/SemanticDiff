@@ -25,11 +25,14 @@ public sealed record SemanticDiffAppState(
     int? SelectedPullRequestNumber = null,
     bool UseInteractiveLevelOfDetail = true,
     CodeCompletionMode CodeCompletionMode = CodeCompletionMode.LanguageServicesThenDocument,
-    double LeftPaneWidth = 260)
+    double LeftPaneWidth = 260,
+    WorkspaceSessionState? WorkspaceSession = null)
 {
     public DiffNodeLayoutState[] EffectiveLayoutNodes => LayoutNodes ?? [];
 
     public DiffAnnotationVisibilityState EffectiveAnnotationVisibility => AnnotationVisibility ?? DiffAnnotationVisibilityState.Default;
+
+    public WorkspaceSessionState EffectiveWorkspaceSession => WorkspaceSession ?? WorkspaceSessionState.Empty;
 }
 
 public enum SemanticDiffThemeMode
@@ -64,6 +67,164 @@ public sealed record DiffNodeLayoutState(
         layout.IsPinned,
         layout.FontSize);
 }
+
+public enum WorkspaceSessionTabKind
+{
+    Graph,
+    GitHistory,
+    FileDiff,
+    Blame,
+    SymbolGraph,
+    EditorCanvas,
+    QueryCanvas,
+    PatchCompare
+}
+
+public enum WorkspaceSessionFileExplorerMode
+{
+    Diff,
+    Workspace
+}
+
+public sealed record WorkspaceSessionState(
+    int Version = 1,
+    string? RepositoryPath = null,
+    string? SelectedTabId = null,
+    string? SelectedExplorerDocumentId = null,
+    string? FileSearchText = null,
+    WorkspaceSessionFileExplorerMode FileExplorerMode = WorkspaceSessionFileExplorerMode.Diff,
+    string? GitReferenceSearchText = null,
+    string? ReviewSearchText = null,
+    string? SymbolSearchText = null,
+    WorkspaceTabState[]? Tabs = null)
+{
+    public static WorkspaceSessionState Empty { get; } = new();
+
+    public WorkspaceTabState[] EffectiveTabs => Tabs ?? [];
+}
+
+public sealed record WorkspaceTabState(
+    string Id,
+    WorkspaceSessionTabKind Kind,
+    string Header,
+    string DetailText,
+    bool IsClosable,
+    string? StatusText = null,
+    WorkspaceCanvasState? Canvas = null,
+    GitDiffRequest? GraphRequest = null,
+    string? GraphBranchReferenceName = null,
+    GitPullRequestInfo? GraphReviewRequest = null,
+    GitHistoryTabState? History = null,
+    FileDiffTabState? FileDiff = null,
+    BlameTabState? Blame = null,
+    SymbolGraphTabState? SymbolGraph = null,
+    EditorCanvasTabState? EditorCanvas = null,
+    QueryCanvasTabState? QueryCanvas = null,
+    PatchCompareTabState? PatchCompare = null);
+
+public sealed record WorkspaceCanvasState(
+    double CameraOffsetX = 32,
+    double CameraOffsetY = 32,
+    double CameraScale = 1,
+    bool ShowFullFileNodes = false,
+    bool EnableNodeEditing = false,
+    WorkspaceNodeState[]? Nodes = null)
+{
+    public WorkspaceNodeState[] EffectiveNodes => Nodes ?? [];
+}
+
+public sealed record WorkspaceNodeState(
+    string DocumentId,
+    double X,
+    double Y,
+    double Width,
+    double Height,
+    double ScrollOffsetY = 0,
+    bool IsSelected = false,
+    bool IsPinned = false,
+    double FontSize = 12.5,
+    bool? FullFileViewOverride = null,
+    bool? EditingOverride = null,
+    int CaretLineIndex = 0,
+    int CaretColumn = 0,
+    string? FullText = null);
+
+public sealed record GitHistoryTabState(
+    GitHistoryRequest Request,
+    int LoadedCount = 0);
+
+public sealed record FileDiffTabState(
+    string Path,
+    string DocumentId,
+    FileDiffDisplayState DisplayMode = FileDiffDisplayState.DiffOnly,
+    FileDiffScopeState ScopeMode = FileDiffScopeState.Changes,
+    bool IsDiffAnnotationEnabled = true,
+    bool IsEditingEnabled = false,
+    double CodeFontSize = 15,
+    string? FullText = null);
+
+public enum FileDiffDisplayState
+{
+    DiffOnly,
+    FullFile
+}
+
+public enum FileDiffScopeState
+{
+    Changes,
+    FullFileDiff
+}
+
+public sealed record BlameTabState(
+    string Path,
+    string Language,
+    BlameDisplayState DisplayMode = BlameDisplayState.Timeline,
+    bool IsTimelineExpanded = true);
+
+public enum BlameDisplayState
+{
+    Timeline,
+    ChangeGraph
+}
+
+public sealed record SymbolGraphTabState(
+    string SearchText = "",
+    string ScopeKey = "All",
+    string KindKey = "All",
+    string DocumentKey = "All",
+    string EdgeKindKey = "All",
+    GraphLayoutMode LayoutMode = GraphLayoutMode.Layered,
+    GraphGroupingMode GroupingMode = GraphGroupingMode.Semantic,
+    SymbolGraphDisplayState ViewMode = SymbolGraphDisplayState.SymbolsOnly,
+    string? FocusAnchorId = null);
+
+public enum SymbolGraphDisplayState
+{
+    SymbolsOnly,
+    FilesAndSymbols
+}
+
+public sealed record EditorCanvasTabState(
+    EditorCanvasDocumentState[]? Documents = null)
+{
+    public EditorCanvasDocumentState[] EffectiveDocuments => Documents ?? [];
+}
+
+public sealed record EditorCanvasDocumentState(
+    string Path,
+    string? FullText = null);
+
+public sealed record QueryCanvasTabState(
+    string QueryText = "",
+    string Scope = "Diff",
+    string? SampleName = null);
+
+public sealed record PatchCompareTabState(
+    string OldRangeText = "",
+    string NewRangeText = "",
+    string WizardRepositoryText = "",
+    string WizardFilterText = "",
+    string? ComparisonRepositoryPath = null);
 
 public interface IAppStateStore
 {
@@ -126,4 +287,6 @@ public sealed class JsonAppStateStore : IAppStateStore
 
 [JsonSourceGenerationOptions(WriteIndented = true)]
 [JsonSerializable(typeof(SemanticDiffAppState))]
+[JsonSerializable(typeof(WorkspaceSessionState))]
+[JsonSerializable(typeof(WorkspaceTabState[]))]
 internal sealed partial class SemanticDiffJsonContext : JsonSerializerContext;

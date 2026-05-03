@@ -330,9 +330,17 @@ public sealed partial class MainViewModel
         ClearReviewDiscussion("Select a PR or MR");
     }
 
-    partial void OnGitReferenceSearchTextChanged(string value) => ApplyReferenceOptionFilters();
+    partial void OnGitReferenceSearchTextChanged(string value)
+    {
+        ApplyReferenceOptionFilters();
+        RequestWorkspaceSessionSave();
+    }
 
-    partial void OnReviewSearchTextChanged(string value) => ApplyReviewThreadFilter();
+    partial void OnReviewSearchTextChanged(string value)
+    {
+        ApplyReviewThreadFilter();
+        RequestWorkspaceSessionSave();
+    }
 
     partial void OnSelectedWorkspaceTabChanged(WorkspaceTabViewModel? value)
     {
@@ -343,6 +351,8 @@ public sealed partial class MainViewModel
         {
             RestoreGraphWorkspaceState(value);
         }
+
+        RequestWorkspaceSessionSave();
     }
 
     partial void OnSelectedWorkspaceTabChanging(WorkspaceTabViewModel? oldValue, WorkspaceTabViewModel? newValue)

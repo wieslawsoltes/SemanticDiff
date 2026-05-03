@@ -177,6 +177,15 @@ public sealed class DiffNode
         ApplyDocumentMode();
     }
 
+    public void RestoreEditorState(bool? fullFileViewOverride, bool? editingOverride, int caretLineIndex, int caretColumn)
+    {
+        this.fullFileOverride = fullFileViewOverride;
+        this.editingOverride = editingOverride;
+        ApplyDocumentMode();
+        CaretLineIndex = Math.Clamp(caretLineIndex, 0, Math.Max(0, Document.LineCount - 1));
+        CaretColumn = Math.Clamp(caretColumn, 0, GetEditableLine(CaretLineIndex).Length);
+    }
+
     public void SetEditorFocus(bool isFocused)
     {
         IsEditorFocused = isFocused && IsEditingActive;
@@ -1186,7 +1195,11 @@ public sealed record DiffNodeViewState(
     double ScrollOffsetY,
     bool IsSelected,
     bool IsPinned,
-    double FontSize);
+    double FontSize,
+    bool? FullFileViewOverride = null,
+    bool? EditingOverride = null,
+    int CaretLineIndex = 0,
+    int CaretColumn = 0);
 
 public sealed record DiffCanvasSceneViewState(CameraState Camera, ImmutableArray<DiffNodeViewState> Nodes)
 {
@@ -2130,7 +2143,17 @@ public sealed class DiffCanvasScene
     public DiffCanvasSceneViewState CaptureViewState() => new(
         Camera,
         nodes
-            .Select(node => new DiffNodeViewState(node.DiffDocument.Id, node.Bounds, node.ScrollOffsetY, node.IsSelected, node.IsPinned, node.FontSize))
+            .Select(node => new DiffNodeViewState(
+                node.DiffDocument.Id,
+                node.Bounds,
+                node.ScrollOffsetY,
+                node.IsSelected,
+                node.IsPinned,
+                node.FontSize,
+                node.FullFileViewOverride,
+                node.EditingOverride,
+                node.CaretLineIndex,
+                node.CaretColumn))
             .ToImmutableArray());
 
     public void ApplyViewState(DiffCanvasSceneViewState viewState)
@@ -2149,6 +2172,7 @@ public sealed class DiffCanvasScene
             node.IsSelected = nodeState.IsSelected;
             node.IsPinned = nodeState.IsPinned;
             node.SetFontSize(nodeState.FontSize);
+            node.RestoreEditorState(nodeState.FullFileViewOverride, nodeState.EditingOverride, nodeState.CaretLineIndex, nodeState.CaretColumn);
             node.RestoreScrollOffset(nodeState.ScrollOffsetY);
         }
 

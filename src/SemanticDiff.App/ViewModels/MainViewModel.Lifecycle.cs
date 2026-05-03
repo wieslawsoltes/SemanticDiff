@@ -25,6 +25,7 @@ public sealed partial class MainViewModel
 
     public async ValueTask DisposeAsync()
     {
+        await FlushWorkspaceSessionSaveAsync();
         currentOperation?.Cancel();
         currentSemanticRefinementOperation?.Cancel();
         currentBlameOperation?.Cancel();

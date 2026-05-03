@@ -18,7 +18,7 @@ using Windows.UI;
 
 namespace SemanticDiff.App.ViewModels;
 
-public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
+public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable, IWorkspaceSessionStateService
 {
     private readonly IAppStateStore appStateStore;
     private readonly IRepositoryFileWatcherFactory repositoryFileWatcherFactory;
@@ -83,6 +83,8 @@ public sealed partial class MainViewModel : ObservableObject, IAsyncDisposable
     private string? currentWorkspaceExplorerLoadRepositoryPath;
     private Task? currentWorkspaceExplorerLoadTask;
     private bool workspaceExplorerCacheLoaded;
+    private WorkspaceSessionState? pendingWorkspaceSessionState;
+    private bool isRestoringWorkspaceSession;
 
     public ObservableCollection<LoadingOperationViewModel> LoadingOperations { get; } = [];
 

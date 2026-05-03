@@ -37,31 +37,37 @@ public sealed partial class MainViewModel
             ?? WorkspaceTabs.FirstOrDefault()
             ?? WorkspaceTabViewModel.Graph();
         workspaceDocumentManager.Close(tab, fallback, selected => SelectedWorkspaceTab = selected);
+        RequestWorkspaceSessionSave();
     }
 
     public void SetFileDiffDisplayMode(WorkspaceTabViewModel? tab, FileDiffDisplayMode displayMode)
     {
         tab?.FileDiff?.SetDisplayMode(displayMode);
+        RequestWorkspaceSessionSave();
     }
 
     public void SetFileDiffScopeMode(WorkspaceTabViewModel? tab, FileDiffScopeMode scopeMode)
     {
         tab?.FileDiff?.SetDiffScopeMode(scopeMode);
+        RequestWorkspaceSessionSave();
     }
 
     public void SetFileDiffAnnotationVisibility(WorkspaceTabViewModel? tab, bool isEnabled)
     {
         tab?.FileDiff?.SetDiffAnnotationVisibility(isEnabled);
+        RequestWorkspaceSessionSave();
     }
 
     public void ToggleBlameTimeline(WorkspaceTabViewModel? tab)
     {
         tab?.Blame?.ToggleTimeline();
+        RequestWorkspaceSessionSave();
     }
 
     public void SetBlameDisplayMode(WorkspaceTabViewModel? tab, BlameDisplayMode displayMode)
     {
         tab?.Blame?.SetDisplayMode(displayMode);
+        RequestWorkspaceSessionSave();
     }
 
     public void ReportGitHistoryCommitHashCopied(GitHistoryItemViewModel? item)
@@ -216,7 +222,86 @@ public sealed partial class MainViewModel
     {
         tab.IsLightTheme = IsLightThemeEnabled;
         tab.UseInteractiveLevelOfDetail = UseInteractiveLevelOfDetail;
+        SubscribeWorkspaceTabPersistence(tab);
         workspaceDocumentManager.AddAndSelect(tab, selected => SelectedWorkspaceTab = selected);
+        RequestWorkspaceSessionSave();
+    }
+
+    private void SubscribeWorkspaceTabPersistence(WorkspaceTabViewModel tab)
+    {
+        if (tab.FileDiff is { } fileDiff)
+        {
+            fileDiff.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName is nameof(FileDiffTabViewModel.DisplayMode)
+                    or nameof(FileDiffTabViewModel.DiffScopeMode)
+                    or nameof(FileDiffTabViewModel.IsDiffAnnotationEnabled)
+                    or nameof(FileDiffTabViewModel.IsEditingEnabled)
+                    or nameof(FileDiffTabViewModel.CodeFontSize)
+                    or nameof(FileDiffTabViewModel.FullText))
+                {
+                    RequestWorkspaceSessionSave();
+                }
+            };
+        }
+
+        if (tab.Blame is { } blame)
+        {
+            blame.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName is nameof(BlameTabViewModel.DisplayMode)
+                    or nameof(BlameTabViewModel.IsTimelineExpanded))
+                {
+                    RequestWorkspaceSessionSave();
+                }
+            };
+        }
+
+        if (tab.SymbolGraph is { } symbolGraph)
+        {
+            symbolGraph.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName is nameof(SymbolGraphTabViewModel.SearchText)
+                    or nameof(SymbolGraphTabViewModel.SelectedScopeOption)
+                    or nameof(SymbolGraphTabViewModel.SelectedKindOption)
+                    or nameof(SymbolGraphTabViewModel.SelectedDocumentOption)
+                    or nameof(SymbolGraphTabViewModel.SelectedEdgeKindOption)
+                    or nameof(SymbolGraphTabViewModel.SelectedLayoutOption)
+                    or nameof(SymbolGraphTabViewModel.SelectedGroupingOption)
+                    or nameof(SymbolGraphTabViewModel.SelectedViewModeOption)
+                    or nameof(SymbolGraphTabViewModel.Scene))
+                {
+                    RequestWorkspaceSessionSave();
+                }
+            };
+        }
+
+        if (tab.EditorCanvas is { } editorCanvas)
+        {
+            editorCanvas.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName is nameof(EditorCanvasTabViewModel.Documents)
+                    or nameof(EditorCanvasTabViewModel.Scene))
+                {
+                    RequestWorkspaceSessionSave();
+                }
+            };
+        }
+
+        if (tab.PatchCompare is { } patchCompare)
+        {
+            patchCompare.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName is nameof(PatchCompareTabViewModel.OldRangeText)
+                    or nameof(PatchCompareTabViewModel.NewRangeText)
+                    or nameof(PatchCompareTabViewModel.WizardRepositoryText)
+                    or nameof(PatchCompareTabViewModel.WizardFilterText)
+                    or nameof(PatchCompareTabViewModel.ComparisonRepositoryPath))
+                {
+                    RequestWorkspaceSessionSave();
+                }
+            };
+        }
     }
 
     private bool SelectWorkspaceTab(string id) =>

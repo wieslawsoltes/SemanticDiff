@@ -19,7 +19,11 @@ namespace SemanticDiff.App.ViewModels;
 
 public sealed partial class MainViewModel
 {
-    partial void OnFileSearchTextChanged(string value) => ApplyExplorerFilter();
+    partial void OnFileSearchTextChanged(string value)
+    {
+        ApplyExplorerFilter();
+        RequestWorkspaceSessionSave();
+    }
 
     partial void OnIsLightThemeEnabledChanged(bool value)
     {
@@ -541,7 +545,11 @@ public sealed partial class MainViewModel
     private static string FormatImpactStatus(SemanticImpactSummary summary) =>
         $"{summary.ChangedSymbolCount:N0} changed symbols, {summary.MovedLineCount:N0} moved lines, {summary.IgnoredLineCount:N0} noise lines";
 
-    partial void OnSymbolSearchTextChanged(string value) => ApplySemanticNavigationFilter();
+    partial void OnSymbolSearchTextChanged(string value)
+    {
+        ApplySemanticNavigationFilter();
+        RequestWorkspaceSessionSave();
+    }
 
     public void SetSymbolScopeFilter(SymbolScopeFilterViewModel? filter)
     {
