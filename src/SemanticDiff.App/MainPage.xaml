@@ -1139,20 +1139,9 @@
                          FontFamily="{x:Bind FallbackIconFontFamily}"
                          Foreground="{ThemeResource SecondaryTextBrush}"
                          FontSize="12"
-                         Visibility="{x:Bind FallbackIconVisibility}"
                          HorizontalAlignment="Center"
                          VerticalAlignment="Center"
-                         AutomationProperties.Name="{x:Bind IconAutomationText}"
-                         ToolTipService.ToolTip="{x:Bind PlatformIconText}" />
-              <Image Source="{x:Bind IconSource}"
-                     Width="16"
-                     Height="16"
-                     Stretch="Uniform"
-                     Visibility="{x:Bind IconSourceVisibility}"
-                     HorizontalAlignment="Center"
-                     VerticalAlignment="Center"
-                     AutomationProperties.Name="{x:Bind IconAutomationText}"
-                     ToolTipService.ToolTip="{x:Bind PlatformIconText}" />
+                         AutomationProperties.Name="{x:Bind IconAutomationText}" />
             </Grid>
           </Grid>
           <Grid Grid.Column="2" RowDefinitions="Auto,Auto">

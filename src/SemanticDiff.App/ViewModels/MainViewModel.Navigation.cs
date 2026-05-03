@@ -63,9 +63,7 @@ public sealed partial class MainViewModel
                 tree,
                 collapsedExplorerNodePaths,
                 !string.IsNullOrWhiteSpace(query),
-                currentRepositoryPath,
-                IsLightThemeEnabled,
-                FileExplorerMode == FileExplorerMode.Diff);
+                IsLightThemeEnabled);
             UpdateSelectedExplorerTreeNode();
             ExplorerCountText = string.IsNullOrWhiteSpace(query)
                 ? FormatCount(allExplorerItems.Length, "file", "files")

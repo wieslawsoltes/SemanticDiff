@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
-using SemanticDiff.App.Services;
 using SemanticDiff.Core;
 using Windows.UI;
 
@@ -15,17 +14,12 @@ public sealed record FileExplorerNodeViewModel(
     DiffFileStatus Status,
     string Language,
     FileExplorerIconKind IconKind,
-    string? RepositoryRoot,
     int Depth,
     bool IsExpanded,
     bool HasChildren,
     int ChildCount,
-    bool IsLightTheme,
-    bool UseImageIcons)
+    bool IsLightTheme)
 {
-    private Lazy<SystemFileIconDescriptor> IconDescriptor { get; } =
-        new(() => SystemFileIconProvider.Current.GetIcon(RepositoryRoot, Path, Kind, IconKind));
-
     public bool IsFile => Kind == FileExplorerNodeKind.File;
 
     public bool CanDragToEditorCanvas => !string.IsNullOrWhiteSpace(Path);
@@ -40,19 +34,11 @@ public sealed record FileExplorerNodeViewModel(
 
     public Visibility DisclosureVisibility { get; } = HasChildren ? Visibility.Visible : Visibility.Collapsed;
 
-    public ImageSource? IconSource => UseImageIcons ? IconDescriptor.Value.Source : null;
+    public string FallbackIconGlyph => GetFastFallbackGlyph(IconKind);
 
-    public Visibility IconSourceVisibility => IconSource is null ? Visibility.Collapsed : Visibility.Visible;
+    public FontFamily FallbackIconFontFamily { get; } = new("Segoe Fluent Icons, Segoe MDL2 Assets");
 
-    public string FallbackIconGlyph => UseImageIcons ? IconDescriptor.Value.FallbackGlyph : GetFastFallbackGlyph(IconKind);
-
-    public FontFamily FallbackIconFontFamily { get; } = SystemFileIconProvider.Current.FallbackFontFamily;
-
-    public Visibility FallbackIconVisibility => IconSource is null ? Visibility.Visible : Visibility.Collapsed;
-
-    public string IconAutomationText => UseImageIcons ? IconDescriptor.Value.AutomationText : GetFastAutomationText(IconKind);
-
-    public string PlatformIconText { get; } = SystemFileIconProvider.Current.PlatformText;
+    public string IconAutomationText => GetFastAutomationText(IconKind);
 
     public Thickness IndentMargin { get; } = new(Math.Min(48, Depth * 14), 0, 0, 0);
 
@@ -68,14 +54,12 @@ public sealed record FileExplorerNodeViewModel(
         ImmutableArray<FileExplorerNode> roots,
         ImmutableHashSet<string> collapsedPaths,
         bool forceExpanded,
-        string? repositoryRoot,
-        bool isLightTheme,
-        bool useImageIcons)
+        bool isLightTheme)
     {
         var builder = ImmutableArray.CreateBuilder<FileExplorerNodeViewModel>();
         foreach (var root in roots)
         {
-            AddVisibleNode(root, depth: 0, collapsedPaths, forceExpanded, repositoryRoot, isLightTheme, useImageIcons, builder);
+            AddVisibleNode(root, depth: 0, collapsedPaths, forceExpanded, isLightTheme, builder);
         }
 
         return builder.ToImmutable();
@@ -86,9 +70,7 @@ public sealed record FileExplorerNodeViewModel(
         int depth,
         ImmutableHashSet<string> collapsedPaths,
         bool forceExpanded,
-        string? repositoryRoot,
         bool isLightTheme,
-        bool useImageIcons,
         ImmutableArray<FileExplorerNodeViewModel>.Builder builder)
     {
         var isExpanded = node.Kind == FileExplorerNodeKind.Folder && (forceExpanded || !collapsedPaths.Contains(node.Path));
@@ -100,13 +82,11 @@ public sealed record FileExplorerNodeViewModel(
             node.Status,
             node.Language,
             node.IconKind,
-            repositoryRoot,
             depth,
             isExpanded,
             node.HasChildren,
             node.Children.Length,
-            isLightTheme,
-            useImageIcons));
+            isLightTheme));
 
         if (!isExpanded)
         {
@@ -115,7 +95,7 @@ public sealed record FileExplorerNodeViewModel(
 
         foreach (var child in node.Children)
         {
-            AddVisibleNode(child, depth + 1, collapsedPaths, forceExpanded, repositoryRoot, isLightTheme, useImageIcons, builder);
+            AddVisibleNode(child, depth + 1, collapsedPaths, forceExpanded, isLightTheme, builder);
         }
     }
 
