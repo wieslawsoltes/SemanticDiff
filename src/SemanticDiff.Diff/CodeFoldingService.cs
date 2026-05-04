@@ -5,6 +5,9 @@ namespace SemanticDiff.Diff;
 
 public sealed class CodeFoldingService
 {
+    private const string RegionDirective = "#region";
+    private const string EndRegionDirective = "#endregion";
+
     public ImmutableArray<CodeFoldRegion> CreateFoldRegions(DiffDocumentSnapshot document)
     {
         if (document.Lines.IsDefaultOrEmpty)
@@ -28,13 +31,7 @@ public sealed class CodeFoldingService
             AddIndentationFoldings(document, builder);
         }
 
-        return builder
-            .Where(region => region.EndLineIndex > region.StartLineIndex)
-            .GroupBy(region => region.StartLineIndex)
-            .Select(group => group.OrderByDescending(region => region.EndLineIndex).First())
-            .OrderBy(region => region.StartLineIndex)
-            .ThenByDescending(region => region.EndLineIndex)
-            .ToImmutableArray();
+        return NormalizeFoldRegions(builder);
     }
 
     private static void AddRegionDirectiveFoldings(DiffDocumentSnapshot document, ImmutableArray<CodeFoldRegion>.Builder builder)
@@ -42,13 +39,15 @@ public sealed class CodeFoldingService
         var stack = new Stack<(int LineIndex, string Title)>();
         foreach (var line in document.Lines)
         {
-            var trimmed = line.Text.Trim();
-            if (trimmed.StartsWith("#region", StringComparison.Ordinal))
+            var trimmed = line.Text.AsSpan().Trim();
+            if (trimmed.StartsWith(RegionDirective, StringComparison.Ordinal))
             {
-                var title = trimmed.Length > "#region".Length ? trimmed["#region".Length..].Trim() : "#region";
-                stack.Push((line.Index, string.IsNullOrWhiteSpace(title) ? "#region" : title));
+                var title = trimmed.Length > RegionDirective.Length
+                    ? trimmed[RegionDirective.Length..].Trim()
+                    : ReadOnlySpan<char>.Empty;
+                stack.Push((line.Index, title.IsEmpty ? RegionDirective : title.ToString()));
             }
-            else if (trimmed.StartsWith("#endregion", StringComparison.Ordinal) && stack.TryPop(out var start))
+            else if (trimmed.StartsWith(EndRegionDirective, StringComparison.Ordinal) && stack.TryPop(out var start))
             {
                 builder.Add(new CodeFoldRegion(start.LineIndex, line.Index, start.Title));
             }
@@ -60,8 +59,14 @@ public sealed class CodeFoldingService
         var stack = new Stack<int>();
         foreach (var line in document.Lines)
         {
-            var text = StripLineComment(line.Text);
-            for (var index = 0; index < text.Length; index++)
+            var text = line.Text;
+            var scanLength = FindLineCommentStart(text);
+            if (scanLength < 0)
+            {
+                scanLength = text.Length;
+            }
+
+            for (var index = 0; index < scanLength; index++)
             {
                 var character = text[index];
                 if (character == '{')
@@ -79,8 +84,8 @@ public sealed class CodeFoldingService
     private static int ResolveBraceFoldStartLine(ImmutableArray<DiffLine> lines, int braceLineIndex, int braceColumn)
     {
         var text = lines[braceLineIndex].Text;
-        var prefix = text[..Math.Clamp(braceColumn, 0, text.Length)].Trim();
-        if (!string.IsNullOrWhiteSpace(prefix))
+        var prefixEnd = Math.Clamp(braceColumn, 0, text.Length);
+        if (ContainsNonWhiteSpace(text.AsSpan(0, prefixEnd)))
         {
             return braceLineIndex;
         }
@@ -208,10 +213,66 @@ public sealed class CodeFoldingService
         return count;
     }
 
-    private static string StripLineComment(string text)
+    private static bool ContainsNonWhiteSpace(ReadOnlySpan<char> text)
     {
-        var index = text.IndexOf("//", StringComparison.Ordinal);
-        return index >= 0 ? text[..index] : text;
+        foreach (var character in text)
+        {
+            if (!char.IsWhiteSpace(character))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int FindLineCommentStart(string text) =>
+        text.IndexOf("//", StringComparison.Ordinal);
+
+    private static ImmutableArray<CodeFoldRegion> NormalizeFoldRegions(ImmutableArray<CodeFoldRegion>.Builder builder)
+    {
+        if (builder.Count == 0)
+        {
+            return [];
+        }
+
+        var bestByStart = new Dictionary<int, CodeFoldRegion>(builder.Count);
+        for (var index = 0; index < builder.Count; index++)
+        {
+            var region = builder[index];
+            if (region.EndLineIndex <= region.StartLineIndex)
+            {
+                continue;
+            }
+
+            if (!bestByStart.TryGetValue(region.StartLineIndex, out var existing) ||
+                region.EndLineIndex > existing.EndLineIndex)
+            {
+                bestByStart[region.StartLineIndex] = region;
+            }
+        }
+
+        if (bestByStart.Count == 0)
+        {
+            return [];
+        }
+
+        var regions = new CodeFoldRegion[bestByStart.Count];
+        var regionIndex = 0;
+        foreach (var region in bestByStart.Values)
+        {
+            regions[regionIndex++] = region;
+        }
+
+        Array.Sort(regions, static (left, right) =>
+        {
+            var startComparison = left.StartLineIndex.CompareTo(right.StartLineIndex);
+            return startComparison != 0
+                ? startComparison
+                : right.EndLineIndex.CompareTo(left.EndLineIndex);
+        });
+
+        return ImmutableArray.Create(regions);
     }
 
     private static IEnumerable<(string Name, bool IsClosing, bool IsSelfClosing)> ReadXmlTags(string text)
@@ -237,37 +298,65 @@ public sealed class CodeFoldingService
                 yield break;
             }
 
-            var content = text[(open + 1)..close].Trim();
-            var isClosing = content.StartsWith("/", StringComparison.Ordinal);
+            var contentStart = open + 1;
+            var contentEnd = close;
+            TrimXmlContent(text, ref contentStart, ref contentEnd);
+            var isClosing = contentStart < contentEnd && text[contentStart] == '/';
             if (isClosing)
             {
-                content = content[1..].TrimStart();
+                contentStart++;
+                TrimXmlContentStart(text, ref contentStart, contentEnd);
             }
 
-            var isSelfClosing = content.EndsWith("/", StringComparison.Ordinal);
+            var isSelfClosing = contentStart < contentEnd && text[contentEnd - 1] == '/';
             if (isSelfClosing)
             {
-                content = content[..^1].TrimEnd();
+                contentEnd--;
+                TrimXmlContentEnd(text, contentStart, ref contentEnd);
             }
 
-            var nameLength = 0;
-            while (nameLength < content.Length && !char.IsWhiteSpace(content[nameLength]) && content[nameLength] != '/')
+            var nameEnd = contentStart;
+            while (nameEnd < contentEnd && !char.IsWhiteSpace(text[nameEnd]) && text[nameEnd] != '/')
             {
-                nameLength++;
+                nameEnd++;
             }
 
-            if (nameLength > 0)
+            if (nameEnd > contentStart)
             {
-                yield return (content[..nameLength], isClosing, isSelfClosing);
+                yield return (text[contentStart..nameEnd], isClosing, isSelfClosing);
             }
 
             index = close + 1;
         }
     }
 
+    private static void TrimXmlContent(string text, ref int start, ref int end)
+    {
+        TrimXmlContentStart(text, ref start, end);
+        TrimXmlContentEnd(text, start, ref end);
+    }
+
+    private static void TrimXmlContentStart(string text, ref int start, int end)
+    {
+        while (start < end && char.IsWhiteSpace(text[start]))
+        {
+            start++;
+        }
+    }
+
+    private static void TrimXmlContentEnd(string text, int start, ref int end)
+    {
+        while (end > start && char.IsWhiteSpace(text[end - 1]))
+        {
+            end--;
+        }
+    }
+
     private static string CreateTitle(string text)
     {
-        var title = text.Trim();
-        return title.Length <= 80 ? title : $"{title[..77]}...";
+        var title = text.AsSpan().Trim();
+        return title.Length <= 80
+            ? title.ToString()
+            : string.Concat(title[..77], "...");
     }
 }
