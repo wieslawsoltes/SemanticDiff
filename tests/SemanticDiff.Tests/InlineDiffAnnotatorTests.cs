@@ -59,6 +59,25 @@ public sealed class InlineDiffAnnotatorTests
         Assert.DoesNotContain(annotated.Lines, line => !line.InlineSpans.IsDefaultOrEmpty);
     }
 
+    [Fact]
+    public void Annotate_UsesFallbackSpansForVeryFragmentedLines()
+    {
+        var deletedText = "x" + new string('!', 600) + "a";
+        var addedText = "x" + new string('?', 600) + "a";
+        var document = CreateDocument($"@@ -1 +1 @@\n-{deletedText}\n+{addedText}\n");
+
+        var annotated = InlineDiffAnnotator.Annotate(document);
+
+        var deletedLine = annotated.Lines.Single(line => line.Kind == DiffLineKind.Deleted);
+        var addedLine = annotated.Lines.Single(line => line.Kind == DiffLineKind.Added);
+        var deletedSpan = Assert.Single(deletedLine.InlineSpans);
+        var addedSpan = Assert.Single(addedLine.InlineSpans);
+        Assert.Equal(1, deletedSpan.StartColumn);
+        Assert.Equal(600, deletedSpan.Length);
+        Assert.Equal(1, addedSpan.StartColumn);
+        Assert.Equal(600, addedSpan.Length);
+    }
+
     private static DiffDocumentSnapshot CreateDocument(string unifiedDiff)
     {
         var factory = new DiffDocumentFactory();

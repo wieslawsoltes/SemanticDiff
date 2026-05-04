@@ -92,21 +92,30 @@ public static class InlineDiffAnnotator
             return (ImmutableArray<DiffInlineSpan>.Empty, ImmutableArray<DiffInlineSpan>.Empty);
         }
 
-        var deletedSegments = TextSegment.Split(deletedText);
-        var addedSegments = TextSegment.Split(addedText);
-        if (deletedSegments.Length == 0 || addedSegments.Length == 0 ||
-            deletedSegments.Length > MaxSegmentCountForLcs || addedSegments.Length > MaxSegmentCountForLcs)
+        var deletedSegments = TextSegment.Split(deletedText, MaxSegmentCountForLcs);
+        var addedSegments = TextSegment.Split(addedText, MaxSegmentCountForLcs);
+        if (deletedSegments is null || addedSegments is null || deletedSegments.Length == 0 || addedSegments.Length == 0)
         {
             return CreateFallbackSpans(deletedText, addedText);
         }
 
-        var deletedMatched = new bool[deletedSegments.Length];
-        var addedMatched = new bool[addedSegments.Length];
-        MarkMatchedSegments(deletedSegments, addedSegments, deletedMatched, addedMatched);
+        var deletedMatched = ArrayPool<bool>.Shared.Rent(deletedSegments.Length);
+        var addedMatched = ArrayPool<bool>.Shared.Rent(addedSegments.Length);
+        try
+        {
+            Array.Clear(deletedMatched, 0, deletedSegments.Length);
+            Array.Clear(addedMatched, 0, addedSegments.Length);
+            MarkMatchedSegments(deletedSegments, addedSegments, deletedMatched, addedMatched);
 
-        return (
-            BuildSpans(deletedSegments, deletedMatched, DiffInlineKind.Deleted),
-            BuildSpans(addedSegments, addedMatched, DiffInlineKind.Inserted));
+            return (
+                BuildSpans(deletedSegments, deletedMatched, DiffInlineKind.Deleted),
+                BuildSpans(addedSegments, addedMatched, DiffInlineKind.Inserted));
+        }
+        finally
+        {
+            ArrayPool<bool>.Shared.Return(deletedMatched);
+            ArrayPool<bool>.Shared.Return(addedMatched);
+        }
     }
 
     private static void MarkMatchedSegments(TextSegment[] deletedSegments, TextSegment[] addedSegments, bool[] deletedMatched, bool[] addedMatched)
@@ -224,14 +233,21 @@ public static class InlineDiffAnnotator
             Length == other.Length &&
             Source.AsSpan(StartColumn, Length).SequenceEqual(other.Source.AsSpan(other.StartColumn, other.Length));
 
-        public static TextSegment[] Split(string text)
+        public static TextSegment[]? Split(string text, int maxSegmentCount)
         {
             if (string.IsNullOrEmpty(text))
             {
                 return [];
             }
 
-            var segments = new List<TextSegment>();
+            var segmentCount = CountSegments(text, maxSegmentCount);
+            if (segmentCount < 0)
+            {
+                return null;
+            }
+
+            var segments = new TextSegment[segmentCount];
+            var segmentIndex = 0;
             for (var column = 0; column < text.Length;)
             {
                 var startColumn = column;
@@ -243,14 +259,52 @@ public static class InlineDiffAnnotator
                     column++;
                 }
 
-                segments.Add(new TextSegment(text, startColumn, column - startColumn));
+                segments[segmentIndex++] = new TextSegment(text, startColumn, column - startColumn);
             }
 
-            return segments.ToArray();
+            return segments;
+        }
+
+        private static int CountSegments(string text, int maxSegmentCount)
+        {
+            var segmentCount = 0;
+            for (var column = 0; column < text.Length;)
+            {
+                var segmentKind = GetSegmentKind(text[column]);
+                column++;
+
+                while (column < text.Length && GetSegmentKind(text[column]) == segmentKind && segmentKind != SegmentKind.Symbol)
+                {
+                    column++;
+                }
+
+                segmentCount++;
+                if (segmentCount > maxSegmentCount)
+                {
+                    return -1;
+                }
+            }
+
+            return segmentCount;
         }
 
         private static SegmentKind GetSegmentKind(char character)
         {
+            if (character <= 127)
+            {
+                if (character == ' ' || (uint)(character - '\t') <= '\r' - '\t')
+                {
+                    return SegmentKind.Whitespace;
+                }
+
+                return ((uint)(character - 'A') <= 'Z' - 'A') ||
+                    ((uint)(character - 'a') <= 'z' - 'a') ||
+                    ((uint)(character - '0') <= '9' - '0') ||
+                    character == '_'
+                    ? SegmentKind.Word
+                    : SegmentKind.Symbol;
+            }
+
             if (char.IsWhiteSpace(character))
             {
                 return SegmentKind.Whitespace;
