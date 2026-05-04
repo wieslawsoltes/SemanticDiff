@@ -4396,13 +4396,30 @@ public sealed class CodeFileViewerControl : Grid
 
     private float CalculateGutterWidth(float charWidth, IReadOnlyList<DiffLine> lines)
     {
-        var maxLineNumber = lines.Count == 0
-            ? 1
-            : lines.Max(line => Math.Max(line.OldLineNumber ?? 0, line.NewLineNumber ?? line.Index + 1));
-        var digits = Math.Max(3, maxLineNumber.ToString(System.Globalization.CultureInfo.InvariantCulture).Length);
+        var maxLineNumber = 1;
+        for (var index = 0; index < lines.Count; index++)
+        {
+            var line = lines[index];
+            maxLineNumber = Math.Max(maxLineNumber, Math.Max(line.OldLineNumber ?? 0, line.NewLineNumber ?? line.Index + 1));
+        }
+
+        var digits = Math.Max(3, CountDecimalDigits(maxLineNumber));
         return IsDiffMode
             ? LeftPadding + digits * charWidth * 2 + 62
             : LeftPadding + FoldGutterWidth + digits * charWidth + 18;
+    }
+
+    private static int CountDecimalDigits(int value)
+    {
+        var digits = 1;
+        var remaining = value < 0 ? (uint)-(long)value : (uint)value;
+        while (remaining >= 10)
+        {
+            remaining /= 10;
+            digits++;
+        }
+
+        return digits;
     }
 
     private double GetContentHeight()
