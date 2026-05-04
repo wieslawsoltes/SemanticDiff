@@ -1192,7 +1192,7 @@ public sealed class DiffNode
     {
         EnsureEditableLines();
         var lines = editableLines!;
-        var remaining = Math.Clamp(offset, 0, string.Join('\n', lines).Length);
+        var remaining = Math.Clamp(offset, 0, GetEditableTextLength(lines));
         for (var row = 0; row < lines.Count; row++)
         {
             var lineLength = lines[row].Length;
@@ -1208,6 +1208,22 @@ public sealed class DiffNode
 
         CaretLineIndex = Math.Max(0, lines.Count - 1);
         CaretColumn = lines.Count == 0 ? 0 : lines[^1].Length;
+    }
+
+    private static int GetEditableTextLength(IReadOnlyList<string> lines)
+    {
+        if (lines.Count == 0)
+        {
+            return 0;
+        }
+
+        var length = lines.Count - 1;
+        for (var index = 0; index < lines.Count; index++)
+        {
+            length += lines[index].Length;
+        }
+
+        return length;
     }
 
     private void MoveCaretByCharacter(int direction)
