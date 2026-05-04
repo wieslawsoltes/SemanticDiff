@@ -471,26 +471,32 @@ public sealed class DiffSceneRenderer
 
         var handleSize = DiffCanvasScene.ScreenStableWorldLength(cameraScale, DiffCanvasScene.ResizeHandleScreenSize);
         var halfHandle = handleSize / 2;
-        var points = new[]
-        {
-            new Point2(node.Bounds.Left, node.Bounds.Top),
-            new Point2(node.Bounds.Center.X, node.Bounds.Top),
-            new Point2(node.Bounds.Right, node.Bounds.Top),
-            new Point2(node.Bounds.Right, node.Bounds.Center.Y),
-            new Point2(node.Bounds.Right, node.Bounds.Bottom),
-            new Point2(node.Bounds.Center.X, node.Bounds.Bottom),
-            new Point2(node.Bounds.Left, node.Bounds.Bottom),
-            new Point2(node.Bounds.Left, node.Bounds.Center.Y)
-        };
-
+        var cornerRadius = (float)(2 / Math.Max(cameraScale, 0.01));
         using var fillPaint = new SKPaint { Color = palette.NodeBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
         using var strokePaint = new SKPaint { Color = palette.EdgeColor, Style = SKPaintStyle.Stroke, StrokeWidth = (float)(1.2 / Math.Max(cameraScale, 0.01)), IsAntialias = true };
-        foreach (var point in points)
-        {
-            var rect = SKRect.Create((float)(point.X - halfHandle), (float)(point.Y - halfHandle), (float)handleSize, (float)handleSize);
-            canvas.DrawRoundRect(rect, (float)(2 / Math.Max(cameraScale, 0.01)), (float)(2 / Math.Max(cameraScale, 0.01)), fillPaint);
-            canvas.DrawRoundRect(rect, (float)(2 / Math.Max(cameraScale, 0.01)), (float)(2 / Math.Max(cameraScale, 0.01)), strokePaint);
-        }
+        DrawResizeHandle(canvas, node.Bounds.Left, node.Bounds.Top, halfHandle, handleSize, cornerRadius, fillPaint, strokePaint);
+        DrawResizeHandle(canvas, node.Bounds.Center.X, node.Bounds.Top, halfHandle, handleSize, cornerRadius, fillPaint, strokePaint);
+        DrawResizeHandle(canvas, node.Bounds.Right, node.Bounds.Top, halfHandle, handleSize, cornerRadius, fillPaint, strokePaint);
+        DrawResizeHandle(canvas, node.Bounds.Right, node.Bounds.Center.Y, halfHandle, handleSize, cornerRadius, fillPaint, strokePaint);
+        DrawResizeHandle(canvas, node.Bounds.Right, node.Bounds.Bottom, halfHandle, handleSize, cornerRadius, fillPaint, strokePaint);
+        DrawResizeHandle(canvas, node.Bounds.Center.X, node.Bounds.Bottom, halfHandle, handleSize, cornerRadius, fillPaint, strokePaint);
+        DrawResizeHandle(canvas, node.Bounds.Left, node.Bounds.Bottom, halfHandle, handleSize, cornerRadius, fillPaint, strokePaint);
+        DrawResizeHandle(canvas, node.Bounds.Left, node.Bounds.Center.Y, halfHandle, handleSize, cornerRadius, fillPaint, strokePaint);
+    }
+
+    private static void DrawResizeHandle(
+        SKCanvas canvas,
+        double x,
+        double y,
+        double halfHandle,
+        double handleSize,
+        float cornerRadius,
+        SKPaint fillPaint,
+        SKPaint strokePaint)
+    {
+        var rect = SKRect.Create((float)(x - halfHandle), (float)(y - halfHandle), (float)handleSize, (float)handleSize);
+        canvas.DrawRoundRect(rect, cornerRadius, cornerRadius, fillPaint);
+        canvas.DrawRoundRect(rect, cornerRadius, cornerRadius, strokePaint);
     }
 
     private static void DrawTitle(SKCanvas canvas, DiffNode node, RendererPalette palette, RenderTextResources textResources, double cameraScale)
@@ -521,7 +527,7 @@ public sealed class DiffSceneRenderer
             canvas.DrawText("PIN", titleRect.Right - TitlePinnedLabelLeftInset, titleRect.Top + 20, metaStyle.Font, metaStyle.Paint);
         }
 
-        canvas.DrawText($"{node.Document.LineCount:N0} lines", titleRect.Right - (float)DiffNode.FontControlLineCountInset, titleRect.Top + 20, metaStyle.Font, metaStyle.Paint);
+        canvas.DrawText(node.LineCountText, titleRect.Right - (float)DiffNode.FontControlLineCountInset, titleRect.Top + 20, metaStyle.Font, metaStyle.Paint);
         canvas.Restore();
     }
 

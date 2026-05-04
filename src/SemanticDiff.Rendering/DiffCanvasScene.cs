@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using SemanticDiff.Core;
 using SemanticDiff.Diff;
 
@@ -82,6 +83,21 @@ public sealed class DiffNode
 
     public int VisibleLineCount => GetVisibleLineCount();
 
+    public string LineCountText
+    {
+        get
+        {
+            var lineCount = Document.LineCount;
+            if (cachedLineCountTextLineCount != lineCount)
+            {
+                cachedLineCountTextLineCount = lineCount;
+                cachedLineCountText = string.Create(CultureInfo.CurrentCulture, $"{lineCount:N0} lines");
+            }
+
+            return cachedLineCountText;
+        }
+    }
+
     private bool workspaceShowFullFile;
     private bool workspaceEditing;
     private bool? fullFileOverride;
@@ -92,6 +108,8 @@ public sealed class DiffNode
     private CodeFoldRegion[]? activeFoldRegionsByStartLine;
     private Dictionary<int, ImmutableArray<CodeFoldRegion>>? activeFoldRegionsByLineIndex;
     private int? visibleLineCountCache;
+    private int cachedLineCountTextLineCount = -1;
+    private string cachedLineCountText = string.Empty;
 
     public void ScrollBy(double deltaY)
     {
