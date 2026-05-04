@@ -29,22 +29,27 @@ internal static class CodeTextLayout
         IEnumerable<CodeFoldRegion> foldRegions,
         ISet<int> collapsedFoldStarts)
     {
-        var regionsByStart = foldRegions
-            .Where(region => region.StartLineIndex >= 0 && region.EndLineIndex > region.StartLineIndex && region.StartLineIndex < lines.Count)
-            .GroupBy(region => region.StartLineIndex)
-            .Select(group => group.OrderByDescending(region => region.EndLineIndex).First())
-            .ToDictionary(region => region.StartLineIndex);
+        var regionsByStart = CreateRegionsByStart(lines.Count, foldRegions);
+        var orderedRegions = regionsByStart.Values.ToArray();
+        Array.Sort(orderedRegions, static (left, right) =>
+        {
+            var startComparison = left.StartLineIndex.CompareTo(right.StartLineIndex);
+            return startComparison != 0 ? startComparison : right.EndLineIndex.CompareTo(left.EndLineIndex);
+        });
 
-        var orderedRegions = regionsByStart.Values
-            .OrderBy(region => region.StartLineIndex)
-            .ThenBy(region => region.EndLineIndex)
-            .ToArray();
         var activeRegions = new List<CodeFoldRegion>();
         var nextRegionIndex = 0;
         var rows = ImmutableArray.CreateBuilder<VisibleCodeRow>(lines.Count);
+        var activeVersion = 0;
+        var activeSnapshotVersion = -1;
+        var activeRegionSnapshot = ImmutableArray<CodeFoldRegion>.Empty;
         for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
-            activeRegions.RemoveAll(region => region.EndLineIndex < lineIndex);
+            if (RemoveExpiredRegions(activeRegions, lineIndex))
+            {
+                activeVersion++;
+            }
+
             while (nextRegionIndex < orderedRegions.Length && orderedRegions[nextRegionIndex].StartLineIndex < lineIndex)
             {
                 nextRegionIndex++;
@@ -56,16 +61,21 @@ internal static class CodeTextLayout
                 if (candidate.EndLineIndex >= lineIndex)
                 {
                     activeRegions.Add(candidate);
+                    activeVersion++;
                 }
 
                 nextRegionIndex++;
             }
 
             var startRegion = regionsByStart.GetValueOrDefault(lineIndex);
-            var activeRegionSnapshot = activeRegions
-                .OrderBy(region => region.StartLineIndex)
-                .ThenByDescending(region => region.EndLineIndex)
-                .ToImmutableArray();
+            if (activeSnapshotVersion != activeVersion)
+            {
+                activeRegionSnapshot = activeRegions.Count == 0
+                    ? ImmutableArray<CodeFoldRegion>.Empty
+                    : activeRegions.ToImmutableArray();
+                activeSnapshotVersion = activeVersion;
+            }
+
             if (regionsByStart.TryGetValue(lineIndex, out var region) && collapsedFoldStarts.Contains(lineIndex))
             {
                 rows.Add(new VisibleCodeRow(lineIndex, region, startRegion, activeRegionSnapshot));
@@ -80,10 +90,57 @@ internal static class CodeTextLayout
         return new CodeTextLayoutSnapshot(rows.ToImmutable(), regionsByStart);
     }
 
+    private static Dictionary<int, CodeFoldRegion> CreateRegionsByStart(int lineCount, IEnumerable<CodeFoldRegion> foldRegions)
+    {
+        var regionsByStart = new Dictionary<int, CodeFoldRegion>();
+        foreach (var region in foldRegions)
+        {
+            if (region.StartLineIndex < 0 || region.EndLineIndex <= region.StartLineIndex || region.StartLineIndex >= lineCount)
+            {
+                continue;
+            }
+
+            if (!regionsByStart.TryGetValue(region.StartLineIndex, out var existing) ||
+                region.EndLineIndex > existing.EndLineIndex)
+            {
+                regionsByStart[region.StartLineIndex] = region;
+            }
+        }
+
+        return regionsByStart;
+    }
+
+    private static bool RemoveExpiredRegions(List<CodeFoldRegion> activeRegions, int lineIndex)
+    {
+        var removed = false;
+        for (var index = activeRegions.Count - 1; index >= 0; index--)
+        {
+            if (activeRegions[index].EndLineIndex >= lineIndex)
+            {
+                continue;
+            }
+
+            activeRegions.RemoveAt(index);
+            removed = true;
+        }
+
+        return removed;
+    }
+
     public static int GetVisualColumn(string text, int column)
     {
-        var visualColumn = 0;
         var count = Math.Clamp(column, 0, text.Length);
+        if (count == 0)
+        {
+            return 0;
+        }
+
+        if (text.AsSpan(0, count).IndexOf('\t') < 0)
+        {
+            return count;
+        }
+
+        var visualColumn = 0;
         for (var index = 0; index < count; index++)
         {
             visualColumn += text[index] == '\t' ? TabSize : 1;
@@ -126,9 +183,20 @@ internal static class CodeTextLayout
 
         if (!line.Tokens.IsDefaultOrEmpty)
         {
-            var token = line.Tokens
-                .OrderBy(token => token.StartColumn)
-                .LastOrDefault(token => column >= token.StartColumn && column < token.StartColumn + token.Length);
+            TokenSpan? token = null;
+            var tokenStart = -1;
+            for (var index = 0; index < line.Tokens.Length; index++)
+            {
+                var candidate = line.Tokens[index];
+                if (column >= candidate.StartColumn &&
+                    column < candidate.StartColumn + candidate.Length &&
+                    candidate.StartColumn >= tokenStart)
+                {
+                    token = candidate;
+                    tokenStart = candidate.StartColumn;
+                }
+            }
+
             if (token is { Length: > 0 })
             {
                 var start = Math.Clamp(token.StartColumn, 0, text.Length);

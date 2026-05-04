@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using SemanticDiff.Core;
 using SkiaSharp;
 
@@ -29,6 +30,7 @@ public sealed record DiffSceneRenderStats(
 public sealed class DiffSceneRenderer
 {
     private const string TextEllipsis = "...";
+    private const string TabReplacement = "    ";
     private const float TitlePathLeftInset = 40;
     private const float TitleMetadataGap = 8;
     private const float TitlePinnedLabelLeftInset = 188;
@@ -133,12 +135,23 @@ public sealed class DiffSceneRenderer
         var worldViewport = GetWorldViewport(scene.Camera, canvasSize)
             .Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 96));
         var nodeSource = cache.Nodes;
-        var visibleNodes = nodeSource
-            .Where(node => node.Bounds.Intersects(worldViewport))
-            .ToArray();
-        var visibleGroups = scene.Groups
-            .Where(group => group.Bounds.Intersects(worldViewport))
-            .ToArray();
+        var visibleNodes = new List<DiffNode>(Math.Min(nodeSource.Length, DetailedBodyVisibleNodeBudget * 2));
+        foreach (var node in nodeSource)
+        {
+            if (node.Bounds.Intersects(worldViewport))
+            {
+                visibleNodes.Add(node);
+            }
+        }
+
+        var visibleGroups = new List<GraphGroup>();
+        foreach (var group in scene.Groups)
+        {
+            if (group.Bounds.Intersects(worldViewport))
+            {
+                visibleGroups.Add(group);
+            }
+        }
         var drawnEdges = 0;
         canvas.Save();
         canvas.Translate((float)scene.Camera.OffsetX, (float)scene.Camera.OffsetY);
@@ -169,14 +182,14 @@ public sealed class DiffSceneRenderer
         }
         else
         {
-            drawnEdges = DrawInteractiveEdges(canvas, scene, worldViewport, edgePaint, palette);
+            drawnEdges = DrawInteractiveEdges(canvas, cache.Edges, scene.Camera.Scale, worldViewport, edgePaint, palette);
         }
 
         var detailedNodeCount = 0;
         foreach (var node in visibleNodes)
         {
             var documentCache = cache.Documents.GetValueOrDefault(node.Document.Id) ?? DocumentRenderCache.Create(node.Document, []);
-            var bodyDetail = ResolveBodyDetail(node, scene.Camera.Scale, visibleNodes.Length, useInteractiveRendering, useLevelOfDetail);
+            var bodyDetail = ResolveBodyDetail(node, scene.Camera.Scale, visibleNodes.Count, useInteractiveRendering, useLevelOfDetail);
             if (bodyDetail == NodeBodyDetail.Full)
             {
                 detailedNodeCount++;
@@ -195,7 +208,7 @@ public sealed class DiffSceneRenderer
 
         LastRenderStats = new(
             scene.Nodes.Count,
-            visibleNodes.Length,
+            visibleNodes.Count,
             detailedNodeCount,
             scene.Edges.Count,
             drawnEdges,
@@ -212,8 +225,9 @@ public sealed class DiffSceneRenderer
             return renderCache;
         }
 
-        renderCache?.Dispose();
-        renderCache = RenderSceneCache.Create(scene);
+        var previousCache = renderCache;
+        renderCache = RenderSceneCache.Create(scene, previousCache);
+        previousCache?.Dispose();
         return renderCache;
     }
 
@@ -305,37 +319,35 @@ public sealed class DiffSceneRenderer
         canvas.DrawPath(path, paint);
     }
 
-    private static int DrawInteractiveEdges(SKCanvas canvas, DiffCanvasScene scene, Rect2 worldViewport, SKPaint paint, RendererPalette palette)
+    private static int DrawInteractiveEdges(
+        SKCanvas canvas,
+        ReadOnlySpan<RenderGraphEdge> edges,
+        double cameraScale,
+        Rect2 worldViewport,
+        SKPaint paint,
+        RendererPalette palette)
     {
-        if (scene.Edges.Count == 0 || scene.Nodes.Count == 0)
+        if (edges.Length == 0)
         {
             return 0;
         }
 
-        var nodesById = scene.Nodes.ToDictionary(node => node.Document.Id.Value, StringComparer.Ordinal);
         var drawn = 0;
         paint.Color = palette.EdgeColor.WithAlpha(110);
-        paint.StrokeWidth = (float)DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 1.5);
+        paint.StrokeWidth = (float)DiffCanvasScene.ScreenStableWorldLength(cameraScale, 1.5);
 
-        foreach (var edge in scene.Edges)
+        foreach (var edge in edges)
         {
-            if (!nodesById.TryGetValue(edge.SourceNodeId, out var source) ||
-                !nodesById.TryGetValue(edge.TargetNodeId, out var target))
-            {
-                continue;
-            }
-
-            var bounds = GetEdgeBounds(source, target);
-            if (!bounds.Inflate(DiffCanvasScene.ScreenStableWorldLength(scene.Camera.Scale, 80)).Intersects(worldViewport))
+            if (!edge.Bounds.Inflate(DiffCanvasScene.ScreenStableWorldLength(cameraScale, 80)).Intersects(worldViewport))
             {
                 continue;
             }
 
             canvas.DrawLine(
-                (float)source.Bounds.Right,
-                (float)source.Bounds.Center.Y,
-                (float)target.Bounds.Left,
-                (float)target.Bounds.Center.Y,
+                (float)edge.Source.Bounds.Right,
+                (float)edge.Source.Bounds.Center.Y,
+                (float)edge.Target.Bounds.Left,
+                (float)edge.Target.Bounds.Center.Y,
                 paint);
             drawn++;
         }
@@ -913,9 +925,9 @@ public sealed class DiffSceneRenderer
 
         var safeLength = Math.Min(length, text.Length - start);
         var value = text.Substring(start, safeLength);
-        if (value.Contains('\t'))
+        if (value.IndexOf('\t') >= 0)
         {
-            value = value.Replace("\t", "    ", StringComparison.Ordinal);
+            value = value.Replace("\t", TabReplacement, StringComparison.Ordinal);
         }
 
         canvas.DrawText(value, x + start * characterWidth, y, style.Font, style.Paint);
@@ -1230,9 +1242,15 @@ public sealed class DiffSceneRenderer
                 return Empty;
             }
 
+            var tokenSource = line.Tokens;
+            if (!AreTokensOrdered(tokenSource))
+            {
+                tokenSource = tokenSource.Sort(static (left, right) => left.StartColumn.CompareTo(right.StartColumn));
+            }
+
             var runs = new List<DiffTextRun>();
             var cursor = 0;
-            foreach (var token in line.Tokens.OrderBy(token => token.StartColumn))
+            foreach (var token in tokenSource)
             {
                 if (token.StartColumn < 0 || token.StartColumn >= line.Text.Length || token.Length <= 0)
                 {
@@ -1260,6 +1278,22 @@ public sealed class DiffSceneRenderer
 
             return runs.Count == 0 ? Empty : new DiffLineRenderLayout(runs.ToArray());
         }
+
+        private static bool AreTokensOrdered(ImmutableArray<TokenSpan> tokens)
+        {
+            var previousStart = -1;
+            foreach (var token in tokens)
+            {
+                if (token.StartColumn < previousStart)
+                {
+                    return false;
+                }
+
+                previousStart = token.StartColumn;
+            }
+
+            return true;
+        }
     }
 
     private readonly record struct DocumentOverviewBucket(DiffLineKind Kind, bool HasText, bool HasAnnotation);
@@ -1267,17 +1301,20 @@ public sealed class DiffSceneRenderer
     private sealed class DocumentRenderCache
     {
         private readonly DiffDocumentSnapshot document;
+        private readonly DiffAnnotation[] annotations;
         private readonly DiffLineRenderLayout[] lineLayouts;
         private readonly Dictionary<int, DiffAnnotation[]> lineAnnotationsByIndex;
         private readonly Dictionary<int, DocumentOverviewBucket[]> overviewBucketsByCount = [];
 
         private DocumentRenderCache(
             DiffDocumentSnapshot document,
+            DiffAnnotation[] annotations,
             DiffAnnotation[] nodeAnnotations,
             Dictionary<int, DiffAnnotation[]> lineAnnotationsByIndex,
             DiffLineRenderLayout[] lineLayouts)
         {
             this.document = document;
+            this.annotations = annotations;
             NodeAnnotations = nodeAnnotations;
             this.lineAnnotationsByIndex = lineAnnotationsByIndex;
             this.lineLayouts = lineLayouts;
@@ -1287,19 +1324,87 @@ public sealed class DiffSceneRenderer
 
         public static DocumentRenderCache Create(DiffDocumentSnapshot document, IReadOnlyList<DiffAnnotation> annotations)
         {
-            var nodeAnnotations = annotations
-                .Where(annotation => annotation.Target == DiffAnnotationTarget.Node)
-                .OrderBy(AnnotationPriority)
-                .ToArray();
-            var lineAnnotationsByIndex = annotations
-                .Where(annotation => annotation.Target == DiffAnnotationTarget.Line && annotation.LineIndex is not null)
-                .GroupBy(annotation => annotation.LineIndex!.Value)
-                .ToDictionary(group => group.Key, group => group.OrderBy(AnnotationPriority).ToArray());
-            var lineLayouts = document.Lines
-                .Select(DiffLineRenderLayout.Create)
-                .ToArray();
+            var sortedAnnotations = CopyAndSortAnnotations(annotations);
+            var nodeAnnotations = new List<DiffAnnotation>();
+            var lineAnnotationLists = new Dictionary<int, List<DiffAnnotation>>();
+            for (var index = 0; index < sortedAnnotations.Length; index++)
+            {
+                var annotation = sortedAnnotations[index];
+                if (annotation.Target == DiffAnnotationTarget.Node)
+                {
+                    nodeAnnotations.Add(annotation);
+                    continue;
+                }
 
-            return new DocumentRenderCache(document, nodeAnnotations, lineAnnotationsByIndex, lineLayouts);
+                if (annotation.Target != DiffAnnotationTarget.Line || annotation.LineIndex is null)
+                {
+                    continue;
+                }
+
+                var lineIndex = annotation.LineIndex.Value;
+                if (!lineAnnotationLists.TryGetValue(lineIndex, out var lineAnnotations))
+                {
+                    lineAnnotations = [];
+                    lineAnnotationLists[lineIndex] = lineAnnotations;
+                }
+
+                lineAnnotations.Add(annotation);
+            }
+
+            var lineAnnotationsByIndex = new Dictionary<int, DiffAnnotation[]>(lineAnnotationLists.Count);
+            foreach (var (lineIndex, lineAnnotations) in lineAnnotationLists)
+            {
+                lineAnnotationsByIndex[lineIndex] = lineAnnotations.ToArray();
+            }
+
+            var lineLayouts = new DiffLineRenderLayout[document.Lines.Length];
+            for (var index = 0; index < document.Lines.Length; index++)
+            {
+                lineLayouts[index] = DiffLineRenderLayout.Create(document.Lines[index]);
+            }
+
+            return new DocumentRenderCache(document, sortedAnnotations, nodeAnnotations.ToArray(), lineAnnotationsByIndex, lineLayouts);
+        }
+
+        public bool Matches(DiffDocumentSnapshot nextDocument, IReadOnlyList<DiffAnnotation> nextAnnotations)
+        {
+            if (!ReferenceEquals(document, nextDocument) || annotations.Length != nextAnnotations.Count)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < annotations.Length; index++)
+            {
+                if (!annotations[index].Equals(nextAnnotations[index]))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static DiffAnnotation[] CopyAndSortAnnotations(IReadOnlyList<DiffAnnotation> source)
+        {
+            if (source.Count == 0)
+            {
+                return Array.Empty<DiffAnnotation>();
+            }
+
+            var result = new DiffAnnotation[source.Count];
+            for (var index = 0; index < source.Count; index++)
+            {
+                result[index] = source[index];
+            }
+
+            Array.Sort(result, static (left, right) =>
+            {
+                var priority = AnnotationPriority(left).CompareTo(AnnotationPriority(right));
+                return priority != 0
+                    ? priority
+                    : string.CompareOrdinal(left.Id, right.Id);
+            });
+            return result;
         }
 
         public DiffAnnotation[] GetLineAnnotations(int lineIndex) =>
@@ -1382,29 +1487,81 @@ public sealed class DiffSceneRenderer
 
         public Dictionary<DiffDocumentId, DocumentRenderCache> Documents { get; }
 
-        public static RenderSceneCache Create(DiffCanvasScene scene)
+        public static RenderSceneCache Create(DiffCanvasScene scene, RenderSceneCache? previous)
         {
             var nodes = scene.Nodes.ToArray();
-            var nodesById = nodes.ToDictionary(node => node.Document.Id.Value, StringComparer.Ordinal);
-            var edges = scene.Edges
-                .Select(edge => CreateRenderGraphEdge(edge, nodesById))
-                .Where(edge => edge is not null)
-                .Cast<RenderGraphEdge>()
-                .ToArray();
-            var annotationsByDocument = scene.Annotations
-                .Where(annotation => scene.AnnotationVisibility.IsVisible(annotation.Kind))
-                .GroupBy(annotation => annotation.DocumentId)
-                .ToDictionary(group => group.Key, group => group.OrderBy(AnnotationPriority).ToArray());
-            var documents = nodes
-                .GroupBy(node => node.Document.Id)
-                .ToDictionary(
-                    group => group.Key,
-                    group => DocumentRenderCache.Create(
-                        group.First().Document,
-                        annotationsByDocument.GetValueOrDefault(group.Key) ?? []));
+            var nodesById = new Dictionary<string, DiffNode>(nodes.Length, StringComparer.Ordinal);
+            for (var index = 0; index < nodes.Length; index++)
+            {
+                var node = nodes[index];
+                nodesById[node.Document.Id.Value] = node;
+            }
 
-            return new RenderSceneCache(scene, scene.GeometryVersion, nodes, edges, documents);
+            var edges = new List<RenderGraphEdge>(scene.Edges.Count);
+            foreach (var graphEdge in scene.Edges)
+            {
+                var edge = CreateRenderGraphEdge(graphEdge, nodesById);
+                if (edge is not null)
+                {
+                    edges.Add(edge);
+                }
+            }
+
+            var annotationsByDocument = new Dictionary<DiffDocumentId, List<DiffAnnotation>>();
+            foreach (var annotation in scene.Annotations)
+            {
+                if (!scene.AnnotationVisibility.IsVisible(annotation.Kind))
+                {
+                    continue;
+                }
+
+                if (!annotationsByDocument.TryGetValue(annotation.DocumentId, out var annotations))
+                {
+                    annotations = [];
+                    annotationsByDocument[annotation.DocumentId] = annotations;
+                }
+
+                annotations.Add(annotation);
+            }
+
+            foreach (var annotations in annotationsByDocument.Values)
+            {
+                annotations.Sort(static (left, right) =>
+                {
+                    var priority = AnnotationPriority(left).CompareTo(AnnotationPriority(right));
+                    return priority != 0
+                        ? priority
+                        : string.CompareOrdinal(left.Id, right.Id);
+                });
+            }
+
+            var documents = new Dictionary<DiffDocumentId, DocumentRenderCache>(nodes.Length);
+            for (var index = 0; index < nodes.Length; index++)
+            {
+                var document = nodes[index].Document;
+                if (documents.ContainsKey(document.Id))
+                {
+                    continue;
+                }
+
+                IReadOnlyList<DiffAnnotation> annotations = annotationsByDocument.TryGetValue(document.Id, out var documentAnnotations)
+                    ? documentAnnotations
+                    : EmptyAnnotations;
+                if (previous?.Documents.TryGetValue(document.Id, out var previousDocumentCache) == true &&
+                    previousDocumentCache.Matches(document, annotations))
+                {
+                    documents[document.Id] = previousDocumentCache;
+                }
+                else
+                {
+                    documents[document.Id] = DocumentRenderCache.Create(document, annotations);
+                }
+            }
+
+            return new RenderSceneCache(scene, scene.GeometryVersion, nodes, edges.ToArray(), documents);
         }
+
+        private static readonly DiffAnnotation[] EmptyAnnotations = [];
 
         public bool Matches(DiffCanvasScene scene) => ReferenceEquals(scene, Scene) && scene.GeometryVersion == GeometryVersion;
 

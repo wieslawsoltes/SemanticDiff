@@ -345,10 +345,20 @@ public sealed class MsaglGraphLayoutEngine : IGraphLayoutEngine
             return [];
         }
 
-        var anchors = request.SemanticGraph.Anchors.ToDictionary(anchor => anchor.Id, StringComparer.Ordinal);
-        var documentIds = request.Documents.Select(document => document.Id).ToHashSet();
+        var anchors = new Dictionary<string, SemanticAnchor>(request.SemanticGraph.Anchors.Length, StringComparer.Ordinal);
+        foreach (var anchor in request.SemanticGraph.Anchors)
+        {
+            anchors.TryAdd(anchor.Id, anchor);
+        }
+
+        var documentIds = new HashSet<DiffDocumentId>();
+        foreach (var document in request.Documents)
+        {
+            documentIds.Add(document.Id);
+        }
+
         var minimumConfidence = request.Documents.Length >= 150 ? 0.74 : 0.68;
-        var candidates = ImmutableArray.CreateBuilder<DocumentLayoutEdge>();
+        var pairAccumulators = new Dictionary<(DiffDocumentId Source, DiffDocumentId Target), DocumentLayoutEdgeAccumulator>();
 
         foreach (var edge in request.SemanticGraph.Edges)
         {
@@ -362,43 +372,85 @@ public sealed class MsaglGraphLayoutEngine : IGraphLayoutEngine
                 continue;
             }
 
-            candidates.Add(new DocumentLayoutEdge(
+            var layoutEdge = new DocumentLayoutEdge(
                 sourceAnchor.DocumentId,
                 targetAnchor.DocumentId,
                 edge.Kind,
-                edge.Confidence + LayoutKindWeight(edge.Kind)));
+                edge.Confidence + LayoutKindWeight(edge.Kind));
+            var pairKey = (layoutEdge.SourceDocumentId, layoutEdge.TargetDocumentId);
+            if (!pairAccumulators.TryGetValue(pairKey, out var accumulator))
+            {
+                accumulator = new DocumentLayoutEdgeAccumulator(layoutEdge);
+                pairAccumulators[pairKey] = accumulator;
+            }
+            else
+            {
+                accumulator.Add(layoutEdge);
+            }
         }
 
-        if (candidates.Count == 0)
+        if (pairAccumulators.Count == 0)
         {
             return [];
         }
 
-        var pairEdges = candidates
-            .GroupBy(edge => (edge.SourceDocumentId, edge.TargetDocumentId))
-            .Select(group =>
-            {
-                var strongest = group.OrderByDescending(edge => edge.Score).First();
-                var score = strongest.Score + Math.Log2(group.Count() + 1) * 0.08 + group.Select(edge => edge.Kind).Distinct().Count() * 0.04;
-                return strongest with { Score = score };
-            })
-            .ToArray();
         var perSourceLimit = request.Documents.Length >= 150 ? 5 : 10;
         var maxEdges = Math.Max(request.Documents.Length, request.Documents.Length * (request.Documents.Length >= 150 ? 3 : 6));
+        var edgesBySource = new Dictionary<DiffDocumentId, List<DocumentLayoutEdge>>();
+        foreach (var accumulator in pairAccumulators.Values)
+        {
+            var edge = accumulator.ToEdge();
+            if (!edgesBySource.TryGetValue(edge.SourceDocumentId, out var sourceEdges))
+            {
+                sourceEdges = [];
+                edgesBySource[edge.SourceDocumentId] = sourceEdges;
+            }
 
-        return pairEdges
-            .GroupBy(edge => edge.SourceDocumentId)
-            .SelectMany(group => group
-                .OrderByDescending(edge => edge.Score)
-                .ThenBy(edge => edge.TargetDocumentId.Value, StringComparer.Ordinal)
-                .Take(perSourceLimit))
-            .GroupBy(edge => (edge.SourceDocumentId, edge.TargetDocumentId))
-            .Select(group => group.OrderByDescending(edge => edge.Score).First())
-            .OrderByDescending(edge => edge.Score)
-            .ThenBy(edge => edge.SourceDocumentId.Value, StringComparer.Ordinal)
-            .ThenBy(edge => edge.TargetDocumentId.Value, StringComparer.Ordinal)
-            .Take(maxEdges)
-            .ToImmutableArray();
+            sourceEdges.Add(edge);
+        }
+
+        var selectedEdges = new List<DocumentLayoutEdge>(Math.Min(pairAccumulators.Count, maxEdges));
+        foreach (var sourceEdges in edgesBySource.Values)
+        {
+            sourceEdges.Sort(CompareLayoutEdgesBySource);
+            var takeCount = Math.Min(perSourceLimit, sourceEdges.Count);
+            for (var index = 0; index < takeCount; index++)
+            {
+                selectedEdges.Add(sourceEdges[index]);
+            }
+        }
+
+        selectedEdges.Sort(CompareLayoutEdges);
+        var resultCount = Math.Min(maxEdges, selectedEdges.Count);
+        var builder = ImmutableArray.CreateBuilder<DocumentLayoutEdge>(resultCount);
+        for (var index = 0; index < resultCount; index++)
+        {
+            builder.Add(selectedEdges[index]);
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static int CompareLayoutEdgesBySource(DocumentLayoutEdge left, DocumentLayoutEdge right)
+    {
+        var scoreComparison = right.Score.CompareTo(left.Score);
+        return scoreComparison != 0
+            ? scoreComparison
+            : string.Compare(left.TargetDocumentId.Value, right.TargetDocumentId.Value, StringComparison.Ordinal);
+    }
+
+    private static int CompareLayoutEdges(DocumentLayoutEdge left, DocumentLayoutEdge right)
+    {
+        var scoreComparison = right.Score.CompareTo(left.Score);
+        if (scoreComparison != 0)
+        {
+            return scoreComparison;
+        }
+
+        var sourceComparison = string.Compare(left.SourceDocumentId.Value, right.SourceDocumentId.Value, StringComparison.Ordinal);
+        return sourceComparison != 0
+            ? sourceComparison
+            : string.Compare(left.TargetDocumentId.Value, right.TargetDocumentId.Value, StringComparison.Ordinal);
     }
 
     private static bool IsLayoutEdgeKind(SemanticEdgeKind kind) => kind is not SemanticEdgeKind.Contains;
@@ -518,6 +570,49 @@ public sealed class MsaglGraphLayoutEngine : IGraphLayoutEngine
     }
 
     private sealed record DocumentLayoutEdge(DiffDocumentId SourceDocumentId, DiffDocumentId TargetDocumentId, SemanticEdgeKind Kind, double Score);
+
+    private sealed class DocumentLayoutEdgeAccumulator
+    {
+        private DocumentLayoutEdge strongestEdge;
+        private int count;
+        private HashSet<SemanticEdgeKind>? kinds;
+
+        public DocumentLayoutEdgeAccumulator(DocumentLayoutEdge edge)
+        {
+            strongestEdge = edge;
+            count = 1;
+            kinds = null;
+        }
+
+        public void Add(DocumentLayoutEdge edge)
+        {
+            count++;
+            var previousStrongestKind = strongestEdge.Kind;
+            if (edge.Score > strongestEdge.Score)
+            {
+                strongestEdge = edge;
+            }
+
+            if (kinds is null)
+            {
+                if (edge.Kind == previousStrongestKind)
+                {
+                    return;
+                }
+
+                kinds = [previousStrongestKind];
+            }
+
+            kinds.Add(edge.Kind);
+        }
+
+        public DocumentLayoutEdge ToEdge()
+        {
+            var distinctKindCount = kinds?.Count ?? 1;
+            var score = strongestEdge.Score + Math.Log2(count + 1) * 0.08 + distinctKindCount * 0.04;
+            return strongestEdge with { Score = score };
+        }
+    }
 
     private sealed record LargeLayoutClusterKey(string Id, string Label, int Order);
 

@@ -21,7 +21,7 @@ internal sealed class CodeTextEditorDocument
     public void SetText(string? text)
     {
         var normalized = NormalizeNewLines(text);
-        if (!string.Equals(Text, normalized, StringComparison.Ordinal))
+        if (!TextEqualsNormalized(normalized))
         {
             lines.Clear();
             lines.AddRange(SplitLines(normalized));
@@ -37,6 +37,40 @@ internal sealed class CodeTextEditorDocument
         redoStack.Clear();
     }
 
+    private bool TextEqualsNormalized(string normalized)
+    {
+        if (lines.Count == 0)
+        {
+            return normalized.Length == 0;
+        }
+
+        var offset = 0;
+        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
+        {
+            var line = lines[lineIndex];
+            if (line.Length > normalized.Length - offset ||
+                !normalized.AsSpan(offset, line.Length).SequenceEqual(line))
+            {
+                return false;
+            }
+
+            offset += line.Length;
+            if (lineIndex == lines.Count - 1)
+            {
+                continue;
+            }
+
+            if (offset >= normalized.Length || normalized[offset] != '\n')
+            {
+                return false;
+            }
+
+            offset++;
+        }
+
+        return offset == normalized.Length;
+    }
+
     public string GetLine(int lineIndex) =>
         lineIndex >= 0 && lineIndex < lines.Count ? lines[lineIndex] : string.Empty;
 
@@ -49,9 +83,11 @@ internal sealed class CodeTextEditorDocument
 
         var first = Math.Clamp(firstLine, 0, lines.Count - 1);
         var last = Math.Clamp(lastLine, first, lines.Count - 1);
-        var replacement = replacementLines
-            .SelectMany(line => SplitLines(line ?? string.Empty))
-            .ToList();
+        var replacement = new List<string>(replacementLines.Count);
+        foreach (var line in replacementLines)
+        {
+            AppendSplitLines(replacement, line);
+        }
         var current = lines.GetRange(first, last - first + 1);
         if (current.SequenceEqual(replacement, StringComparer.Ordinal))
         {
@@ -219,12 +255,60 @@ internal sealed class CodeTextEditorDocument
 
     private static List<string> SplitLines(string? text)
     {
-        var normalized = NormalizeNewLines(text);
-        return normalized.Split('\n').ToList();
+        var lines = new List<string>();
+        AppendSplitLines(lines, text);
+        return lines;
     }
 
-    private static string NormalizeNewLines(string? text) =>
-        (text ?? string.Empty).Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+    private static void AppendSplitLines(List<string> lines, string? text)
+    {
+        var normalized = NormalizeNewLines(text);
+        var start = 0;
+        for (var index = 0; index < normalized.Length; index++)
+        {
+            if (normalized[index] != '\n')
+            {
+                continue;
+            }
+
+            lines.Add(normalized[start..index]);
+            start = index + 1;
+        }
+
+        lines.Add(normalized[start..]);
+    }
+
+    private static string NormalizeNewLines(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+
+        if (text.IndexOf('\r') < 0)
+        {
+            return text;
+        }
+
+        var builder = new StringBuilder(text.Length);
+        for (var index = 0; index < text.Length; index++)
+        {
+            var character = text[index];
+            if (character != '\r')
+            {
+                builder.Append(character);
+                continue;
+            }
+
+            builder.Append('\n');
+            if (index + 1 < text.Length && text[index + 1] == '\n')
+            {
+                index++;
+            }
+        }
+
+        return builder.ToString();
+    }
 }
 
 internal sealed record CodeTextEditorSnapshot(

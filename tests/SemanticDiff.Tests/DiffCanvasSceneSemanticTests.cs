@@ -170,6 +170,26 @@ public sealed class DiffCanvasSceneSemanticTests
     }
 
     [Fact]
+    public void NodeEditing_HitTestingTabsMapsVisualColumnsToSourceColumns()
+    {
+        var factory = new DiffDocumentFactory();
+        var diff = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 1, 0), "class A { }");
+        var full = factory.CreateFromText(diff.Metadata, "\tvalue", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+        scene.SetFullFileDocuments([new DiffNodeFullFileContent(diff.Id, full, [], full.ToSourceText())]);
+        scene.SetShowFullFileNodes(true);
+        scene.SetNodeEditingEnabled(true);
+        var node = scene.Nodes[0];
+        var characterWidth = Math.Max(4.0, node.FontSize * 0.62);
+        var codeX = node.BodyBounds.Left + DiffNode.FullFileGutterWidth + DiffNode.CodeLeftPadding;
+        var point = new Point2(codeX + 4 * characterWidth, node.BodyBounds.Top + node.LineHeight / 2);
+
+        Assert.True(node.TrySetCaretFromWorldPoint(point));
+
+        Assert.Equal(1, node.CaretColumn);
+    }
+
+    [Fact]
     public void NodeEditing_LineCommands_UpdateFullFileDocument()
     {
         var factory = new DiffDocumentFactory();

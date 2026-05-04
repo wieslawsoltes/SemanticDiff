@@ -250,8 +250,9 @@ public sealed class DiffNode
         var codeX = BodyBounds.Left + FullFileGutterWidth + CodeLeftPadding;
         var characterWidth = Math.Max(4.0, FontSize * 0.62);
         var visualColumn = Math.Max(0, (int)Math.Round((worldPoint.X - codeX) / characterWidth));
+        var text = rows[0].Line.Text;
         CaretLineIndex = rows[0].Line.Index;
-        CaretColumn = Math.Clamp(visualColumn, 0, rows[0].Line.Text.Replace("\t", "    ", StringComparison.Ordinal).Length);
+        CaretColumn = GetSourceColumnFromVisualColumn(text, visualColumn);
         IsEditorFocused = true;
         return true;
     }
@@ -380,9 +381,20 @@ public sealed class DiffNode
         }
 
         EnsureEditableLines();
-        var normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
-        foreach (var character in normalized)
+        for (var index = 0; index < text.Length; index++)
         {
+            var character = text[index];
+            if (character == '\r')
+            {
+                if (index + 1 < text.Length && text[index + 1] == '\n')
+                {
+                    index++;
+                }
+
+                InsertNewLineCore();
+                continue;
+            }
+
             if (character == '\n')
             {
                 InsertNewLineCore();
@@ -396,6 +408,29 @@ public sealed class DiffNode
         RebuildEditedDocument();
         EnsureCaretVisible();
         return true;
+    }
+
+    private static int GetSourceColumnFromVisualColumn(string text, int visualColumn)
+    {
+        if (visualColumn <= 0 || text.Length == 0)
+        {
+            return 0;
+        }
+
+        var visual = 0;
+        for (var index = 0; index < text.Length; index++)
+        {
+            var width = text[index] == '\t' ? EditorTabSize : 1;
+            var nextVisual = visual + width;
+            if (visualColumn < nextVisual)
+            {
+                return visualColumn - visual < width / 2.0 ? index : index + 1;
+            }
+
+            visual = nextVisual;
+        }
+
+        return text.Length;
     }
 
     public bool InsertNewLine()

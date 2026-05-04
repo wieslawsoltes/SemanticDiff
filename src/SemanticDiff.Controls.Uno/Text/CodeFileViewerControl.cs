@@ -31,6 +31,7 @@ public sealed class CodeFileViewerControl : Grid
     private const float HorizontalScrollbarHeight = 8;
     private const float HorizontalScrollbarMinThumbWidth = 36;
     private const int HorizontalWheelScrollColumns = 12;
+    private const string TabReplacement = "    ";
     private const float MinimapWidth = 112;
     private const float MinimapMargin = 8;
     private const float MinimapPadding = 4;
@@ -655,6 +656,7 @@ public sealed class CodeFileViewerControl : Grid
         using var mutedPaint = CreateTextPaint(palette.MutedText);
         using var lineNumberPaint = CreateTextPaint(palette.LineNumber);
         using var foldPaint = CreateTextPaint(palette.FoldText);
+        using var tokenPaints = new TokenPaintCache();
         var charWidth = CodeCharacterWidth;
         var lines = GetLines();
         var gutterWidth = CalculateGutterWidth(charWidth, lines);
@@ -708,7 +710,7 @@ public sealed class CodeFileViewerControl : Grid
                 }
 
                 DrawSelection(canvasSurface, palette, row, line, scrolledTextLeft, y, charWidth, contentRight);
-                DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, scrolledTextLeft, contentRight, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, BoldFontDescriptor, palette);
+                DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, scrolledTextLeft, contentRight, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, tokenPaints, BoldFontDescriptor, palette);
                 DrawCaret(canvasSurface, palette, row, line, scrolledTextLeft, y, charWidth, contentRight);
             }
 
@@ -3317,6 +3319,7 @@ public sealed class CodeFileViewerControl : Grid
         SKFont boldFont,
         SKPaint defaultPaint,
         SKPaint foldPaint,
+        TokenPaintCache tokenPaints,
         TextFontDescriptor boldFontDescriptor,
         CodeFileViewerPalette palette)
     {
@@ -3326,7 +3329,7 @@ public sealed class CodeFileViewerControl : Grid
             return;
         }
 
-        DrawTokenizedText(canvasSurface, line.Text, line.Tokens, x, y + baselineOffset, charWidth, font, boldFont, defaultPaint, palette);
+        DrawTokenizedText(canvasSurface, line.Text, line.Tokens, x, y + baselineOffset, charWidth, font, boldFont, defaultPaint, palette, tokenPaints);
         if (collapsedRegion is null)
         {
             return;
@@ -3443,7 +3446,8 @@ public sealed class CodeFileViewerControl : Grid
         SKFont font,
         SKFont boldFont,
         SKPaint defaultPaint,
-        CodeFileViewerPalette palette)
+        CodeFileViewerPalette palette,
+        TokenPaintCache tokenPaints)
     {
         if (string.IsNullOrEmpty(text))
         {
@@ -3451,9 +3455,19 @@ public sealed class CodeFileViewerControl : Grid
         }
 
         var cursor = 0;
-        foreach (var token in tokens.IsDefault
-            ? Enumerable.Empty<TokenSpan>()
-            : tokens.OrderBy(token => token.StartColumn))
+        if (tokens.IsDefault)
+        {
+            DrawTextRange(canvasSurface, text, 0, text.Length, x, baseline, charWidth, font, defaultPaint);
+            return;
+        }
+
+        var tokenSource = tokens;
+        if (!AreTokensOrdered(tokenSource))
+        {
+            tokenSource = tokenSource.Sort(static (left, right) => left.StartColumn.CompareTo(right.StartColumn));
+        }
+
+        foreach (var token in tokenSource)
         {
             var start = Math.Clamp(token.StartColumn, 0, text.Length);
             var end = Math.Clamp(token.StartColumn + token.Length, start, text.Length);
@@ -3464,7 +3478,7 @@ public sealed class CodeFileViewerControl : Grid
 
             if (end > start)
             {
-                using var tokenPaint = CreateTextPaint(CodeTextStyleMap.TokenColor(token, palette));
+                var tokenPaint = tokenPaints.Get(CodeTextStyleMap.TokenColor(token, palette));
                 DrawTextRange(canvasSurface, text, start, end - start, x, baseline, charWidth, CodeTextStyleMap.IsBoldToken(token) ? boldFont : font, tokenPaint);
             }
 
@@ -3477,15 +3491,37 @@ public sealed class CodeFileViewerControl : Grid
         }
     }
 
+    private static bool AreTokensOrdered(ImmutableArray<TokenSpan> tokens)
+    {
+        var previousStart = -1;
+        foreach (var token in tokens)
+        {
+            if (token.StartColumn < previousStart)
+            {
+                return false;
+            }
+
+            previousStart = token.StartColumn;
+        }
+
+        return true;
+    }
+
     private static void DrawTextRange(SKCanvas canvasSurface, string text, int start, int length, float x, float baseline, float charWidth, SKFont font, SKPaint paint)
     {
-        if (length <= 0)
+        if (length <= 0 || start < 0 || start >= text.Length)
         {
             return;
         }
 
+        var safeLength = Math.Min(length, text.Length - start);
         var visualColumn = CodeTextLayout.GetVisualColumn(text, start);
-        var value = text.Substring(start, length).Replace("\t", new string(' ', CodeTextLayout.TabSize), StringComparison.Ordinal);
+        var value = text.Substring(start, safeLength);
+        if (value.IndexOf('\t') >= 0)
+        {
+            value = value.Replace("\t", TabReplacement, StringComparison.Ordinal);
+        }
+
         canvasSurface.DrawText(value, x + visualColumn * charWidth, baseline, font, paint);
     }
 
@@ -3723,12 +3759,13 @@ public sealed class CodeFileViewerControl : Grid
         }
 
         var columnScale = textWidth / MinimapMaxVisualColumns;
+        var hasTabs = line.Text.AsSpan().IndexOf('\t') >= 0;
         var tokenHeight = rowHeight > 3
             ? Math.Max(2, rowHeight * 0.42f)
             : Math.Max(1, Math.Min(rowHeight, 2));
         if (line.Tokens.IsDefaultOrEmpty)
         {
-            var visualColumns = Math.Min(MinimapMaxVisualColumns, CodeTextLayout.GetVisualColumn(line.Text, line.Text.Length));
+            var visualColumns = Math.Min(MinimapMaxVisualColumns, GetMinimapVisualColumn(line.Text, line.Text.Length, hasTabs));
             paint.Color = palette.MinimapToken;
             canvasSurface.DrawRect(SKRect.Create(textLeft, y, Math.Max(1, visualColumns * columnScale), tokenHeight), paint);
             return;
@@ -3749,8 +3786,8 @@ public sealed class CodeFileViewerControl : Grid
                 continue;
             }
 
-            var startVisual = Math.Min(MinimapMaxVisualColumns, CodeTextLayout.GetVisualColumn(line.Text, startColumn));
-            var endVisual = Math.Min(MinimapMaxVisualColumns, CodeTextLayout.GetVisualColumn(line.Text, endColumn));
+            var startVisual = Math.Min(MinimapMaxVisualColumns, GetMinimapVisualColumn(line.Text, startColumn, hasTabs));
+            var endVisual = Math.Min(MinimapMaxVisualColumns, GetMinimapVisualColumn(line.Text, endColumn, hasTabs));
             var rectLeft = textLeft + startVisual * columnScale;
             var rectWidth = Math.Max(1, (endVisual - startVisual) * columnScale);
             if (rectLeft >= textRight)
@@ -3769,6 +3806,9 @@ public sealed class CodeFileViewerControl : Grid
             canvasSurface.DrawRect(SKRect.Create(textLeft, y, Math.Min(textWidth, 24), tokenHeight), paint);
         }
     }
+
+    private static int GetMinimapVisualColumn(string text, int column, bool hasTabs) =>
+        hasTabs ? CodeTextLayout.GetVisualColumn(text, column) : Math.Clamp(column, 0, text.Length);
 
     private static float GetMinimapRowPaintHeight(float rowScale)
     {
@@ -4584,6 +4624,30 @@ public sealed class CodeFileViewerControl : Grid
         Color = color,
         IsAntialias = true
     };
+
+    private sealed class TokenPaintCache : IDisposable
+    {
+        private readonly Dictionary<SKColor, SKPaint> paints = [];
+
+        public SKPaint Get(SKColor color)
+        {
+            if (!paints.TryGetValue(color, out var paint))
+            {
+                paint = CreateTextPaint(color);
+                paints[color] = paint;
+            }
+
+            return paint;
+        }
+
+        public void Dispose()
+        {
+            foreach (var paint in paints.Values)
+            {
+                paint.Dispose();
+            }
+        }
+    }
 
     private static SKColor WithAlpha(SKColor color, byte alpha) =>
         new(color.Red, color.Green, color.Blue, alpha);
