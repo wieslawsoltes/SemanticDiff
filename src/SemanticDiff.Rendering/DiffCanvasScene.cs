@@ -80,7 +80,7 @@ public sealed class DiffNode
 
     public Rect2 BodyBounds => new(Bounds.X, Bounds.Y + TitleHeight, Bounds.Width, Math.Max(0, Bounds.Height - TitleHeight - FooterHeight));
 
-    public int VisibleLineCount => GetVisibleRows().Length;
+    public int VisibleLineCount => GetVisibleLineCount();
 
     private bool workspaceShowFullFile;
     private bool workspaceEditing;
@@ -88,6 +88,9 @@ public sealed class DiffNode
     private bool? editingOverride;
     private readonly HashSet<int> collapsedFoldStartLines = [];
     private List<string>? editableLines;
+    private Dictionary<int, CodeFoldRegion>? foldRegionsByStartLineIndex;
+    private Dictionary<int, ImmutableArray<CodeFoldRegion>>? activeFoldRegionsByLineIndex;
+    private int? visibleLineCountCache;
 
     public void ScrollBy(double deltaY)
     {
@@ -130,6 +133,9 @@ public sealed class DiffNode
         FullText = fullText;
         FoldRegions = foldRegions.IsDefault ? ImmutableArray<CodeFoldRegion>.Empty : foldRegions;
         editableLines = null;
+        foldRegionsByStartLineIndex = null;
+        activeFoldRegionsByLineIndex = null;
+        visibleLineCountCache = null;
         collapsedFoldStartLines.RemoveWhere(lineIndex => lineIndex < 0 || lineIndex >= fullFileDocument.LineCount);
         ApplyDocumentMode();
     }
@@ -193,7 +199,7 @@ public sealed class DiffNode
 
     public bool ToggleFold(int startLineIndex)
     {
-        if (!IsShowingFullFile || !FoldRegions.Any(region => region.StartLineIndex == startLineIndex))
+        if (!IsShowingFullFile || !GetFoldRegionsByStartLineIndex().ContainsKey(startLineIndex))
         {
             return false;
         }
@@ -203,6 +209,8 @@ public sealed class DiffNode
             collapsedFoldStartLines.Remove(startLineIndex);
         }
 
+        visibleLineCountCache = null;
+        activeFoldRegionsByLineIndex = null;
         ClampScrollOffset();
         return true;
     }
@@ -264,13 +272,13 @@ public sealed class DiffNode
             return false;
         }
 
-        var rows = GetVisibleRows();
-        if (rows.Length == 0)
+        var visibleLineCount = VisibleLineCount;
+        if (visibleLineCount == 0)
         {
             return false;
         }
 
-        var currentRowIndex = IndexOfVisibleLine(rows, CaretLineIndex);
+        var currentRowIndex = GetVisibleRowIndexForLineIndex(CaretLineIndex);
         if (currentRowIndex < 0)
         {
             currentRowIndex = 0;
@@ -281,17 +289,21 @@ public sealed class DiffNode
             var direction = Math.Sign(columnDelta);
             for (var step = 0; step < Math.Abs(columnDelta); step++)
             {
-                MoveCaretByCharacter(rows, direction);
+                MoveCaretByCharacter(direction);
             }
 
             EnsureCaretVisible();
             return true;
         }
 
-        var nextRowIndex = Math.Clamp(currentRowIndex + lineDelta, 0, rows.Length - 1);
-        var nextLine = rows[nextRowIndex].Line;
-        CaretLineIndex = nextLine.Index;
-        CaretColumn = Math.Clamp(CaretColumn + columnDelta, 0, nextLine.Text.Length);
+        var nextRowIndex = Math.Clamp(currentRowIndex + lineDelta, 0, visibleLineCount - 1);
+        if (!TryGetLineIndexAtVisibleRowIndex(nextRowIndex, out var nextLineIndex))
+        {
+            return false;
+        }
+
+        CaretLineIndex = nextLineIndex;
+        CaretColumn = Math.Clamp(CaretColumn + columnDelta, 0, GetEditableLine(nextLineIndex).Length);
         EnsureCaretVisible();
         return true;
     }
@@ -706,22 +718,37 @@ public sealed class DiffNode
             return GetFlatVisibleRows(firstRowIndex, count);
         }
 
-        var rows = ImmutableArray.CreateBuilder<DiffNodeVisibleLine>();
+        var normalizedFirstRow = Math.Max(0, firstRowIndex);
+        var remainingRows = Math.Max(0, GetVisibleLineCount() - normalizedFirstRow);
+        var requestedCount = count == int.MaxValue
+            ? remainingRows
+            : Math.Min(remainingRows, Math.Max(0, count));
+        if (requestedCount == 0)
+        {
+            return [];
+        }
+
+        var rows = ImmutableArray.CreateBuilder<DiffNodeVisibleLine>(requestedCount);
+        var foldRegions = GetFoldRegionsByStartLineIndex();
         var rowIndex = 0;
         for (var lineIndex = 0; lineIndex < Document.LineCount; lineIndex++)
         {
             var line = Document.Lines[lineIndex];
-            var foldRegion = FoldRegions.FirstOrDefault(region => region.StartLineIndex == line.Index);
+            foldRegions.TryGetValue(line.Index, out var foldRegion);
             var isCollapsed = foldRegion is not null && collapsedFoldStartLines.Contains(foldRegion.StartLineIndex);
-            if (rowIndex >= firstRowIndex && rows.Count < count)
+            if (rowIndex >= normalizedFirstRow && rows.Count < requestedCount)
             {
                 rows.Add(new DiffNodeVisibleLine(rowIndex, line.Index, line, foldRegion, isCollapsed, GetActiveFoldRegions(line.Index)));
+                if (rows.Count == requestedCount)
+                {
+                    break;
+                }
             }
 
             rowIndex++;
-            if (isCollapsed)
+            if (foldRegion is not null && isCollapsed)
             {
-                lineIndex = Math.Max(lineIndex, foldRegion!.EndLineIndex);
+                lineIndex = Math.Max(lineIndex, foldRegion.EndLineIndex);
             }
         }
 
@@ -802,12 +829,70 @@ public sealed class DiffNode
     private ImmutableArray<DiffNodeVisibleLine> GetFlatVisibleRows(int firstRowIndex, int count)
     {
         var start = Math.Clamp(firstRowIndex, 0, Math.Max(0, Document.LineCount));
-        var end = Math.Clamp(start + Math.Max(0, count), 0, Document.LineCount);
-        return Document.Lines
-            .Skip(start)
-            .Take(end - start)
-            .Select((line, offset) => new DiffNodeVisibleLine(start + offset, line.Index, line, null, false, ImmutableArray<CodeFoldRegion>.Empty))
-            .ToImmutableArray();
+        var availableRows = Math.Max(0, Document.LineCount - start);
+        var requestedCount = count == int.MaxValue
+            ? availableRows
+            : Math.Min(availableRows, Math.Max(0, count));
+        if (requestedCount == 0)
+        {
+            return [];
+        }
+
+        var end = start + requestedCount;
+        var builder = ImmutableArray.CreateBuilder<DiffNodeVisibleLine>(requestedCount);
+        for (var index = start; index < end; index++)
+        {
+            var line = Document.Lines[index];
+            builder.Add(new DiffNodeVisibleLine(index, line.Index, line, null, false, ImmutableArray<CodeFoldRegion>.Empty));
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private int GetVisibleLineCount()
+    {
+        if (!IsShowingFullFile || FoldRegions.IsDefaultOrEmpty)
+        {
+            return Document.LineCount;
+        }
+
+        if (visibleLineCountCache is { } cached)
+        {
+            return cached;
+        }
+
+        var foldRegions = GetFoldRegionsByStartLineIndex();
+        var count = 0;
+        for (var lineIndex = 0; lineIndex < Document.LineCount; lineIndex++)
+        {
+            var line = Document.Lines[lineIndex];
+            if (foldRegions.TryGetValue(line.Index, out var foldRegion) && collapsedFoldStartLines.Contains(foldRegion.StartLineIndex))
+            {
+                lineIndex = Math.Max(lineIndex, foldRegion.EndLineIndex);
+            }
+
+            count++;
+        }
+
+        visibleLineCountCache = count;
+        return count;
+    }
+
+    private Dictionary<int, CodeFoldRegion> GetFoldRegionsByStartLineIndex()
+    {
+        if (foldRegionsByStartLineIndex is { } cached)
+        {
+            return cached;
+        }
+
+        var regions = new Dictionary<int, CodeFoldRegion>(FoldRegions.IsDefaultOrEmpty ? 0 : FoldRegions.Length);
+        foreach (var region in FoldRegions)
+        {
+            regions.TryAdd(region.StartLineIndex, region);
+        }
+
+        foldRegionsByStartLineIndex = regions;
+        return regions;
     }
 
     private void ApplyDocumentMode()
@@ -830,18 +915,44 @@ public sealed class DiffNode
             return [];
         }
 
-        return FoldRegions
-            .Where(region =>
-                region.StartLineIndex < lineIndex &&
+        if (activeFoldRegionsByLineIndex is not null &&
+            activeFoldRegionsByLineIndex.TryGetValue(lineIndex, out var cached))
+        {
+            return cached;
+        }
+
+        var builder = ImmutableArray.CreateBuilder<CodeFoldRegion>();
+        foreach (var region in FoldRegions)
+        {
+            if (region.StartLineIndex < lineIndex &&
                 region.EndLineIndex >= lineIndex &&
                 !collapsedFoldStartLines.Contains(region.StartLineIndex))
-            .OrderBy(region => region.StartLineIndex)
-            .ToImmutableArray();
+            {
+                builder.Add(region);
+            }
+        }
+
+        if (builder.Count > 1)
+        {
+            builder.Sort(static (left, right) => left.StartLineIndex.CompareTo(right.StartLineIndex));
+        }
+
+        var activeRegions = builder.ToImmutable();
+        (activeFoldRegionsByLineIndex ??= new Dictionary<int, ImmutableArray<CodeFoldRegion>>()).TryAdd(lineIndex, activeRegions);
+        return activeRegions;
     }
 
     private void EnsureEditableLines()
     {
-        editableLines ??= Document.Lines.Select(line => line.Text).ToList();
+        if (editableLines is null)
+        {
+            editableLines = new List<string>(Document.Lines.Length);
+            foreach (var line in Document.Lines)
+            {
+                editableLines.Add(line.Text);
+            }
+        }
+
         if (editableLines.Count == 0)
         {
             editableLines.Add(string.Empty);
@@ -1048,13 +1159,16 @@ public sealed class DiffNode
         CaretColumn = lines.Count == 0 ? 0 : lines[^1].Length;
     }
 
-    private void MoveCaretByCharacter(ImmutableArray<DiffNodeVisibleLine> rows, int direction)
+    private void MoveCaretByCharacter(int direction)
     {
-        var rowIndex = IndexOfVisibleLine(rows, CaretLineIndex);
+        var rowIndex = GetVisibleRowIndexForLineIndex(CaretLineIndex);
         if (rowIndex < 0)
         {
-            rowIndex = Math.Clamp(CaretLineIndex, 0, Math.Max(0, rows.Length - 1));
-            CaretLineIndex = rows[rowIndex].LineIndex;
+            rowIndex = Math.Clamp(CaretLineIndex, 0, Math.Max(0, VisibleLineCount - 1));
+            if (TryGetLineIndexAtVisibleRowIndex(rowIndex, out var fallbackLineIndex))
+            {
+                CaretLineIndex = fallbackLineIndex;
+            }
         }
 
         var line = GetEditableLine(CaretLineIndex);
@@ -1068,9 +1182,11 @@ public sealed class DiffNode
 
             if (rowIndex > 0)
             {
-                var previousLine = rows[rowIndex - 1].Line;
-                CaretLineIndex = previousLine.Index;
-                CaretColumn = GetEditableLine(previousLine.Index).Length;
+                if (TryGetLineIndexAtVisibleRowIndex(rowIndex - 1, out var previousLineIndex))
+                {
+                    CaretLineIndex = previousLineIndex;
+                    CaretColumn = GetEditableLine(previousLineIndex).Length;
+                }
             }
 
             return;
@@ -1082,10 +1198,13 @@ public sealed class DiffNode
             return;
         }
 
-        if (rowIndex < rows.Length - 1)
+        if (rowIndex < VisibleLineCount - 1)
         {
-            var nextLine = rows[rowIndex + 1].Line;
-            CaretLineIndex = nextLine.Index;
+            if (TryGetLineIndexAtVisibleRowIndex(rowIndex + 1, out var nextLineIndex))
+            {
+                CaretLineIndex = nextLineIndex;
+            }
+
             CaretColumn = 0;
         }
     }
@@ -1126,12 +1245,13 @@ public sealed class DiffNode
         FullFileDocument = nextDocument;
         FullText = string.Join(Environment.NewLine, editableLines);
         Document = nextDocument;
+        activeFoldRegionsByLineIndex = null;
+        visibleLineCountCache = null;
     }
 
     private void EnsureCaretVisible()
     {
-        var rows = GetVisibleRows();
-        var rowIndex = IndexOfVisibleLine(rows, CaretLineIndex);
+        var rowIndex = GetVisibleRowIndexForLineIndex(CaretLineIndex);
         if (rowIndex < 0)
         {
             return;
@@ -1149,17 +1269,90 @@ public sealed class DiffNode
         }
     }
 
+    private int GetVisibleRowIndexForLineIndex(int targetLineIndex)
+    {
+        if (targetLineIndex < 0 || targetLineIndex >= Document.LineCount)
+        {
+            return -1;
+        }
+
+        if (!IsShowingFullFile || FoldRegions.IsDefaultOrEmpty)
+        {
+            return targetLineIndex;
+        }
+
+        var foldRegions = GetFoldRegionsByStartLineIndex();
+        var rowIndex = 0;
+        for (var lineIndex = 0; lineIndex < Document.LineCount; lineIndex++)
+        {
+            var line = Document.Lines[lineIndex];
+            if (line.Index == targetLineIndex)
+            {
+                return rowIndex;
+            }
+
+            if (foldRegions.TryGetValue(line.Index, out var foldRegion) && collapsedFoldStartLines.Contains(foldRegion.StartLineIndex))
+            {
+                if (targetLineIndex <= foldRegion.EndLineIndex)
+                {
+                    return rowIndex;
+                }
+
+                lineIndex = Math.Max(lineIndex, foldRegion.EndLineIndex);
+            }
+
+            rowIndex++;
+        }
+
+        return -1;
+    }
+
     private void ScrollToLineIndex(int targetLineIndex)
     {
-        var rows = GetVisibleRows();
-        var rowIndex = IndexOfVisibleLine(rows, targetLineIndex);
+        var rowIndex = GetVisibleRowIndexForLineIndex(targetLineIndex);
         if (rowIndex < 0)
         {
-            rowIndex = Math.Clamp(targetLineIndex, 0, Math.Max(0, rows.Length - 1));
+            rowIndex = Math.Clamp(targetLineIndex, 0, Math.Max(0, VisibleLineCount - 1));
         }
 
         var bodyHeight = BodyBounds.Height;
         ScrollOffsetY = Math.Clamp(rowIndex * LineHeight - bodyHeight * 0.35, 0, MaxScrollOffset);
+    }
+
+    private bool TryGetLineIndexAtVisibleRowIndex(int targetRowIndex, out int lineIndex)
+    {
+        lineIndex = -1;
+        if (targetRowIndex < 0 || targetRowIndex >= VisibleLineCount || Document.LineCount == 0)
+        {
+            return false;
+        }
+
+        if (!IsShowingFullFile || FoldRegions.IsDefaultOrEmpty)
+        {
+            lineIndex = Document.Lines[targetRowIndex].Index;
+            return true;
+        }
+
+        var foldRegions = GetFoldRegionsByStartLineIndex();
+        var rowIndex = 0;
+        for (var documentLineIndex = 0; documentLineIndex < Document.LineCount; documentLineIndex++)
+        {
+            var line = Document.Lines[documentLineIndex];
+            if (rowIndex == targetRowIndex)
+            {
+                lineIndex = line.Index;
+                return true;
+            }
+
+            if (foldRegions.TryGetValue(line.Index, out var foldRegion) && collapsedFoldStartLines.Contains(foldRegion.StartLineIndex))
+            {
+                documentLineIndex = Math.Max(documentLineIndex, foldRegion.EndLineIndex);
+            }
+
+            rowIndex++;
+        }
+
+        return false;
     }
 
     private static int IndexOfVisibleLine(ImmutableArray<DiffNodeVisibleLine> rows, int lineIndex)
@@ -1238,7 +1431,21 @@ public sealed record DiffNodeViewState(
 
 public sealed record DiffCanvasSceneViewState(CameraState Camera, ImmutableArray<DiffNodeViewState> Nodes)
 {
-    public string? SelectedDocumentId => Nodes.FirstOrDefault(node => node.IsSelected)?.DocumentId.Value;
+    public string? SelectedDocumentId
+    {
+        get
+        {
+            foreach (var node in Nodes)
+            {
+                if (node.IsSelected)
+                {
+                    return node.DocumentId.Value;
+                }
+            }
+
+            return null;
+        }
+    }
 }
 
 public sealed record DiffAnnotationHit(DiffNode Node, DiffAnnotation Annotation);
@@ -1274,7 +1481,13 @@ public sealed class DiffCanvasScene
     private readonly List<GraphEdge> edges;
     private ImmutableArray<GraphGroup> groups;
     private readonly ImmutableArray<DiffAnnotation> annotations;
+    private Dictionary<LineAnnotationKey, DiffAnnotation[]>? lineAnnotationsByTarget;
+    private Dictionary<DiffDocumentId, DiffAnnotation>? primaryNodeAnnotationsByDocumentId;
+    private Dictionary<DiffDocumentId, DiffNode>? nodesByDocumentId;
+    private DiffNode? focusedEditorNode;
     private int geometryVersion;
+    private int graphBoundsCacheVersion = -1;
+    private Rect2 graphBoundsCache;
 
     public DiffCanvasScene(
         IEnumerable<DiffNode> nodes,
@@ -1292,11 +1505,37 @@ public sealed class DiffCanvasScene
 
     public IReadOnlyList<DiffNode> Nodes => nodes;
 
-    public IEnumerable<DiffNode> SelectedNodes => nodes.Where(node => node.IsSelected);
+    public IEnumerable<DiffNode> SelectedNodes => EnumerateSelectedNodes();
 
-    public int SelectedNodeCount => nodes.Count(node => node.IsSelected);
+    public int SelectedNodeCount
+    {
+        get
+        {
+            var count = 0;
+            foreach (var node in nodes)
+            {
+                if (node.IsSelected)
+                {
+                    count++;
+                }
+            }
 
-    public bool HasFocusedEditor => nodes.Any(node => node.IsEditorFocused);
+            return count;
+        }
+    }
+
+    private IEnumerable<DiffNode> EnumerateSelectedNodes()
+    {
+        foreach (var node in nodes)
+        {
+            if (node.IsSelected)
+            {
+                yield return node;
+            }
+        }
+    }
+
+    public bool HasFocusedEditor => GetFocusedEditorNode() is not null;
 
     public IReadOnlyList<GraphEdge> Edges => edges;
 
@@ -1316,9 +1555,65 @@ public sealed class DiffCanvasScene
 
     public CameraState Camera { get; private set; } = CameraState.Default;
 
-    public Rect2 GraphBounds => Rect2.Union(nodes.Select(node => node.Bounds).Concat(groups.Select(group => group.Bounds)));
+    public Rect2 GraphBounds
+    {
+        get
+        {
+            if (graphBoundsCacheVersion != geometryVersion)
+            {
+                graphBoundsCache = CalculateGraphBounds(nodes, groups);
+                graphBoundsCacheVersion = geometryVersion;
+            }
+
+            return graphBoundsCache;
+        }
+    }
 
     public static double ScreenStableWorldLength(double cameraScale, double screenPixels) => screenPixels / Math.Max(cameraScale, 0.01);
+
+    private static Rect2 CalculateGraphBounds(IReadOnlyList<DiffNode> nodes, ImmutableArray<GraphGroup> groups)
+    {
+        var hasBounds = false;
+        var left = 0d;
+        var top = 0d;
+        var right = 0d;
+        var bottom = 0d;
+
+        foreach (var node in nodes)
+        {
+            IncludeBounds(node.Bounds, ref hasBounds, ref left, ref top, ref right, ref bottom);
+        }
+
+        foreach (var group in groups)
+        {
+            IncludeBounds(group.Bounds, ref hasBounds, ref left, ref top, ref right, ref bottom);
+        }
+
+        return hasBounds ? new Rect2(left, top, right - left, bottom - top) : Rect2.Empty;
+    }
+
+    private static void IncludeBounds(Rect2 bounds, ref bool hasBounds, ref double left, ref double top, ref double right, ref double bottom)
+    {
+        if (bounds.IsEmpty)
+        {
+            return;
+        }
+
+        if (!hasBounds)
+        {
+            left = bounds.Left;
+            top = bounds.Top;
+            right = bounds.Right;
+            bottom = bounds.Bottom;
+            hasBounds = true;
+            return;
+        }
+
+        left = Math.Min(left, bounds.Left);
+        top = Math.Min(top, bounds.Top);
+        right = Math.Max(right, bounds.Right);
+        bottom = Math.Max(bottom, bounds.Bottom);
+    }
 
     public void Pan(double deltaX, double deltaY) => Camera = Camera.Pan(deltaX, deltaY);
 
@@ -1341,7 +1636,12 @@ public sealed class DiffCanvasScene
 
     public void SetFullFileDocuments(IEnumerable<DiffNodeFullFileContent> fullFileContents)
     {
-        var contentsByDocumentId = fullFileContents.ToDictionary(content => content.DocumentId, content => content);
+        var contentsByDocumentId = new Dictionary<DiffDocumentId, DiffNodeFullFileContent>();
+        foreach (var content in fullFileContents)
+        {
+            contentsByDocumentId[content.DocumentId] = content;
+        }
+
         var changed = false;
         foreach (var node in nodes)
         {
@@ -1479,7 +1779,7 @@ public sealed class DiffCanvasScene
             var focus = ReferenceEquals(node, targetNode) && node.TrySetCaretFromWorldPoint(worldPoint);
             if (node.IsEditorFocused != focus)
             {
-                node.SetEditorFocus(focus);
+                SetNodeEditorFocus(node, focus);
                 changed = true;
             }
         }
@@ -1495,7 +1795,7 @@ public sealed class DiffCanvasScene
 
     public bool MoveFocusedEditorCaret(int lineDelta, int columnDelta)
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.MoveCaret(lineDelta, columnDelta) != true)
         {
             return false;
@@ -1507,7 +1807,7 @@ public sealed class DiffCanvasScene
 
     public bool MoveFocusedEditorCaretWord(int direction)
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.MoveCaretWord(direction) != true)
         {
             return false;
@@ -1519,7 +1819,7 @@ public sealed class DiffCanvasScene
 
     public bool SetFocusedEditorCaretColumn(int column)
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.SetCaretColumn(column) != true)
         {
             return false;
@@ -1531,7 +1831,7 @@ public sealed class DiffCanvasScene
 
     public bool MoveFocusedEditorCaretToDocumentStart()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.MoveCaretToDocumentStart() != true)
         {
             return false;
@@ -1543,7 +1843,7 @@ public sealed class DiffCanvasScene
 
     public bool MoveFocusedEditorCaretToDocumentEnd()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.MoveCaretToDocumentEnd() != true)
         {
             return false;
@@ -1555,7 +1855,7 @@ public sealed class DiffCanvasScene
 
     public bool MoveFocusedEditorCaretToSmartLineStart()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.MoveCaretToSmartLineStart() != true)
         {
             return false;
@@ -1567,7 +1867,7 @@ public sealed class DiffCanvasScene
 
     public bool InsertTextInFocusedEditor(string text)
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.InsertText(text) != true)
         {
             return false;
@@ -1579,7 +1879,7 @@ public sealed class DiffCanvasScene
 
     public bool InsertNewLineInFocusedEditor()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.InsertNewLine() != true)
         {
             return false;
@@ -1591,7 +1891,7 @@ public sealed class DiffCanvasScene
 
     public bool BackspaceInFocusedEditor()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.Backspace() != true)
         {
             return false;
@@ -1603,7 +1903,7 @@ public sealed class DiffCanvasScene
 
     public bool BackspaceWordInFocusedEditor()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.BackspaceWord() != true)
         {
             return false;
@@ -1615,7 +1915,7 @@ public sealed class DiffCanvasScene
 
     public bool DeleteInFocusedEditor()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.Delete() != true)
         {
             return false;
@@ -1627,7 +1927,7 @@ public sealed class DiffCanvasScene
 
     public bool DeleteWordInFocusedEditor()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.DeleteWord() != true)
         {
             return false;
@@ -1639,7 +1939,7 @@ public sealed class DiffCanvasScene
 
     public bool IndentFocusedEditorLine()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.IndentCurrentLine() != true)
         {
             return false;
@@ -1651,7 +1951,7 @@ public sealed class DiffCanvasScene
 
     public bool OutdentFocusedEditorLine()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.OutdentCurrentLine() != true)
         {
             return false;
@@ -1663,7 +1963,7 @@ public sealed class DiffCanvasScene
 
     public bool DuplicateFocusedEditorLine()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.DuplicateCurrentLine() != true)
         {
             return false;
@@ -1675,7 +1975,7 @@ public sealed class DiffCanvasScene
 
     public bool DeleteFocusedEditorLine()
     {
-        var node = nodes.FirstOrDefault(node => node.IsEditorFocused);
+        var node = GetFocusedEditorNode();
         if (node?.DeleteCurrentLine() != true)
         {
             return false;
@@ -1730,7 +2030,7 @@ public sealed class DiffCanvasScene
     }
 
     private DiffNode? FindNode(string documentId) =>
-        nodes.FirstOrDefault(node => string.Equals(node.DiffDocument.Id.Value, documentId, StringComparison.Ordinal));
+        GetNodesByDocumentId().TryGetValue(new DiffDocumentId(documentId), out var node) ? node : null;
 
     public bool TryHitTestResizeHandle(Point2 screenPoint, out DiffNode? node, out DiffNodeResizeHandle handle)
     {
@@ -1873,10 +2173,28 @@ public sealed class DiffCanvasScene
         return false;
     }
 
-    public GraphGroup? FindGroupForNode(DiffNode node) => groups
-        .Where(group => GetGroupNodes(group).Contains(node))
-        .OrderBy(group => group.Bounds.Width * group.Bounds.Height)
-        .FirstOrDefault();
+    public GraphGroup? FindGroupForNode(DiffNode node)
+    {
+        GraphGroup? bestGroup = null;
+        var bestArea = double.PositiveInfinity;
+
+        foreach (var group in groups)
+        {
+            if (!GroupContainsNode(group, node))
+            {
+                continue;
+            }
+
+            var area = group.Bounds.Width * group.Bounds.Height;
+            if (area < bestArea)
+            {
+                bestGroup = group;
+                bestArea = area;
+            }
+        }
+
+        return bestGroup;
+    }
 
     public bool SetHoveredAnnotation(DiffAnnotation? annotation)
     {
@@ -1905,7 +2223,7 @@ public sealed class DiffCanvasScene
         foreach (var node in nodes)
         {
             node.IsSelected = false;
-            node.SetEditorFocus(false);
+            SetNodeEditorFocus(node, false);
         }
     }
 
@@ -1950,19 +2268,24 @@ public sealed class DiffCanvasScene
 
     public int SelectNodesInRect(Rect2 worldRect, DiffNodeSelectionMode mode)
     {
-        var matchingNodes = nodes
-            .Where(node => node.Bounds.Intersects(worldRect))
-            .ToArray();
+        var matchingNodes = new List<DiffNode>();
+        foreach (var node in nodes)
+        {
+            if (node.Bounds.Intersects(worldRect))
+            {
+                matchingNodes.Add(node);
+            }
+        }
 
         ApplySelection(matchingNodes, mode);
-        return matchingNodes.Length;
+        return matchingNodes.Count;
     }
 
     public int SelectGroupNodes(GraphGroup group, DiffNodeSelectionMode mode)
     {
-        var groupNodes = GetGroupNodes(group).ToArray();
+        var groupNodes = GetGroupNodeList(group);
         ApplySelection(groupNodes, mode);
-        return groupNodes.Length;
+        return groupNodes.Count;
     }
 
     public int SelectConnectedNodes(DiffNode node, DiffNodeSelectionMode mode, DiffNodeSelectionScope scope = DiffNodeSelectionScope.Connected)
@@ -1982,11 +2305,17 @@ public sealed class DiffCanvasScene
             }
         }
 
-        var connectedNodes = nodes
-            .Where(candidate => selectedIds.Contains(candidate.DiffDocument.Id.Value))
-            .ToArray();
+        var connectedNodes = new List<DiffNode>(selectedIds.Count);
+        foreach (var candidate in nodes)
+        {
+            if (selectedIds.Contains(candidate.DiffDocument.Id.Value))
+            {
+                connectedNodes.Add(candidate);
+            }
+        }
+
         ApplySelection(connectedNodes, mode);
-        return connectedNodes.Length;
+        return connectedNodes.Count;
     }
 
     public void MoveNode(DiffNode node, double deltaX, double deltaY)
@@ -2003,18 +2332,20 @@ public sealed class DiffCanvasScene
             return false;
         }
 
-        var selectedNodes = nodes
-            .Where(node => node.IsSelected)
-            .ToArray();
-        if (selectedNodes.Length == 0)
+        var moved = false;
+        foreach (var node in nodes)
         {
-            return false;
+            if (node.IsSelected)
+            {
+                node.Bounds = node.Bounds.Translate(deltaX, deltaY);
+                node.IsPinned = true;
+                moved = true;
+            }
         }
 
-        foreach (var node in selectedNodes)
+        if (!moved)
         {
-            node.Bounds = node.Bounds.Translate(deltaX, deltaY);
-            node.IsPinned = true;
+            return false;
         }
 
         geometryVersion++;
@@ -2050,7 +2381,7 @@ public sealed class DiffCanvasScene
             return null;
         }
 
-        foreach (var node in GetGroupNodes(groups[groupIndex]))
+        foreach (var node in GetGroupNodeList(groups[groupIndex]))
         {
             node.Bounds = node.Bounds.Translate(deltaX, deltaY);
             node.IsPinned = true;
@@ -2175,10 +2506,12 @@ public sealed class DiffCanvasScene
 
     public void TogglePinned(DiffNode node) => node.IsPinned = !node.IsPinned;
 
-    public DiffCanvasSceneViewState CaptureViewState() => new(
-        Camera,
-        nodes
-            .Select(node => new DiffNodeViewState(
+    public DiffCanvasSceneViewState CaptureViewState()
+    {
+        var builder = ImmutableArray.CreateBuilder<DiffNodeViewState>(nodes.Count);
+        foreach (var node in nodes)
+        {
+            builder.Add(new DiffNodeViewState(
                 node.DiffDocument.Id,
                 node.Bounds,
                 node.ScrollOffsetY,
@@ -2188,13 +2521,21 @@ public sealed class DiffCanvasScene
                 node.FullFileViewOverride,
                 node.EditingOverride,
                 node.CaretLineIndex,
-                node.CaretColumn))
-            .ToImmutableArray());
+                node.CaretColumn));
+        }
+
+        return new DiffCanvasSceneViewState(Camera, builder.ToImmutable());
+    }
 
     public void ApplyViewState(DiffCanvasSceneViewState viewState)
     {
         Camera = viewState.Camera;
-        var nodesByDocumentId = viewState.Nodes.ToDictionary(node => node.DocumentId);
+        var nodesByDocumentId = new Dictionary<DiffDocumentId, DiffNodeViewState>(viewState.Nodes.Length);
+        foreach (var nodeState in viewState.Nodes)
+        {
+            nodesByDocumentId[nodeState.DocumentId] = nodeState;
+        }
+
         foreach (var node in nodes)
         {
             if (!nodesByDocumentId.TryGetValue(node.Document.Id, out var nodeState))
@@ -2265,18 +2606,65 @@ public sealed class DiffCanvasScene
         }
     }
 
-    private static void SetNodeSelected(DiffNode node, bool isSelected)
+    private void SetNodeSelected(DiffNode node, bool isSelected)
     {
         node.IsSelected = isSelected;
         if (!isSelected)
         {
-            node.SetEditorFocus(false);
+            SetNodeEditorFocus(node, false);
         }
     }
 
-    public ImmutableArray<DiffNodeLayout> GetCurrentLayout() => nodes
-        .Select(node => new DiffNodeLayout(node.DiffDocument.Id, node.Bounds, node.IsPinned, node.FontSize))
-        .ToImmutableArray();
+    private DiffNode? GetFocusedEditorNode()
+    {
+        if (focusedEditorNode?.IsEditorFocused == true)
+        {
+            return focusedEditorNode;
+        }
+
+        focusedEditorNode = null;
+        foreach (var node in nodes)
+        {
+            if (node.IsEditorFocused)
+            {
+                focusedEditorNode = node;
+                return node;
+            }
+        }
+
+        return null;
+    }
+
+    private void SetNodeEditorFocus(DiffNode node, bool isFocused)
+    {
+        node.SetEditorFocus(isFocused);
+        if (node.IsEditorFocused)
+        {
+            if (!ReferenceEquals(focusedEditorNode, node) && focusedEditorNode is { } previousFocusedNode)
+            {
+                previousFocusedNode.SetEditorFocus(false);
+            }
+
+            focusedEditorNode = node;
+            return;
+        }
+
+        if (ReferenceEquals(focusedEditorNode, node))
+        {
+            focusedEditorNode = null;
+        }
+    }
+
+    public ImmutableArray<DiffNodeLayout> GetCurrentLayout()
+    {
+        var builder = ImmutableArray.CreateBuilder<DiffNodeLayout>(nodes.Count);
+        foreach (var node in nodes)
+        {
+            builder.Add(new DiffNodeLayout(node.DiffDocument.Id, node.Bounds, node.IsPinned, node.FontSize));
+        }
+
+        return builder.ToImmutable();
+    }
 
     public void ApplyLayout(GraphLayoutResult layoutResult)
     {
@@ -2285,7 +2673,12 @@ public sealed class DiffCanvasScene
             return;
         }
 
-        var layoutByDocumentId = layoutResult.Nodes.ToDictionary(node => node.DocumentId);
+        var layoutByDocumentId = new Dictionary<DiffDocumentId, DiffNodeLayout>(layoutResult.Nodes.Length);
+        foreach (var layoutNode in layoutResult.Nodes)
+        {
+            layoutByDocumentId[layoutNode.DocumentId] = layoutNode;
+        }
+
         foreach (var node in nodes)
         {
             if (!layoutByDocumentId.TryGetValue(node.DiffDocument.Id, out var layoutNode))
@@ -2303,10 +2696,19 @@ public sealed class DiffCanvasScene
         geometryVersion++;
     }
 
-    public ImmutableHashSet<DiffDocumentId> GetPinnedDocumentIds() => nodes
-        .Where(node => node.IsPinned)
-        .Select(node => node.DiffDocument.Id)
-        .ToImmutableHashSet();
+    public ImmutableHashSet<DiffDocumentId> GetPinnedDocumentIds()
+    {
+        var builder = ImmutableHashSet.CreateBuilder<DiffDocumentId>();
+        foreach (var node in nodes)
+        {
+            if (node.IsPinned)
+            {
+                builder.Add(node.DiffDocument.Id);
+            }
+        }
+
+        return builder.ToImmutable();
+    }
 
     private bool TryHitTestLineAnnotation(DiffNode node, Point2 worldPoint, out DiffAnnotation annotation)
     {
@@ -2325,15 +2727,7 @@ public sealed class DiffCanvasScene
         }
 
         var lineIndex = rows[0].LineIndex;
-        var lineAnnotations = annotations
-            .Where(candidate =>
-                candidate.DocumentId == node.Document.Id &&
-                candidate.Target == DiffAnnotationTarget.Line &&
-                candidate.LineIndex == lineIndex &&
-                AnnotationVisibility.IsVisible(candidate.Kind))
-            .OrderBy(AnnotationPriority)
-            .ToArray();
-        if (lineAnnotations.Length == 0)
+        if (!TryGetVisibleLineAnnotationAt(node.Document.Id, lineIndex, 0, out var primary))
         {
             return false;
         }
@@ -2343,18 +2737,17 @@ public sealed class DiffCanvasScene
         var markerZoneLeft = body.Right - 132;
         var markerIndex = (int)Math.Floor((relativeY - 4) / 9);
         var isInMarkerDot = markerIndex >= 0 &&
-            markerIndex < Math.Min(4, lineAnnotations.Length) &&
+            markerIndex < 4 &&
             relativeY >= 4 + markerIndex * 9 &&
             relativeY <= 11 + markerIndex * 9 &&
             worldPoint.X >= body.Right - 18 &&
             worldPoint.X <= body.Right - 5;
-        if (isInMarkerDot)
+        if (isInMarkerDot && TryGetVisibleLineAnnotationAt(node.Document.Id, lineIndex, markerIndex, out var markerAnnotation))
         {
-            annotation = lineAnnotations[markerIndex];
+            annotation = markerAnnotation;
             return true;
         }
 
-        var primary = lineAnnotations[0];
         var isInteractiveBand = primary.Kind is DiffAnnotationKind.Navigation or DiffAnnotationKind.ParserDiagnostic or DiffAnnotationKind.Conflict or DiffAnnotationKind.Impact or DiffAnnotationKind.ReviewComment;
         if (worldPoint.X >= markerZoneLeft || isInteractiveBand)
         {
@@ -2374,20 +2767,132 @@ public sealed class DiffCanvasScene
             return false;
         }
 
-        var nodeAnnotations = annotations
-            .Where(candidate =>
-                candidate.DocumentId == node.Document.Id &&
-                candidate.Target == DiffAnnotationTarget.Node &&
-                AnnotationVisibility.IsVisible(candidate.Kind))
-            .OrderBy(AnnotationPriority)
-            .ToArray();
-        if (nodeAnnotations.Length == 0)
+        return TryGetPrimaryNodeAnnotation(node.Document.Id, out annotation);
+    }
+
+    private bool TryGetVisibleLineAnnotationAt(DiffDocumentId documentId, int lineIndex, int orderedIndex, out DiffAnnotation annotation)
+    {
+        annotation = default!;
+        if (orderedIndex is < 0 or >= 4)
         {
             return false;
         }
 
-        annotation = nodeAnnotations[0];
+        var lineAnnotations = GetLineAnnotations(documentId, lineIndex);
+        if (orderedIndex >= lineAnnotations.Length)
+        {
+            return false;
+        }
+
+        annotation = lineAnnotations[orderedIndex];
         return true;
+    }
+
+    private DiffAnnotation[] GetLineAnnotations(DiffDocumentId documentId, int lineIndex)
+    {
+        var key = new LineAnnotationKey(documentId, lineIndex);
+        return GetLineAnnotationsByTarget().TryGetValue(key, out var lineAnnotations)
+            ? lineAnnotations
+            : Array.Empty<DiffAnnotation>();
+    }
+
+    private Dictionary<LineAnnotationKey, DiffAnnotation[]> GetLineAnnotationsByTarget()
+    {
+        if (lineAnnotationsByTarget is not null)
+        {
+            return lineAnnotationsByTarget;
+        }
+
+        var grouped = new Dictionary<LineAnnotationKey, List<AnnotationIndexEntry>>();
+        for (var annotationIndex = 0; annotationIndex < annotations.Length; annotationIndex++)
+        {
+            var annotation = annotations[annotationIndex];
+            if (annotation.Target != DiffAnnotationTarget.Line ||
+                annotation.LineIndex is not { } lineIndex ||
+                !AnnotationVisibility.IsVisible(annotation.Kind))
+            {
+                continue;
+            }
+
+            var key = new LineAnnotationKey(annotation.DocumentId, lineIndex);
+            if (!grouped.TryGetValue(key, out var entries))
+            {
+                entries = [];
+                grouped[key] = entries;
+            }
+
+            entries.Add(new AnnotationIndexEntry(annotation, annotationIndex));
+        }
+
+        var result = new Dictionary<LineAnnotationKey, DiffAnnotation[]>(grouped.Count);
+        foreach (var (key, entries) in grouped)
+        {
+            entries.Sort(CompareAnnotationEntries);
+            var orderedAnnotations = new DiffAnnotation[entries.Count];
+            for (var index = 0; index < entries.Count; index++)
+            {
+                orderedAnnotations[index] = entries[index].Annotation;
+            }
+
+            result[key] = orderedAnnotations;
+        }
+
+        lineAnnotationsByTarget = result;
+        return result;
+    }
+
+    private bool TryGetPrimaryNodeAnnotation(DiffDocumentId documentId, out DiffAnnotation annotation)
+    {
+        return GetPrimaryNodeAnnotationsByDocumentId().TryGetValue(documentId, out annotation!);
+    }
+
+    private Dictionary<DiffDocumentId, DiffAnnotation> GetPrimaryNodeAnnotationsByDocumentId()
+    {
+        if (primaryNodeAnnotationsByDocumentId is not null)
+        {
+            return primaryNodeAnnotationsByDocumentId;
+        }
+
+        var bestByDocumentId = new Dictionary<DiffDocumentId, AnnotationIndexEntry>();
+        for (var annotationIndex = 0; annotationIndex < annotations.Length; annotationIndex++)
+        {
+            var annotation = annotations[annotationIndex];
+            if (annotation.Target != DiffAnnotationTarget.Node ||
+                !AnnotationVisibility.IsVisible(annotation.Kind))
+            {
+                continue;
+            }
+
+            var entry = new AnnotationIndexEntry(annotation, annotationIndex);
+            if (!bestByDocumentId.TryGetValue(annotation.DocumentId, out var existing) ||
+                CompareAnnotationEntries(entry, existing) < 0)
+            {
+                bestByDocumentId[annotation.DocumentId] = entry;
+            }
+        }
+
+        var result = new Dictionary<DiffDocumentId, DiffAnnotation>(bestByDocumentId.Count);
+        foreach (var (documentId, entry) in bestByDocumentId)
+        {
+            result[documentId] = entry.Annotation;
+        }
+
+        primaryNodeAnnotationsByDocumentId = result;
+        return result;
+    }
+
+    private static int CompareAnnotationEntries(AnnotationIndexEntry left, AnnotationIndexEntry right)
+    {
+        var priority = AnnotationPriority(left.Annotation).CompareTo(AnnotationPriority(right.Annotation));
+        if (priority != 0)
+        {
+            return priority;
+        }
+
+        var idComparison = string.CompareOrdinal(left.Annotation.Id, right.Annotation.Id);
+        return idComparison != 0
+            ? idComparison
+            : left.Index.CompareTo(right.Index);
     }
 
     private static int AnnotationPriority(DiffAnnotation annotation) => AnnotationPriority(annotation.Kind);
@@ -2406,6 +2911,10 @@ public sealed class DiffCanvasScene
         DiffAnnotationKind.GitStatus => 9,
         _ => 10
     };
+
+    private readonly record struct LineAnnotationKey(DiffDocumentId DocumentId, int LineIndex);
+
+    private readonly record struct AnnotationIndexEntry(DiffAnnotation Annotation, int Index);
 
     public DiffCanvasScene WithAnnotations(ImmutableArray<DiffAnnotation> nextAnnotations, DiffAnnotationVisibilityState annotationVisibility)
     {
@@ -2431,29 +2940,67 @@ public sealed class DiffCanvasScene
     {
         var nodeWidth = 620.0;
         var nodeHeight = 420.0;
-        var layoutByDocumentId = layoutResult?.Nodes.ToDictionary(node => node.DocumentId, node => node);
-        var nodes = documents.Select((document, index) =>
+        Dictionary<DiffDocumentId, DiffNodeLayout>? layoutByDocumentId = null;
+        if (layoutResult is { Nodes.IsDefaultOrEmpty: false })
         {
+            layoutByDocumentId = new Dictionary<DiffDocumentId, DiffNodeLayout>(layoutResult.Nodes.Length);
+            foreach (var layoutNode in layoutResult.Nodes)
+            {
+                layoutByDocumentId[layoutNode.DocumentId] = layoutNode;
+            }
+        }
+
+        var nodes = new DiffNode[documents.Length];
+        var fallbackColumns = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(documents.Length)));
+        for (var index = 0; index < documents.Length; index++)
+        {
+            var document = documents[index];
             if (layoutByDocumentId is not null && layoutByDocumentId.TryGetValue(document.Id, out var layoutNode))
             {
                 var bounds = layoutNode.Bounds;
-                return new DiffNode(document, bounds.Width > 0 && bounds.Height > 0 ? bounds : bounds with { Width = nodeWidth, Height = nodeHeight }, layoutNode.IsPinned, layoutNode.FontSize);
+                nodes[index] = new DiffNode(document, bounds.Width > 0 && bounds.Height > 0 ? bounds : bounds with { Width = nodeWidth, Height = nodeHeight }, layoutNode.IsPinned, layoutNode.FontSize);
+                continue;
             }
 
-            var column = index % Math.Max(1, (int)Math.Ceiling(Math.Sqrt(documents.Length)));
-            var row = index / Math.Max(1, (int)Math.Ceiling(Math.Sqrt(documents.Length)));
-            return new DiffNode(document, new Rect2(column * 700, row * 500, nodeWidth, nodeHeight));
-        }).ToArray();
+            var column = index % fallbackColumns;
+            var row = index / fallbackColumns;
+            nodes[index] = new DiffNode(document, new Rect2(column * 700, row * 500, nodeWidth, nodeHeight));
+        }
 
-        var documentIds = documents.Select(document => document.Id.Value).ToHashSet(StringComparer.Ordinal);
-        var anchorsById = semanticGraph?.Anchors.ToDictionary(anchor => anchor.Id, StringComparer.Ordinal) ?? [];
+        var documentIds = new HashSet<string>(documents.Length, StringComparer.Ordinal);
+        foreach (var document in documents)
+        {
+            documentIds.Add(document.Id.Value);
+        }
+
+        Dictionary<string, SemanticAnchor> anchorsById = [];
+        if (semanticGraph is not null)
+        {
+            anchorsById = new Dictionary<string, SemanticAnchor>(semanticGraph.Anchors.Length, StringComparer.Ordinal);
+            foreach (var anchor in semanticGraph.Anchors)
+            {
+                anchorsById[anchor.Id] = anchor;
+            }
+        }
         var options = edgeOptions ?? new EdgeProjectionOptions();
-        var projectedEdges = semanticGraph?.Edges
-            .Where(edge => IsIncluded(edge, options))
-            .Select(edge => TryCreateGraphEdge(edge, anchorsById, documentIds))
-            .Where(edge => edge is not null)
-            .Cast<GraphEdge>() ?? [];
-        var edges = BundleEdges(projectedEdges, options).ToArray();
+        var projectedEdges = new List<GraphEdge>();
+        if (semanticGraph is not null)
+        {
+            foreach (var semanticEdge in semanticGraph.Edges)
+            {
+                if (!IsIncluded(semanticEdge, options))
+                {
+                    continue;
+                }
+
+                if (TryCreateGraphEdge(semanticEdge, anchorsById, documentIds) is { } graphEdge)
+                {
+                    projectedEdges.Add(graphEdge);
+                }
+            }
+        }
+
+        var edges = BundleEdges(projectedEdges, options);
         var groups = BuildGroups(groupingMode, nodes, semanticGraph);
 
         return new DiffCanvasScene(nodes, edges, groups, annotations, annotationVisibility);
@@ -2466,34 +3013,93 @@ public sealed class DiffCanvasScene
             return [];
         }
 
-        var anchorsByDocumentId = semanticGraph?.Anchors
-            .GroupBy(anchor => anchor.DocumentId)
-            .ToDictionary(group => group.Key, group => group.ToArray()) ?? [];
-        var groups = nodes
-            .Select(node => (Node: node, Key: CreateGroupKey(groupingMode, node.DiffDocument, anchorsByDocumentId.GetValueOrDefault(node.DiffDocument.Id) ?? [])))
-            .Where(item => !string.IsNullOrWhiteSpace(item.Key.Id))
-            .GroupBy(item => item.Key)
-            .Where(group => group.Count() >= 2)
-            .Select(group => CreateGraphGroup(groupingMode, group.Key, group.Select(item => item.Node).ToArray()))
-            .OrderByDescending(group => group.DocumentCount)
-            .ThenBy(group => group.Label, StringComparer.OrdinalIgnoreCase)
-            .ToImmutableArray();
-        return groups;
+        Dictionary<DiffDocumentId, List<SemanticAnchor>>? anchorsByDocumentId = null;
+        if (semanticGraph is { Anchors.IsDefaultOrEmpty: false })
+        {
+            anchorsByDocumentId = new Dictionary<DiffDocumentId, List<SemanticAnchor>>();
+            foreach (var anchor in semanticGraph.Anchors)
+            {
+                if (!anchorsByDocumentId.TryGetValue(anchor.DocumentId, out var anchors))
+                {
+                    anchors = [];
+                    anchorsByDocumentId[anchor.DocumentId] = anchors;
+                }
+
+                anchors.Add(anchor);
+            }
+        }
+
+        var groupedNodes = new Dictionary<GraphGroupKey, List<DiffNode>>();
+        foreach (var node in nodes)
+        {
+            IReadOnlyList<SemanticAnchor> anchors = anchorsByDocumentId is not null && anchorsByDocumentId.TryGetValue(node.DiffDocument.Id, out var documentAnchors)
+                ? documentAnchors
+                : Array.Empty<SemanticAnchor>();
+            var key = CreateGroupKey(groupingMode, node.DiffDocument, anchors);
+            if (string.IsNullOrWhiteSpace(key.Id))
+            {
+                continue;
+            }
+
+            if (!groupedNodes.TryGetValue(key, out var groupNodes))
+            {
+                groupNodes = [];
+                groupedNodes[key] = groupNodes;
+            }
+
+            groupNodes.Add(node);
+        }
+
+        var groups = new List<GraphGroup>(groupedNodes.Count);
+        foreach (var group in groupedNodes)
+        {
+            if (group.Value.Count >= 2)
+            {
+                groups.Add(CreateGraphGroup(groupingMode, group.Key, group.Value));
+            }
+        }
+
+        groups.Sort(CompareGraphGroups);
+        return groups.ToImmutableArray();
     }
 
     private static GraphGroup CreateGraphGroup(GraphGroupingMode mode, GraphGroupKey key, IReadOnlyList<DiffNode> nodes)
     {
-        var bounds = ExpandGroupBounds(Rect2.Union(nodes.Select(node => node.Bounds)));
+        var hasBounds = false;
+        var left = 0d;
+        var top = 0d;
+        var right = 0d;
+        var bottom = 0d;
+        var addedLines = 0;
+        var deletedLines = 0;
+        var documentIds = ImmutableArray.CreateBuilder<DiffDocumentId>(nodes.Count);
+        foreach (var node in nodes)
+        {
+            IncludeBounds(node.Bounds, ref hasBounds, ref left, ref top, ref right, ref bottom);
+            addedLines += node.DiffDocument.Metadata.AddedLines;
+            deletedLines += node.DiffDocument.Metadata.DeletedLines;
+            documentIds.Add(node.DiffDocument.Id);
+        }
+
+        var bounds = hasBounds ? ExpandGroupBounds(new Rect2(left, top, right - left, bottom - top)) : Rect2.Empty;
         return new GraphGroup(
             $"{mode}:{key.Id}",
             mode,
             key.Label,
             bounds,
             nodes.Count,
-            nodes.Sum(node => node.DiffDocument.Metadata.AddedLines),
-            nodes.Sum(node => node.DiffDocument.Metadata.DeletedLines),
+            addedLines,
+            deletedLines,
             key.ColorIndex,
-            nodes.Select(node => node.DiffDocument.Id).ToImmutableArray());
+            documentIds.ToImmutable());
+    }
+
+    private static int CompareGraphGroups(GraphGroup left, GraphGroup right)
+    {
+        var countComparison = right.DocumentCount.CompareTo(left.DocumentCount);
+        return countComparison != 0
+            ? countComparison
+            : string.Compare(left.Label, right.Label, StringComparison.OrdinalIgnoreCase);
     }
 
     private static Rect2 ExpandGroupBounds(Rect2 bounds) => bounds.IsEmpty
@@ -2507,22 +3113,43 @@ public sealed class DiffCanvasScene
             return;
         }
 
-        var nodesByDocumentId = nodes.ToDictionary(node => node.DiffDocument.Id);
-        groups = groups
-            .Select(group =>
+        var nodesByDocumentId = GetNodesByDocumentId();
+        var builder = ImmutableArray.CreateBuilder<GraphGroup>(groups.Length);
+        foreach (var group in groups)
+        {
+            var hasBounds = false;
+            var left = 0d;
+            var top = 0d;
+            var right = 0d;
+            var bottom = 0d;
+
+            if (group.DocumentIds.IsDefaultOrEmpty)
             {
-                var groupNodes = group.DocumentIds.IsDefaultOrEmpty
-                    ? nodes.Where(node => group.Bounds.Intersects(node.Bounds)).ToArray()
-                    : group.DocumentIds
-                        .Select(documentId => nodesByDocumentId.GetValueOrDefault(documentId))
-                        .Where(node => node is not null)
-                        .Cast<DiffNode>()
-                        .ToArray();
-                return groupNodes.Length == 0
-                    ? group
-                    : group with { Bounds = ExpandGroupBounds(Rect2.Union(groupNodes.Select(node => node.Bounds))) };
-            })
-            .ToImmutableArray();
+                foreach (var node in nodes)
+                {
+                    if (group.Bounds.Intersects(node.Bounds))
+                    {
+                        IncludeBounds(node.Bounds, ref hasBounds, ref left, ref top, ref right, ref bottom);
+                    }
+                }
+            }
+            else
+            {
+                foreach (var documentId in group.DocumentIds)
+                {
+                    if (nodesByDocumentId.TryGetValue(documentId, out var node))
+                    {
+                        IncludeBounds(node.Bounds, ref hasBounds, ref left, ref top, ref right, ref bottom);
+                    }
+                }
+            }
+
+            builder.Add(hasBounds
+                ? group with { Bounds = ExpandGroupBounds(new Rect2(left, top, right - left, bottom - top)) }
+                : group);
+        }
+
+        groups = builder.ToImmutable();
     }
 
     private static GraphGroupKey CreateGroupKey(GraphGroupingMode groupingMode, DiffDocumentSnapshot document, IReadOnlyList<SemanticAnchor> anchors) => groupingMode switch
@@ -2536,18 +3163,43 @@ public sealed class DiffCanvasScene
 
     private static GraphGroupKey CreateFolderGroupKey(string path)
     {
-        var normalizedPath = path.Replace('\\', '/');
-        var segments = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var label = segments.Length switch
+        var pathSpan = path.AsSpan();
+        var segmentIndex = 0;
+        if (!TryReadPathSegment(pathSpan, ref segmentIndex, out var firstSegment))
         {
-            0 => "Repository root",
-            1 => "Repository root",
-            >= 2 when IsSourceRoot(segments[0]) => $"{segments[0]}/{segments[1]}",
-            _ => segments[0]
-        };
+            return CreateStableGroupKey("folder:Repository root", "Repository root");
+        }
+
+        if (!TryReadPathSegment(pathSpan, ref segmentIndex, out var secondSegment))
+        {
+            return CreateStableGroupKey("folder:Repository root", "Repository root");
+        }
+
+        var label = IsSourceRoot(firstSegment)
+            ? string.Concat(firstSegment.ToString(), "/", secondSegment.ToString())
+            : firstSegment.ToString();
 
         return CreateStableGroupKey($"folder:{label}", label);
     }
+
+    private static bool TryReadPathSegment(ReadOnlySpan<char> path, ref int index, out ReadOnlySpan<char> segment)
+    {
+        while (index < path.Length && IsPathSeparator(path[index]))
+        {
+            index++;
+        }
+
+        var start = index;
+        while (index < path.Length && !IsPathSeparator(path[index]))
+        {
+            index++;
+        }
+
+        segment = path[start..index].Trim();
+        return !segment.IsEmpty;
+    }
+
+    private static bool IsPathSeparator(char value) => value is '/' or '\\';
 
     private static GraphGroupKey CreateSemanticGroupKey(DiffDocumentSnapshot document, IReadOnlyList<SemanticAnchor> anchors)
     {
@@ -2565,17 +3217,31 @@ public sealed class DiffCanvasScene
             return CreateStableGroupKey("semantic:tests", "Tests");
         }
 
-        if (anchors.Any(anchor => anchor.Kind is SemanticAnchorKind.XamlRoot or SemanticAnchorKind.XamlName) || document.Metadata.Language.Contains("XAML", StringComparison.OrdinalIgnoreCase))
+        var hasXamlAnchor = false;
+        var hasResourceAnchor = false;
+        var hasCSharpAnchor = false;
+        foreach (var anchor in anchors)
+        {
+            hasXamlAnchor |= anchor.Kind is SemanticAnchorKind.XamlRoot or SemanticAnchorKind.XamlName;
+            hasResourceAnchor |= anchor.Kind == SemanticAnchorKind.Resource;
+            hasCSharpAnchor |= anchor.Kind is SemanticAnchorKind.Type or SemanticAnchorKind.Member or SemanticAnchorKind.Namespace;
+            if (hasXamlAnchor && hasResourceAnchor && hasCSharpAnchor)
+            {
+                break;
+            }
+        }
+
+        if (hasXamlAnchor || document.Metadata.Language.Contains("XAML", StringComparison.OrdinalIgnoreCase))
         {
             return CreateStableGroupKey("semantic:xaml", "UI/XAML");
         }
 
-        if (anchors.Any(anchor => anchor.Kind == SemanticAnchorKind.Resource))
+        if (hasResourceAnchor)
         {
             return CreateStableGroupKey("semantic:resources", "Resources");
         }
 
-        if (anchors.Any(anchor => anchor.Kind is SemanticAnchorKind.Type or SemanticAnchorKind.Member or SemanticAnchorKind.Namespace) || string.Equals(document.Metadata.Language, "C#", StringComparison.OrdinalIgnoreCase))
+        if (hasCSharpAnchor || string.Equals(document.Metadata.Language, "C#", StringComparison.OrdinalIgnoreCase))
         {
             return CreateStableGroupKey("semantic:csharp", "C# symbols");
         }
@@ -2599,7 +3265,7 @@ public sealed class DiffCanvasScene
         string.Equals(fileName, "Directory.Build.props", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(fileName, "Directory.Build.targets", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsSourceRoot(string segment) =>
+    private static bool IsSourceRoot(ReadOnlySpan<char> segment) =>
         segment.Equals("src", StringComparison.OrdinalIgnoreCase) ||
         segment.Equals("tests", StringComparison.OrdinalIgnoreCase) ||
         segment.Equals("test", StringComparison.OrdinalIgnoreCase) ||
@@ -2610,15 +3276,67 @@ public sealed class DiffCanvasScene
 
     private static GraphGroupKey CreateStableGroupKey(string id, string label) => new(id, label, StableColorIndex(id));
 
-    private IEnumerable<DiffNode> GetGroupNodes(GraphGroup group)
+    private bool GroupContainsNode(GraphGroup group, DiffNode node)
     {
-        if (!group.DocumentIds.IsDefaultOrEmpty)
+        if (group.DocumentIds.IsDefaultOrEmpty)
         {
-            var documentIds = group.DocumentIds.ToHashSet();
-            return nodes.Where(node => documentIds.Contains(node.Document.Id));
+            return group.Bounds.Contains(node.Bounds.Center);
         }
 
-        return nodes.Where(node => group.Bounds.Contains(node.Bounds.Center));
+        foreach (var documentId in group.DocumentIds)
+        {
+            if (documentId == node.DiffDocument.Id)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private List<DiffNode> GetGroupNodeList(GraphGroup group)
+    {
+        var result = new List<DiffNode>(group.DocumentIds.IsDefaultOrEmpty ? 8 : group.DocumentIds.Length);
+        if (group.DocumentIds.IsDefaultOrEmpty)
+        {
+            foreach (var node in nodes)
+            {
+                if (group.Bounds.Contains(node.Bounds.Center))
+                {
+                    result.Add(node);
+                }
+            }
+
+            return result;
+        }
+
+        var map = GetNodesByDocumentId();
+        foreach (var documentId in group.DocumentIds)
+        {
+            if (map.TryGetValue(documentId, out var node))
+            {
+                result.Add(node);
+            }
+        }
+
+        return result;
+    }
+
+    private IReadOnlyDictionary<DiffDocumentId, DiffNode> GetNodesByDocumentId()
+    {
+        if (nodesByDocumentId is { Count: var count } cached && count == nodes.Count)
+        {
+            return cached;
+        }
+
+        var map = new Dictionary<DiffDocumentId, DiffNode>(nodes.Count);
+        foreach (var node in nodes)
+        {
+            map[node.DiffDocument.Id] = node;
+        }
+
+        nodesByDocumentId = map;
+        return map;
     }
 
     private static int StableColorIndex(string value)
@@ -2654,31 +3372,132 @@ public sealed class DiffCanvasScene
         return options.IncludedEdgeKinds is null || options.IncludedEdgeKinds.Contains(edge.Kind);
     }
 
-    private static IEnumerable<GraphEdge> BundleEdges(IEnumerable<GraphEdge> edges, EdgeProjectionOptions options)
+    private static GraphEdge[] BundleEdges(IEnumerable<GraphEdge> edges, EdgeProjectionOptions options)
     {
+        var maxPerPair = Math.Max(1, options.MaxEdgesPerDocumentPair);
         if (!options.BundleParallelEdges)
         {
-            return edges
-                .OrderByDescending(edge => edge.Confidence)
-                .Take(Math.Max(1, options.MaxEdgesPerDocumentPair));
+            var selected = new List<GraphEdge>();
+            foreach (var edge in edges)
+            {
+                selected.Add(edge);
+            }
+
+            if (selected.Count == 0)
+            {
+                return [];
+            }
+
+            selected.Sort(CompareGraphEdgesByConfidence);
+            if (selected.Count <= maxPerPair)
+            {
+                return selected.ToArray();
+            }
+
+            var result = new GraphEdge[maxPerPair];
+            selected.CopyTo(0, result, 0, maxPerPair);
+            return result;
         }
 
-        return edges
-            .GroupBy(edge => (edge.SourceNodeId, edge.TargetNodeId))
-            .SelectMany(group => group
-                .GroupBy(edge => edge.Kind)
-                .Select(kindGroup => CreateBundledEdge(kindGroup))
-                .OrderByDescending(edge => edge.Confidence)
-                .Take(Math.Max(1, options.MaxEdgesPerDocumentPair)));
+        var bundleByKind = new Dictionary<GraphEdgeBundleKey, GraphEdgeBundleAccumulator>();
+        foreach (var edge in edges)
+        {
+            var key = new GraphEdgeBundleKey(edge.SourceNodeId, edge.TargetNodeId, edge.Kind);
+            if (bundleByKind.TryGetValue(key, out var accumulator))
+            {
+                accumulator.Add(edge);
+            }
+            else
+            {
+                bundleByKind[key] = new GraphEdgeBundleAccumulator(edge);
+            }
+        }
+
+        if (bundleByKind.Count == 0)
+        {
+            return [];
+        }
+
+        var edgesByPair = new Dictionary<GraphEdgePairKey, List<GraphEdge>>();
+        foreach (var accumulator in bundleByKind.Values)
+        {
+            var edge = accumulator.ToEdge();
+            var pairKey = new GraphEdgePairKey(edge.SourceNodeId, edge.TargetNodeId);
+            if (!edgesByPair.TryGetValue(pairKey, out var pairEdges))
+            {
+                pairEdges = [];
+                edgesByPair[pairKey] = pairEdges;
+            }
+
+            pairEdges.Add(edge);
+        }
+
+        var bundledEdges = new List<GraphEdge>(bundleByKind.Count);
+        foreach (var pairEdges in edgesByPair.Values)
+        {
+            pairEdges.Sort(CompareGraphEdgesByConfidence);
+            var take = Math.Min(maxPerPair, pairEdges.Count);
+            for (var index = 0; index < take; index++)
+            {
+                bundledEdges.Add(pairEdges[index]);
+            }
+        }
+
+        return bundledEdges.ToArray();
     }
 
-    private static GraphEdge CreateBundledEdge(IEnumerable<GraphEdge> edges)
+    private static int CompareGraphEdgesByConfidence(GraphEdge left, GraphEdge right)
     {
-        var orderedEdges = edges.OrderByDescending(edge => edge.Confidence).ToArray();
-        var strongest = orderedEdges[0];
-        var bundleCount = orderedEdges.Sum(edge => Math.Max(1, edge.BundleCount));
-        var label = bundleCount > 1 ? $"{bundleCount} semantic links" : strongest.Label;
-        return strongest with { Label = label, BundleCount = bundleCount };
+        var confidenceComparison = right.Confidence.CompareTo(left.Confidence);
+        if (confidenceComparison != 0)
+        {
+            return confidenceComparison;
+        }
+
+        var sourceComparison = string.Compare(left.SourceNodeId, right.SourceNodeId, StringComparison.Ordinal);
+        if (sourceComparison != 0)
+        {
+            return sourceComparison;
+        }
+
+        var targetComparison = string.Compare(left.TargetNodeId, right.TargetNodeId, StringComparison.Ordinal);
+        if (targetComparison != 0)
+        {
+            return targetComparison;
+        }
+
+        return left.Kind.CompareTo(right.Kind);
+    }
+
+    private readonly record struct GraphEdgeBundleKey(string SourceNodeId, string TargetNodeId, SemanticEdgeKind Kind);
+
+    private readonly record struct GraphEdgePairKey(string SourceNodeId, string TargetNodeId);
+
+    private sealed class GraphEdgeBundleAccumulator
+    {
+        private GraphEdge strongest;
+        private int bundleCount;
+
+        public GraphEdgeBundleAccumulator(GraphEdge edge)
+        {
+            strongest = edge;
+            bundleCount = Math.Max(1, edge.BundleCount);
+        }
+
+        public void Add(GraphEdge edge)
+        {
+            bundleCount += Math.Max(1, edge.BundleCount);
+            if (edge.Confidence > strongest.Confidence)
+            {
+                strongest = edge;
+            }
+        }
+
+        public GraphEdge ToEdge()
+        {
+            var label = bundleCount > 1 ? $"{bundleCount} semantic links" : strongest.Label;
+            return strongest with { Label = label, BundleCount = bundleCount };
+        }
     }
 
     private static GraphEdge? TryCreateGraphEdge(

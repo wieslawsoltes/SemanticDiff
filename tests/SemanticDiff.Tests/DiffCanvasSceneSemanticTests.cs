@@ -718,6 +718,65 @@ public sealed class DiffCanvasSceneSemanticTests
     }
 
     [Fact]
+    public void TryHitTestAnnotation_UsesPriorityOrderedLineMarkerCache()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "first\nsecond");
+        var semantic = DiffAnnotation.Line(document.Id, DiffAnnotationKind.SemanticAnchor, 0, 1, "type", "Linked symbol");
+        var conflict = DiffAnnotation.Line(document.Id, DiffAnnotationKind.Conflict, 0, 1, "conflict", "Resolve conflict", DiffAnnotationSeverity.Error);
+        var review = new DiffAnnotation(
+            "A.cs:review-comment:thread-1",
+            document.Id,
+            DiffAnnotationKind.ReviewComment,
+            DiffAnnotationTarget.Line,
+            0,
+            1,
+            "review",
+            "Please verify this line.",
+            DiffAnnotationSeverity.Warning,
+            DiffAnnotationActionKind.ReviewThread,
+            "thread-1");
+        var scene = DiffCanvasScene.FromDocuments([document], annotations: [semantic, conflict, review]);
+        var node = scene.Nodes[0];
+        var markerOnePoint = new Point2(node.BodyBounds.Right - 9, node.BodyBounds.Top + 4 + 9 + 3);
+
+        var hit = scene.TryHitTestAnnotation(scene.Camera.WorldToScreen(markerOnePoint), out var annotationHit);
+
+        Assert.True(hit);
+        Assert.NotNull(annotationHit);
+        Assert.Equal(review.Id, annotationHit.Annotation.Id);
+    }
+
+    [Fact]
+    public void TryHitTestAnnotation_UsesRendererTieBreakerForSamePriorityMarkers()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "first\nsecond");
+        var laterId = new DiffAnnotation(
+            "z-review",
+            document.Id,
+            DiffAnnotationKind.ReviewComment,
+            DiffAnnotationTarget.Line,
+            0,
+            1,
+            "review",
+            "Later id.",
+            DiffAnnotationSeverity.Warning,
+            DiffAnnotationActionKind.ReviewThread,
+            "thread-z");
+        var earlierId = laterId with { Id = "a-review", Detail = "Earlier id.", ActionTargetId = "thread-a" };
+        var scene = DiffCanvasScene.FromDocuments([document], annotations: [laterId, earlierId]);
+        var node = scene.Nodes[0];
+        var firstMarkerPoint = new Point2(node.BodyBounds.Right - 9, node.BodyBounds.Top + 7);
+
+        var hit = scene.TryHitTestAnnotation(scene.Camera.WorldToScreen(firstMarkerPoint), out var annotationHit);
+
+        Assert.True(hit);
+        Assert.NotNull(annotationHit);
+        Assert.Equal(earlierId.Id, annotationHit.Annotation.Id);
+    }
+
+    [Fact]
     public void TryHitTestResizeHandle_DoesNotCaptureScrollbarThumb()
     {
         var factory = new DiffDocumentFactory();
