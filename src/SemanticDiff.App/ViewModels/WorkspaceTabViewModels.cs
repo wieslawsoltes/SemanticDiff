@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using SemanticDiff.Core;
@@ -1156,25 +1157,8 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
     {
         cancellationToken.ThrowIfCancellationRequested();
         var edgeKindAnchorIds = CreateEdgeKindAnchorSet(selection.EdgeKind.Kind);
-        var filtered = sourceItems
-            .Where(item => MatchesScope(item, selection.Scope.Key))
-            .Where(item => MatchesOption(item.KindText, selection.Kind.Key, ignoreCase: true))
-            .Where(item => MatchesOption(item.DocumentId.Value, selection.Document.Key, ignoreCase: false))
-            .Where(item => edgeKindAnchorIds is null || edgeKindAnchorIds.Contains(item.AnchorId))
-            .Where(item => string.IsNullOrWhiteSpace(query) || item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase))
-            .ToImmutableArray();
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var selected = filtered
-            .OrderByDescending(item => string.Equals(item.AnchorId, focusAnchorId, StringComparison.Ordinal))
-            .ThenByDescending(item => item.IsChanged)
-            .ThenByDescending(item => item.IsLinked)
-            .ThenByDescending(item => item.IncidentEdgeCount)
-            .ThenBy(item => item.KindText, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Line)
-            .Take(MaxRenderedSymbols)
-            .ToImmutableArray();
+        var selectionResult = SelectSymbols(selection, query, edgeKindAnchorIds, cancellationToken);
+        var selected = selectionResult.Selected;
         cancellationToken.ThrowIfCancellationRequested();
 
         var sceneResult = new SymbolGraphSceneBuilder().Build(new SymbolGraphSceneBuildRequest(
@@ -1186,15 +1170,15 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
             selection.ViewMode.Mode,
             selection.EdgeKind.Kind));
         var renderedEdgeCount = sceneResult.Scene.Edges.Count;
-        var summary = BuildSummary(filtered.Length, selected.Length, sceneResult.FileCount, renderedEdgeCount, selection.ViewMode.Mode);
+        var summary = BuildSummary(selectionResult.FilteredCount, selected.Length, sceneResult.FileCount, renderedEdgeCount, selection.ViewMode.Mode);
         return new SymbolGraphRefreshResult(
             sceneResult.Scene,
-            filtered.Length,
+            selectionResult.FilteredCount,
             selected.Length,
             sceneResult.FileCount,
             renderedEdgeCount,
             summary,
-            BuildFilterStatus(filtered.Length, selected.Length, query, selection),
+            BuildFilterStatus(selectionResult.FilteredCount, selected.Length, query, selection),
             $"{summary} | {selection.Layout.DisplayName} | {selection.Grouping.DisplayName}");
     }
 
@@ -1262,42 +1246,108 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
         return fallback;
     }
 
-    private static ImmutableArray<SymbolGraphFilterOptionViewModel> CreateKindOptions(ImmutableArray<SemanticNavigationItem> items) =>
-    [
-        new SymbolGraphFilterOptionViewModel(AllKey, "All kinds", "All symbol kinds"),
-        .. items
-            .GroupBy(item => item.KindText, StringComparer.OrdinalIgnoreCase)
-            .OrderByDescending(group => group.Count())
-            .ThenBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(group => new SymbolGraphFilterOptionViewModel(group.Key, group.Key, $"{group.Count():N0} symbols"))
-    ];
+    private static ImmutableArray<SymbolGraphFilterOptionViewModel> CreateKindOptions(ImmutableArray<SemanticNavigationItem> items)
+    {
+        var builder = ImmutableArray.CreateBuilder<SymbolGraphFilterOptionViewModel>();
+        builder.Add(new SymbolGraphFilterOptionViewModel(AllKey, "All kinds", "All symbol kinds"));
+        if (items.IsDefaultOrEmpty)
+        {
+            return builder.ToImmutable();
+        }
 
-    private static ImmutableArray<SymbolGraphFilterOptionViewModel> CreateDocumentOptions(ImmutableArray<SemanticNavigationItem> items) =>
-    [
-        new SymbolGraphFilterOptionViewModel(AllKey, "All files", "All files"),
-        .. items
-            .GroupBy(item => item.DocumentId.Value, StringComparer.Ordinal)
-            .Select(group =>
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items)
+        {
+            ref var count = ref CollectionsMarshal.GetValueRefOrAddDefault(counts, item.KindText, out _);
+            count++;
+        }
+
+        var entries = CopyDictionaryEntries(counts);
+        Array.Sort(entries, CompareKindOptionCounts);
+        builder.Capacity = 1 + entries.Length;
+        foreach (var entry in entries)
+        {
+            builder.Add(new SymbolGraphFilterOptionViewModel(entry.Key, entry.Key, $"{entry.Value:N0} symbols"));
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static ImmutableArray<SymbolGraphFilterOptionViewModel> CreateDocumentOptions(ImmutableArray<SemanticNavigationItem> items)
+    {
+        var builder = ImmutableArray.CreateBuilder<SymbolGraphFilterOptionViewModel>();
+        builder.Add(new SymbolGraphFilterOptionViewModel(AllKey, "All files", "All files"));
+        if (items.IsDefaultOrEmpty)
+        {
+            return builder.ToImmutable();
+        }
+
+        var documents = new Dictionary<string, SymbolGraphDocumentOptionStats>(StringComparer.Ordinal);
+        foreach (var item in items)
+        {
+            if (!documents.TryGetValue(item.DocumentId.Value, out var stats))
             {
-                var first = group.First();
-                var fileName = System.IO.Path.GetFileName(first.Path);
-                return new SymbolGraphFilterOptionViewModel(group.Key, string.IsNullOrWhiteSpace(fileName) ? first.Path : fileName, $"{group.Count():N0} symbols | {first.Path}");
-            })
-            .OrderByDescending(option => ExtractLeadingCount(option.DetailText))
-            .ThenBy(option => option.DisplayName, StringComparer.OrdinalIgnoreCase)
-    ];
+                var fileName = System.IO.Path.GetFileName(item.Path);
+                stats = new SymbolGraphDocumentOptionStats(
+                    item.DocumentId.Value,
+                    string.IsNullOrWhiteSpace(fileName) ? item.Path : fileName,
+                    item.Path);
+                documents.Add(item.DocumentId.Value, stats);
+            }
 
-    private static ImmutableArray<SymbolGraphEdgeKindOptionViewModel> CreateEdgeKindOptions(SemanticGraph graph) =>
-    [
-        new SymbolGraphEdgeKindOptionViewModel(null, AllKey, "All edges", "All semantic edges"),
-        new SymbolGraphEdgeKindOptionViewModel(SemanticEdgeKind.Contains, SemanticEdgeKind.Contains.ToString(), "Contains", "File to symbol declarations"),
-        .. graph.Edges
-            .Where(edge => edge.Kind != SemanticEdgeKind.Contains)
-            .GroupBy(edge => edge.Kind)
-            .OrderByDescending(group => group.Count())
-            .ThenBy(group => group.Key.ToString(), StringComparer.OrdinalIgnoreCase)
-            .Select(group => new SymbolGraphEdgeKindOptionViewModel(group.Key, group.Key.ToString(), group.Key.ToString(), $"{group.Count():N0} edges"))
-    ];
+            stats.Count++;
+        }
+
+        var entries = new SymbolGraphDocumentOptionStats[documents.Count];
+        var index = 0;
+        foreach (var stats in documents.Values)
+        {
+            entries[index++] = stats;
+        }
+
+        Array.Sort(entries, CompareDocumentOptionStats);
+        builder.Capacity = 1 + entries.Length;
+        foreach (var entry in entries)
+        {
+            builder.Add(new SymbolGraphFilterOptionViewModel(entry.Key, entry.DisplayName, $"{entry.Count:N0} symbols | {entry.Path}"));
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static ImmutableArray<SymbolGraphEdgeKindOptionViewModel> CreateEdgeKindOptions(SemanticGraph graph)
+    {
+        var builder = ImmutableArray.CreateBuilder<SymbolGraphEdgeKindOptionViewModel>();
+        builder.Add(new SymbolGraphEdgeKindOptionViewModel(null, AllKey, "All edges", "All semantic edges"));
+        builder.Add(new SymbolGraphEdgeKindOptionViewModel(SemanticEdgeKind.Contains, SemanticEdgeKind.Contains.ToString(), "Contains", "File to symbol declarations"));
+        if (graph.Edges.IsDefaultOrEmpty)
+        {
+            return builder.ToImmutable();
+        }
+
+        var counts = new Dictionary<SemanticEdgeKind, int>();
+        foreach (var edge in graph.Edges)
+        {
+            if (edge.Kind == SemanticEdgeKind.Contains)
+            {
+                continue;
+            }
+
+            ref var count = ref CollectionsMarshal.GetValueRefOrAddDefault(counts, edge.Kind, out _);
+            count++;
+        }
+
+        var entries = CopyDictionaryEntries(counts);
+        Array.Sort(entries, CompareEdgeKindOptionCounts);
+        builder.Capacity = 2 + entries.Length;
+        foreach (var entry in entries)
+        {
+            var key = entry.Key.ToString();
+            builder.Add(new SymbolGraphEdgeKindOptionViewModel(entry.Key, key, key, $"{entry.Value:N0} edges"));
+        }
+
+        return builder.ToImmutable();
+    }
 
     private static bool MatchesScope(SemanticNavigationItem item, string scopeKey) => scopeKey switch
     {
@@ -1317,23 +1367,157 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
         return string.Equals(value, key, ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
     }
 
+    private SymbolGraphSelectedSymbols SelectSymbols(
+        SymbolGraphSelection selection,
+        string query,
+        HashSet<string>? edgeKindAnchorIds,
+        CancellationToken cancellationToken)
+    {
+        var selected = new List<SemanticNavigationItem>(Math.Min(MaxRenderedSymbols, Math.Max(0, sourceItems.Length)));
+        var hasQuery = !string.IsNullOrWhiteSpace(query);
+        var filteredCount = 0;
+
+        for (var i = 0; i < sourceItems.Length; i++)
+        {
+            if ((i & 0x3ff) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            var item = sourceItems[i];
+            if (!MatchesScope(item, selection.Scope.Key) ||
+                !MatchesOption(item.KindText, selection.Kind.Key, ignoreCase: true) ||
+                !MatchesOption(item.DocumentId.Value, selection.Document.Key, ignoreCase: false) ||
+                edgeKindAnchorIds is not null && !edgeKindAnchorIds.Contains(item.AnchorId) ||
+                hasQuery && !item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            filteredCount++;
+            AddSelectedSymbol(selected, item, focusAnchorId);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return new SymbolGraphSelectedSymbols(selected.ToImmutableArray(), filteredCount);
+    }
+
+    private static void AddSelectedSymbol(List<SemanticNavigationItem> selected, SemanticNavigationItem item, string? focusAnchorId)
+    {
+        if (selected.Count == 0)
+        {
+            selected.Add(item);
+            return;
+        }
+
+        if (selected.Count == MaxRenderedSymbols &&
+            CompareSelectedSymbol(item, selected[^1], focusAnchorId) >= 0)
+        {
+            return;
+        }
+
+        var insertIndex = selected.Count;
+        for (var i = 0; i < selected.Count; i++)
+        {
+            if (CompareSelectedSymbol(item, selected[i], focusAnchorId) < 0)
+            {
+                insertIndex = i;
+                break;
+            }
+        }
+
+        selected.Insert(insertIndex, item);
+        if (selected.Count > MaxRenderedSymbols)
+        {
+            selected.RemoveAt(selected.Count - 1);
+        }
+    }
+
+    private static int CompareSelectedSymbol(SemanticNavigationItem left, SemanticNavigationItem right, string? focusAnchorId)
+    {
+        var result = CompareDescending(string.Equals(left.AnchorId, focusAnchorId, StringComparison.Ordinal), string.Equals(right.AnchorId, focusAnchorId, StringComparison.Ordinal));
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = CompareDescending(left.IsChanged, right.IsChanged);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = CompareDescending(left.IsLinked, right.IsLinked);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = right.IncidentEdgeCount.CompareTo(left.IncidentEdgeCount);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = string.Compare(left.KindText, right.KindText, StringComparison.OrdinalIgnoreCase);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = string.Compare(left.Path, right.Path, StringComparison.OrdinalIgnoreCase);
+        return result != 0 ? result : left.Line.CompareTo(right.Line);
+    }
+
+    private static int CompareDescending(bool left, bool right) =>
+        left == right ? 0 : left ? -1 : 1;
+
+    private static KeyValuePair<TKey, TValue>[] CopyDictionaryEntries<TKey, TValue>(Dictionary<TKey, TValue> dictionary)
+        where TKey : notnull
+    {
+        var entries = new KeyValuePair<TKey, TValue>[dictionary.Count];
+        var index = 0;
+        foreach (var entry in dictionary)
+        {
+            entries[index++] = entry;
+        }
+
+        return entries;
+    }
+
+    private static int CompareKindOptionCounts(KeyValuePair<string, int> left, KeyValuePair<string, int> right)
+    {
+        var result = right.Value.CompareTo(left.Value);
+        return result != 0 ? result : string.Compare(left.Key, right.Key, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int CompareDocumentOptionStats(SymbolGraphDocumentOptionStats left, SymbolGraphDocumentOptionStats right)
+    {
+        var result = right.Count.CompareTo(left.Count);
+        return result != 0 ? result : string.Compare(left.DisplayName, right.DisplayName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int CompareEdgeKindOptionCounts(KeyValuePair<SemanticEdgeKind, int> left, KeyValuePair<SemanticEdgeKind, int> right)
+    {
+        var result = right.Value.CompareTo(left.Value);
+        return result != 0 ? result : string.Compare(left.Key.ToString(), right.Key.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
     private HashSet<string>? CreateEdgeKindAnchorSet(SemanticEdgeKind? edgeKind)
     {
-        if (edgeKind is null)
+        if (edgeKind is null || edgeKind == SemanticEdgeKind.Contains)
         {
             return null;
         }
 
-        if (edgeKind == SemanticEdgeKind.Contains)
-        {
-            return sourceItems.Select(item => item.AnchorId).ToHashSet(StringComparer.Ordinal);
-        }
-
         var anchors = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var edge in sourceGraph.Edges.Where(edge => edge.Kind == edgeKind))
+        foreach (var edge in sourceGraph.Edges)
         {
-            anchors.Add(edge.SourceAnchorId);
-            anchors.Add(edge.TargetAnchorId);
+            if (edge.Kind == edgeKind)
+            {
+                anchors.Add(edge.SourceAnchorId);
+                anchors.Add(edge.TargetAnchorId);
+            }
         }
 
         return anchors;
@@ -1385,11 +1569,20 @@ public sealed partial class SymbolGraphTabViewModel : ObservableObject
             : filterText;
     }
 
-    private static int ExtractLeadingCount(string text)
+    private sealed class SymbolGraphDocumentOptionStats(string key, string displayName, string path)
     {
-        var digits = new string(text.TakeWhile(character => char.IsDigit(character) || character == ',' || character == '.').ToArray());
-        return int.TryParse(digits.Replace(",", string.Empty).Replace(".", string.Empty), out var count) ? count : 0;
+        public string Key { get; } = key;
+
+        public string DisplayName { get; } = displayName;
+
+        public string Path { get; } = path;
+
+        public int Count { get; set; }
     }
+
+    private sealed record SymbolGraphSelectedSymbols(
+        ImmutableArray<SemanticNavigationItem> Selected,
+        int FilteredCount);
 
     private sealed record SymbolGraphRefreshResult(
         DiffCanvasScene Scene,

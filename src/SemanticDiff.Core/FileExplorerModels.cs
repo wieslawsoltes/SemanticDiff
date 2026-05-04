@@ -42,7 +42,7 @@ public sealed record FileExplorerNode(
 
     public bool HasChildren => !Children.IsDefaultOrEmpty;
 
-    public string SearchText => $"{Name} {Path} {Language} {Status} {IconKind}";
+    public string SearchText { get; } = $"{Name} {Path} {Language} {Status} {IconKind}";
 }
 
 public static class FileExplorerTreeBuilder

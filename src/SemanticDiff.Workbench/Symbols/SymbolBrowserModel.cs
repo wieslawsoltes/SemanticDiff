@@ -78,16 +78,34 @@ public sealed class SymbolBrowserModel
     public SymbolBrowserView Apply(string query)
     {
         var trimmedQuery = query.Trim();
-        var filtered = allItems
-            .Where(MatchesSelectedScope)
-            .Where(MatchesSelectedKind)
-            .Where(MatchesSelectedDocument)
-            .Where(item => string.IsNullOrWhiteSpace(trimmedQuery) || item.SearchText.Contains(trimmedQuery, StringComparison.OrdinalIgnoreCase))
-            .ToImmutableArray();
-        var countText = !Selection.HasActiveFilters(trimmedQuery)
+        var hasActiveFilters = Selection.HasActiveFilters(trimmedQuery);
+        var filtered = hasActiveFilters
+            ? ApplyFilters(trimmedQuery)
+            : allItems;
+        var countText = !hasActiveFilters
             ? FormatCount(allItems.Length, "symbol", "symbols")
             : $"{filtered.Length:N0}/{allItems.Length:N0} symbols";
         return new SymbolBrowserView(filtered, insight, Selection, countText, BuildFilterStatus(filtered.Length, trimmedQuery));
+    }
+
+    private ImmutableArray<SemanticNavigationItem> ApplyFilters(string query)
+    {
+        var hasQuery = !string.IsNullOrWhiteSpace(query);
+        var builder = ImmutableArray.CreateBuilder<SemanticNavigationItem>();
+        foreach (var item in allItems)
+        {
+            if (!MatchesSelectedScope(item) ||
+                !MatchesSelectedKind(item) ||
+                !MatchesSelectedDocument(item) ||
+                (hasQuery && !item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            builder.Add(item);
+        }
+
+        return builder.ToImmutable();
     }
 
     private void PruneSelection()

@@ -16,15 +16,17 @@ public sealed record SemanticNavigationItem(
 {
     public bool IsLinked => IncidentEdgeCount > 0;
 
-    public string KindText => Kind switch
+    public string KindText { get; } = GetKindText(Kind);
+
+    public string SearchText { get; } = $"{DisplayName} {Path} {GetKindText(Kind)} {(IsChanged ? "changed" : string.Empty)} {(IncidentEdgeCount > 0 ? "linked references" : string.Empty)}";
+
+    private static string GetKindText(SemanticAnchorKind kind) => kind switch
     {
         SemanticAnchorKind.File => "File",
         SemanticAnchorKind.XamlRoot => "XAML",
         SemanticAnchorKind.XamlName => "Name",
-        _ => Kind.ToString()
+        _ => kind.ToString()
     };
-
-    public string SearchText => $"{DisplayName} {Path} {KindText} {(IsChanged ? "changed" : string.Empty)} {(IsLinked ? "linked references" : string.Empty)}";
 }
 
 public sealed class SemanticNavigationIndex
@@ -42,14 +44,22 @@ public sealed class SemanticNavigationIndex
         var edgeCounts = BuildIncidentEdgeCounts(edges);
         var changedLineIndex = new SemanticChangeLineIndexBuilder().Build(documents);
         var builder = ImmutableArray.CreateBuilder<SemanticNavigationItem>();
+        var documentsWithNavigableSymbols = new HashSet<DiffDocumentId>();
+        var fileAnchorsByDocumentId = new Dictionary<DiffDocumentId, SemanticAnchor>();
 
         foreach (var anchor in anchors)
         {
+            if (anchor.Kind == SemanticAnchorKind.File && pathsByDocumentId.ContainsKey(anchor.DocumentId))
+            {
+                fileAnchorsByDocumentId.TryAdd(anchor.DocumentId, anchor);
+            }
+
             if (!IsNavigable(anchor.Kind) || !pathsByDocumentId.TryGetValue(anchor.DocumentId, out var path))
             {
                 continue;
             }
 
+            documentsWithNavigableSymbols.Add(anchor.DocumentId);
             builder.Add(new SemanticNavigationItem(
                 anchor.Id,
                 anchor.DocumentId,
@@ -61,14 +71,6 @@ public sealed class SemanticNavigationIndex
                 edgeCounts.GetValueOrDefault(anchor.Id),
                 changedLineIndex.Contains(anchor)));
         }
-
-        var documentsWithNavigableSymbols = builder
-            .Select(item => item.DocumentId)
-            .ToHashSet();
-        var fileAnchorsByDocumentId = anchors
-            .Where(anchor => anchor.Kind == SemanticAnchorKind.File && pathsByDocumentId.ContainsKey(anchor.DocumentId))
-            .GroupBy(anchor => anchor.DocumentId)
-            .ToDictionary(group => group.Key, group => group.First());
 
         foreach (var document in documents)
         {
@@ -97,12 +99,9 @@ public sealed class SemanticNavigationIndex
             }
         }
 
-        return builder
-            .OrderBy(item => KindSortOrder(item.Kind))
-            .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Line)
-            .ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .ToImmutableArray();
+        var items = builder.ToArray();
+        Array.Sort(items, CompareNavigationItems);
+        return items.ToImmutableArray();
     }
 
     private static SemanticNavigationItem CreateFileNavigationItem(SemanticAnchor anchor, string path, int incidentEdgeCount, bool isChanged) => new(
@@ -160,6 +159,26 @@ public sealed class SemanticNavigationIndex
         SemanticAnchorKind.File => 6,
         _ => 9
     };
+
+    private static int CompareNavigationItems(SemanticNavigationItem left, SemanticNavigationItem right)
+    {
+        var kindComparison = KindSortOrder(left.Kind).CompareTo(KindSortOrder(right.Kind));
+        if (kindComparison != 0)
+        {
+            return kindComparison;
+        }
+
+        var pathComparison = string.Compare(left.Path, right.Path, StringComparison.OrdinalIgnoreCase);
+        if (pathComparison != 0)
+        {
+            return pathComparison;
+        }
+
+        var lineComparison = left.Line.CompareTo(right.Line);
+        return lineComparison != 0
+            ? lineComparison
+            : string.Compare(left.DisplayName, right.DisplayName, StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 public sealed record SemanticSymbolKindFacet(
@@ -204,51 +223,79 @@ public sealed class SemanticSymbolInsightIndex
             return SemanticSymbolInsightSummary.Empty;
         }
 
-        var kindFacets = symbols
-            .GroupBy(symbol => symbol.Kind)
-            .Select(group => new SemanticSymbolKindFacet(
-                group.Key,
-                group.First().KindText,
-                group.Count(),
-                group.Count(symbol => symbol.IsChanged),
-                group.Count(symbol => symbol.IsLinked)))
-            .OrderByDescending(facet => facet.ChangedCount)
-            .ThenByDescending(facet => facet.LinkedCount)
-            .ThenBy(facet => KindSortOrder(facet.Kind))
-            .ThenBy(facet => facet.KindText, StringComparer.OrdinalIgnoreCase)
-            .ToImmutableArray();
-        var documentFacets = symbols
-            .GroupBy(symbol => symbol.DocumentId)
-            .Select(group => new SemanticSymbolDocumentFacet(
-                group.Key,
-                group.First().Path,
-                group.Count(),
-                group.Count(symbol => symbol.IsChanged),
-                group.Count(symbol => symbol.IsLinked)))
-            .OrderByDescending(facet => facet.ChangedCount)
-            .ThenByDescending(facet => facet.LinkedCount)
-            .ThenByDescending(facet => facet.Count)
-            .ThenBy(facet => facet.Path, StringComparer.OrdinalIgnoreCase)
-            .ToImmutableArray();
-        var hotSymbols = symbols
-            .Where(symbol => symbol.IsChanged || symbol.IsLinked)
-            .OrderByDescending(symbol => symbol.IsChanged)
-            .ThenByDescending(symbol => symbol.IncidentEdgeCount)
-            .ThenBy(symbol => KindSortOrder(symbol.Kind))
-            .ThenBy(symbol => symbol.Path, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(symbol => symbol.Line)
-            .ThenBy(symbol => symbol.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .Take(12)
-            .ToImmutableArray();
+        var kindFacetsByKind = new Dictionary<SemanticAnchorKind, KindFacetAccumulator>();
+        var documentFacetsById = new Dictionary<DiffDocumentId, DocumentFacetAccumulator>();
+        var hotSymbolCandidates = new List<SemanticNavigationItem>();
+        var changedCount = 0;
+        var linkedCount = 0;
+
+        foreach (var symbol in symbols)
+        {
+            if (!kindFacetsByKind.TryGetValue(symbol.Kind, out var kindFacet))
+            {
+                kindFacet = new KindFacetAccumulator(symbol.Kind, symbol.KindText);
+                kindFacetsByKind[symbol.Kind] = kindFacet;
+            }
+
+            kindFacet.Add(symbol);
+
+            if (!documentFacetsById.TryGetValue(symbol.DocumentId, out var documentFacet))
+            {
+                documentFacet = new DocumentFacetAccumulator(symbol.DocumentId, symbol.Path);
+                documentFacetsById[symbol.DocumentId] = documentFacet;
+            }
+
+            documentFacet.Add(symbol);
+
+            if (symbol.IsChanged)
+            {
+                changedCount++;
+            }
+
+            if (symbol.IsLinked)
+            {
+                linkedCount++;
+            }
+
+            if (symbol.IsChanged || symbol.IsLinked)
+            {
+                hotSymbolCandidates.Add(symbol);
+            }
+        }
+
+        var kindFacetArray = new SemanticSymbolKindFacet[kindFacetsByKind.Count];
+        var kindFacetIndex = 0;
+        foreach (var accumulator in kindFacetsByKind.Values)
+        {
+            kindFacetArray[kindFacetIndex++] = accumulator.ToFacet();
+        }
+
+        Array.Sort(kindFacetArray, CompareKindFacets);
+
+        var documentFacetArray = new SemanticSymbolDocumentFacet[documentFacetsById.Count];
+        var documentFacetIndex = 0;
+        foreach (var accumulator in documentFacetsById.Values)
+        {
+            documentFacetArray[documentFacetIndex++] = accumulator.ToFacet();
+        }
+
+        Array.Sort(documentFacetArray, CompareDocumentFacets);
+        hotSymbolCandidates.Sort(CompareHotSymbols);
+        var hotSymbolCount = Math.Min(12, hotSymbolCandidates.Count);
+        var hotSymbolBuilder = ImmutableArray.CreateBuilder<SemanticNavigationItem>(hotSymbolCount);
+        for (var index = 0; index < hotSymbolCount; index++)
+        {
+            hotSymbolBuilder.Add(hotSymbolCandidates[index]);
+        }
 
         return new SemanticSymbolInsightSummary(
             symbols.Length,
-            symbols.Count(symbol => symbol.IsChanged),
-            symbols.Count(symbol => symbol.IsLinked),
-            documentFacets.Length,
-            kindFacets,
-            documentFacets,
-            hotSymbols);
+            changedCount,
+            linkedCount,
+            documentFacetArray.Length,
+            kindFacetArray.ToImmutableArray(),
+            documentFacetArray.ToImmutableArray(),
+            hotSymbolBuilder.ToImmutable());
     }
 
     private static int KindSortOrder(SemanticAnchorKind kind) => kind switch
@@ -262,4 +309,122 @@ public sealed class SemanticSymbolInsightIndex
         SemanticAnchorKind.File => 6,
         _ => 9
     };
+
+    private static int CompareKindFacets(SemanticSymbolKindFacet left, SemanticSymbolKindFacet right)
+    {
+        var changedComparison = right.ChangedCount.CompareTo(left.ChangedCount);
+        if (changedComparison != 0)
+        {
+            return changedComparison;
+        }
+
+        var linkedComparison = right.LinkedCount.CompareTo(left.LinkedCount);
+        if (linkedComparison != 0)
+        {
+            return linkedComparison;
+        }
+
+        var kindComparison = KindSortOrder(left.Kind).CompareTo(KindSortOrder(right.Kind));
+        return kindComparison != 0
+            ? kindComparison
+            : string.Compare(left.KindText, right.KindText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int CompareDocumentFacets(SemanticSymbolDocumentFacet left, SemanticSymbolDocumentFacet right)
+    {
+        var changedComparison = right.ChangedCount.CompareTo(left.ChangedCount);
+        if (changedComparison != 0)
+        {
+            return changedComparison;
+        }
+
+        var linkedComparison = right.LinkedCount.CompareTo(left.LinkedCount);
+        if (linkedComparison != 0)
+        {
+            return linkedComparison;
+        }
+
+        var countComparison = right.Count.CompareTo(left.Count);
+        return countComparison != 0
+            ? countComparison
+            : string.Compare(left.Path, right.Path, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int CompareHotSymbols(SemanticNavigationItem left, SemanticNavigationItem right)
+    {
+        var changedComparison = right.IsChanged.CompareTo(left.IsChanged);
+        if (changedComparison != 0)
+        {
+            return changedComparison;
+        }
+
+        var incidentComparison = right.IncidentEdgeCount.CompareTo(left.IncidentEdgeCount);
+        if (incidentComparison != 0)
+        {
+            return incidentComparison;
+        }
+
+        var kindComparison = KindSortOrder(left.Kind).CompareTo(KindSortOrder(right.Kind));
+        if (kindComparison != 0)
+        {
+            return kindComparison;
+        }
+
+        var pathComparison = string.Compare(left.Path, right.Path, StringComparison.OrdinalIgnoreCase);
+        if (pathComparison != 0)
+        {
+            return pathComparison;
+        }
+
+        var lineComparison = left.Line.CompareTo(right.Line);
+        return lineComparison != 0
+            ? lineComparison
+            : string.Compare(left.DisplayName, right.DisplayName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class KindFacetAccumulator(SemanticAnchorKind kind, string kindText)
+    {
+        private int count;
+        private int changedCount;
+        private int linkedCount;
+
+        public void Add(SemanticNavigationItem symbol)
+        {
+            count++;
+            if (symbol.IsChanged)
+            {
+                changedCount++;
+            }
+
+            if (symbol.IsLinked)
+            {
+                linkedCount++;
+            }
+        }
+
+        public SemanticSymbolKindFacet ToFacet() => new(kind, kindText, count, changedCount, linkedCount);
+    }
+
+    private sealed class DocumentFacetAccumulator(DiffDocumentId documentId, string path)
+    {
+        private int count;
+        private int changedCount;
+        private int linkedCount;
+
+        public void Add(SemanticNavigationItem symbol)
+        {
+            count++;
+            if (symbol.IsChanged)
+            {
+                changedCount++;
+            }
+
+            if (symbol.IsLinked)
+            {
+                linkedCount++;
+            }
+        }
+
+        public SemanticSymbolDocumentFacet ToFacet() => new(documentId, path, count, changedCount, linkedCount);
+    }
 }

@@ -48,7 +48,7 @@ public sealed record FileExplorerNodeViewModel(
 
     public string ContextMenuPrimaryText => IsFile ? "Navigate to node" : IsExpanded ? "Collapse folder" : "Expand folder";
 
-    public string SearchText => $"{Name} {Path} {Language} {Status} {IconKind}";
+    public string SearchText { get; } = $"{Name} {Path} {Language} {Status} {IconKind}";
 
     public static ImmutableArray<FileExplorerNodeViewModel> Flatten(
         ImmutableArray<FileExplorerNode> roots,
