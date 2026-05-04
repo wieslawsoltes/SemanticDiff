@@ -122,6 +122,53 @@ public sealed class GitDiffDocumentServiceTests
         Assert.Equal(fileChanges.Select(file => file.Path), snapshot.Documents.Select(document => document.Metadata.Path));
     }
 
+    [Fact]
+    public async Task LoadDocumentsAsync_UsesBatchedDiffCountsForMetadata()
+    {
+        var fileChanges = ImmutableArray.Create(
+            CreateFileChange("src/Modified.cs", DiffFileStatus.Modified),
+            CreateFileChange("src/Added.cs", DiffFileStatus.Added));
+        var gitService = new FakeGitDiffService(
+            fileChanges,
+            fileChange => fileChange.Path.EndsWith("Modified.cs", StringComparison.Ordinal)
+                ? "@@ -1,2 +1,3 @@\n-old\n+new\n+another\n"
+                : "@@ -0,0 +1,2 @@\n+first\n+second\n");
+        var documentService = new GitDiffDocumentService(gitService, new DiffDocumentFactory());
+
+        var snapshot = await documentService.LoadDocumentsAsync(
+            new GitDiffRequest("/repo", GitDiffScope.Worktree),
+            DiffContextMode.ChangedHunks,
+            CancellationToken.None);
+
+        var modified = Assert.Single(snapshot.Documents, document => document.Metadata.Path == "src/Modified.cs");
+        var added = Assert.Single(snapshot.Documents, document => document.Metadata.Path == "src/Added.cs");
+        Assert.Equal(2, modified.Metadata.AddedLines);
+        Assert.Equal(1, modified.Metadata.DeletedLines);
+        Assert.Equal(2, added.Metadata.AddedLines);
+        Assert.Equal(0, added.Metadata.DeletedLines);
+    }
+
+    [Fact]
+    public async Task LoadDocumentsAsync_CountsMarkerPrefixedChangedLinesInBatchedDiffs()
+    {
+        var fileChanges = ImmutableArray.Create(CreateFileChange("src/Markers.txt", DiffFileStatus.Modified));
+        var gitService = new FakeGitDiffService(
+            fileChanges,
+            _ => "@@ -1 +1 @@\n---old\n+++new\n");
+        var documentService = new GitDiffDocumentService(gitService, new DiffDocumentFactory());
+
+        var snapshot = await documentService.LoadDocumentsAsync(
+            new GitDiffRequest("/repo", GitDiffScope.Worktree),
+            DiffContextMode.ChangedHunks,
+            CancellationToken.None);
+
+        var document = Assert.Single(snapshot.Documents);
+        Assert.Equal(1, document.Metadata.AddedLines);
+        Assert.Equal(1, document.Metadata.DeletedLines);
+        Assert.Contains(document.Lines, line => line.Kind == DiffLineKind.Deleted && line.Text == "--old");
+        Assert.Contains(document.Lines, line => line.Kind == DiffLineKind.Added && line.Text == "++new");
+    }
+
     private static GitFileChange CreateFileChange(string path, DiffFileStatus status, string? oldPath = null) =>
         new(path, oldPath, status, 0, 0, Path.GetExtension(path).Equals(".xaml", StringComparison.OrdinalIgnoreCase) ? "XAML" : "C#");
 

@@ -55,7 +55,8 @@ public sealed class GitBlameService : IGitBlameService
         DateTimeOffset? authorTime = null;
         var lineNumber = 0;
 
-        foreach (var rawLine in output.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        var lineStart = 0;
+        while (TryReadLine(output, ref lineStart, out var rawLine))
         {
             if (rawLine.Length == 0)
             {
@@ -70,7 +71,7 @@ public sealed class GitBlameService : IGitBlameService
                     string.IsNullOrWhiteSpace(author) ? "Unknown" : author,
                     authorTime,
                     summary,
-                    rawLine[1..]));
+                    rawLine[1..].ToString()));
                 continue;
             }
 
@@ -84,40 +85,105 @@ public sealed class GitBlameService : IGitBlameService
                 continue;
             }
 
-            if (rawLine.StartsWith("author ", StringComparison.Ordinal))
+            if (rawLine.StartsWith("author ".AsSpan(), StringComparison.Ordinal))
             {
-                author = rawLine["author ".Length..];
+                author = rawLine["author ".Length..].ToString();
             }
-            else if (rawLine.StartsWith("author-time ", StringComparison.Ordinal) && long.TryParse(rawLine["author-time ".Length..], out var unixTime))
+            else if (rawLine.StartsWith("author-time ".AsSpan(), StringComparison.Ordinal) && long.TryParse(rawLine["author-time ".Length..], out var unixTime))
             {
                 authorTime = DateTimeOffset.FromUnixTimeSeconds(unixTime);
             }
-            else if (rawLine.StartsWith("summary ", StringComparison.Ordinal))
+            else if (rawLine.StartsWith("summary ".AsSpan(), StringComparison.Ordinal))
             {
-                summary = rawLine["summary ".Length..];
+                summary = rawLine["summary ".Length..].ToString();
             }
         }
 
         return new GitFileBlame(path, builder.ToImmutable());
     }
 
-    private static bool TryParseHeader(string line, out string commitId, out int lineNumber)
+    private static bool TryReadLine(string text, ref int lineStart, out ReadOnlySpan<char> line)
+    {
+        if (lineStart >= text.Length)
+        {
+            line = ReadOnlySpan<char>.Empty;
+            return false;
+        }
+
+        var newlineOffset = text.AsSpan(lineStart).IndexOfAny('\r', '\n');
+        if (newlineOffset < 0)
+        {
+            line = text.AsSpan(lineStart);
+            lineStart = text.Length;
+            return true;
+        }
+
+        var lineEnd = lineStart + newlineOffset;
+        line = text.AsSpan(lineStart, lineEnd - lineStart);
+        lineStart = lineEnd + 1;
+        if (text[lineEnd] == '\r' && lineStart < text.Length && text[lineStart] == '\n')
+        {
+            lineStart++;
+        }
+
+        return true;
+    }
+
+    private static bool TryParseHeader(ReadOnlySpan<char> line, out string commitId, out int lineNumber)
     {
         commitId = string.Empty;
         lineNumber = 0;
-        var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 3 || !IsCommitToken(parts[0]) || !int.TryParse(parts[2], out lineNumber))
+        if (!TryReadPart(line, 0, out var commitToken, out var nextIndex) ||
+            !TryReadPart(line, nextIndex, out _, out nextIndex) ||
+            !TryReadPart(line, nextIndex, out var finalLineToken, out _) ||
+            !IsCommitToken(commitToken) ||
+            !int.TryParse(finalLineToken, out lineNumber))
         {
             return false;
         }
 
-        commitId = parts[0].TrimStart('^');
+        commitId = TrimLeadingCommitMarker(commitToken).ToString();
         return true;
     }
 
-    private static bool IsCommitToken(string token)
+    private static bool TryReadPart(ReadOnlySpan<char> line, int startIndex, out ReadOnlySpan<char> part, out int nextIndex)
     {
-        var normalized = token.TrimStart('^');
-        return normalized.Length >= 7 && normalized.All(Uri.IsHexDigit);
+        var index = startIndex;
+        while (index < line.Length && char.IsWhiteSpace(line[index]))
+        {
+            index++;
+        }
+
+        var partStart = index;
+        while (index < line.Length && !char.IsWhiteSpace(line[index]))
+        {
+            index++;
+        }
+
+        part = line[partStart..index];
+        nextIndex = index;
+        return part.Length > 0;
     }
+
+    private static bool IsCommitToken(ReadOnlySpan<char> token)
+    {
+        var normalized = TrimLeadingCommitMarker(token);
+        if (normalized.Length < 7)
+        {
+            return false;
+        }
+
+        foreach (var character in normalized)
+        {
+            if (!Uri.IsHexDigit(character))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static ReadOnlySpan<char> TrimLeadingCommitMarker(ReadOnlySpan<char> token) =>
+        token.Length > 0 && token[0] == '^' ? token[1..] : token;
 }

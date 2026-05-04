@@ -26,13 +26,41 @@ public sealed class GitDiffDocumentService : IGitDiffDocumentService
         DiffContextMode contextMode,
         CancellationToken cancellationToken)
     {
-        var gitSnapshot = await gitDiffService.GetDiffAsync(request, cancellationToken).ConfigureAwait(false);
         var diffRequest = contextMode == DiffContextMode.FullFileDiff
             ? request with { ContextLines = FullFileContextLines }
             : request;
-        var batchedFileDiffs = gitSnapshot.Files.IsDefaultOrEmpty
-            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            : await LoadBatchedFileDiffsAsync(diffRequest, cancellationToken).ConfigureAwait(false);
+        var gitSnapshotTask = gitDiffService.GetDiffAsync(request, cancellationToken);
+        var batchedFileDiffsTask = ShouldLoadBatchedDiffConcurrently(request)
+            ? LoadBatchedFileDiffsAsync(diffRequest, cancellationToken)
+            : null;
+
+        var gitSnapshot = await gitSnapshotTask.ConfigureAwait(false);
+        IReadOnlyDictionary<string, BatchedFileDiff> batchedFileDiffs;
+        if (gitSnapshot.Files.IsDefaultOrEmpty)
+        {
+            if (batchedFileDiffsTask is not null)
+            {
+                await batchedFileDiffsTask.ConfigureAwait(false);
+            }
+
+            batchedFileDiffs = new Dictionary<string, BatchedFileDiff>(StringComparer.OrdinalIgnoreCase);
+        }
+        else
+        {
+            batchedFileDiffs = batchedFileDiffsTask is not null
+                ? await batchedFileDiffsTask.ConfigureAwait(false)
+                : await LoadBatchedFileDiffsAsync(diffRequest, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (contextMode != DiffContextMode.CurrentFile)
+        {
+            var batchedDocuments = TryLoadBatchedDocuments(gitSnapshot.Files, batchedFileDiffs, cancellationToken);
+            if (batchedDocuments is not null)
+            {
+                return new GitDiffDocumentSnapshot(gitSnapshot, batchedDocuments.Value);
+            }
+        }
+
         var documents = new DiffDocumentSnapshot[gitSnapshot.Files.Length];
         using var concurrency = new SemaphoreSlim(GetMaxConcurrentFileLoads(gitSnapshot.Files.Length));
 
@@ -53,27 +81,75 @@ public sealed class GitDiffDocumentService : IGitDiffDocumentService
         return new GitDiffDocumentSnapshot(gitSnapshot, documents.ToImmutableArray());
     }
 
+    private static bool ShouldLoadBatchedDiffConcurrently(GitDiffRequest request) =>
+        request.Scope is GitDiffScope.CommitRange or GitDiffScope.Custom ||
+        request.Scope == GitDiffScope.Branch && !string.IsNullOrWhiteSpace(request.BaseRef);
+
+    private ImmutableArray<DiffDocumentSnapshot>? TryLoadBatchedDocuments(
+        ImmutableArray<GitFileChange> files,
+        IReadOnlyDictionary<string, BatchedFileDiff> batchedFileDiffs,
+        CancellationToken cancellationToken)
+    {
+        if (files.IsDefaultOrEmpty)
+        {
+            return ImmutableArray<DiffDocumentSnapshot>.Empty;
+        }
+
+        foreach (var file in files)
+        {
+            if (!TryGetBatchedFileDiff(batchedFileDiffs, file, out _))
+            {
+                return null;
+            }
+        }
+
+        var documents = new DiffDocumentSnapshot[files.Length];
+        var parallelOptions = new ParallelOptions
+        {
+            CancellationToken = cancellationToken,
+            MaxDegreeOfParallelism = Math.Min(files.Length, Math.Clamp(Environment.ProcessorCount, 2, 8))
+        };
+
+        Parallel.For(0, files.Length, parallelOptions, fileIndex =>
+        {
+            var fileChange = files[fileIndex];
+            if (!TryGetBatchedFileDiff(batchedFileDiffs, fileChange, out var batchedDiff))
+            {
+                throw new InvalidOperationException($"Missing batched git diff for '{fileChange.Path}'.");
+            }
+
+            var metadata = CreateMetadata(fileChange, batchedDiff);
+            documents[fileIndex] = documentFactory.CreateFromUnifiedDiff(metadata, batchedDiff.UnifiedDiff);
+        });
+
+        return documents.ToImmutableArray();
+    }
+
     private async Task<DiffDocumentSnapshot> LoadDocumentAsync(
         GitDiffRequest request,
         GitDiffRequest diffRequest,
         DiffContextMode contextMode,
         GitFileChange fileChange,
-        IReadOnlyDictionary<string, string> batchedFileDiffs,
+        IReadOnlyDictionary<string, BatchedFileDiff> batchedFileDiffs,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var unifiedDiff = TryGetBatchedFileDiff(batchedFileDiffs, fileChange, out var batchedDiff)
-            ? batchedDiff
-            : (await gitDiffService.GetFileDiffAsync(diffRequest, fileChange, cancellationToken).ConfigureAwait(false)).UnifiedDiff;
-        var metadata = CreateMetadata(fileChange, unifiedDiff);
+        BatchedFileDiff batchedDiff;
+        if (!TryGetBatchedFileDiff(batchedFileDiffs, fileChange, out batchedDiff))
+        {
+            var fileDiff = await gitDiffService.GetFileDiffAsync(diffRequest, fileChange, cancellationToken).ConfigureAwait(false);
+            batchedDiff = CreateBatchedFileDiff(fileDiff.UnifiedDiff);
+        }
+
+        var metadata = CreateMetadata(fileChange, batchedDiff);
         return contextMode == DiffContextMode.CurrentFile
             ? documentFactory.CreateFromText(metadata, await gitDiffService.GetFileContentAsync(request, fileChange, cancellationToken).ConfigureAwait(false))
-            : documentFactory.CreateFromUnifiedDiff(metadata, unifiedDiff);
+            : documentFactory.CreateFromUnifiedDiff(metadata, batchedDiff.UnifiedDiff);
     }
 
     private static int GetMaxConcurrentFileLoads(int fileCount) => Math.Min(fileCount, Math.Clamp(Environment.ProcessorCount / 2, 2, 6));
 
-    private async Task<IReadOnlyDictionary<string, string>> LoadBatchedFileDiffsAsync(
+    private async Task<IReadOnlyDictionary<string, BatchedFileDiff>> LoadBatchedFileDiffsAsync(
         GitDiffRequest diffRequest,
         CancellationToken cancellationToken)
     {
@@ -82,82 +158,110 @@ public sealed class GitDiffDocumentService : IGitDiffDocumentService
     }
 
     private static bool TryGetBatchedFileDiff(
-        IReadOnlyDictionary<string, string> fileDiffs,
+        IReadOnlyDictionary<string, BatchedFileDiff> fileDiffs,
         GitFileChange fileChange,
-        out string unifiedDiff)
+        out BatchedFileDiff batchedDiff)
     {
-        if (fileDiffs.TryGetValue(NormalizePathKey(fileChange.Path), out unifiedDiff!))
+        if (fileDiffs.TryGetValue(NormalizePathKey(fileChange.Path), out batchedDiff!))
         {
             return true;
         }
 
         if (!string.IsNullOrWhiteSpace(fileChange.OldPath) &&
-            fileDiffs.TryGetValue(NormalizePathKey(fileChange.OldPath), out unifiedDiff!))
+            fileDiffs.TryGetValue(NormalizePathKey(fileChange.OldPath), out batchedDiff!))
         {
             return true;
         }
 
-        unifiedDiff = string.Empty;
+        batchedDiff = BatchedFileDiff.Empty;
         return false;
     }
 
-    private static IReadOnlyDictionary<string, string> SplitUnifiedDiffByPath(string unifiedDiff)
+    private static IReadOnlyDictionary<string, BatchedFileDiff> SplitUnifiedDiffByPath(string unifiedDiff)
     {
         if (string.IsNullOrWhiteSpace(unifiedDiff))
         {
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            return new Dictionary<string, BatchedFileDiff>(StringComparer.OrdinalIgnoreCase);
         }
 
-        var chunks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var builder = new System.Text.StringBuilder();
+        var chunks = new Dictionary<string, BatchedFileDiff>(StringComparer.OrdinalIgnoreCase);
+        var chunkStart = 0;
         var activePath = string.Empty;
-        foreach (var line in SplitLinesPreservingText(unifiedDiff))
+        var addedLines = 0;
+        var deletedLines = 0;
+
+        for (var lineStart = 0; lineStart < unifiedDiff.Length;)
         {
-            if (line.StartsWith("diff --git ", StringComparison.Ordinal) && builder.Length > 0)
+            var nextLineStart = GetNextLineStart(unifiedDiff, lineStart, out var lineLength);
+            var line = unifiedDiff.AsSpan(lineStart, lineLength);
+
+            if (line.StartsWith("diff --git ".AsSpan(), StringComparison.Ordinal) && lineStart > chunkStart)
             {
-                AddChunk(chunks, activePath, builder.ToString());
-                builder.Clear();
+                AddChunk(chunks, activePath, unifiedDiff, chunkStart, lineStart, addedLines, deletedLines);
+                chunkStart = lineStart;
                 activePath = string.Empty;
+                addedLines = 0;
+                deletedLines = 0;
             }
 
-            builder.AppendLine(line);
-            if (line.StartsWith("+++ ", StringComparison.Ordinal))
+            if (line.StartsWith("+++ ".AsSpan(), StringComparison.Ordinal))
             {
                 activePath = ParseDiffHeaderPath(line[4..]) ?? activePath;
             }
-            else if (string.IsNullOrWhiteSpace(activePath) && line.StartsWith("--- ", StringComparison.Ordinal))
+            else if (string.IsNullOrWhiteSpace(activePath) && line.StartsWith("--- ".AsSpan(), StringComparison.Ordinal))
             {
                 activePath = ParseDiffHeaderPath(line[4..]) ?? activePath;
             }
+
+            if (line.Length > 0)
+            {
+                if (line[0] == '+' && !IsFileHeaderLine(line))
+                {
+                    addedLines++;
+                }
+                else if (line[0] == '-' && !IsFileHeaderLine(line))
+                {
+                    deletedLines++;
+                }
+            }
+
+            lineStart = nextLineStart;
         }
 
-        if (builder.Length > 0)
-        {
-            AddChunk(chunks, activePath, builder.ToString());
-        }
+        AddChunk(chunks, activePath, unifiedDiff, chunkStart, unifiedDiff.Length, addedLines, deletedLines);
 
         return chunks;
     }
 
-    private static IEnumerable<string> SplitLinesPreservingText(string text)
+    private static int GetNextLineStart(string text, int lineStart, out int lineLength)
     {
-        using var reader = new StringReader(text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n'));
-        string? line;
-        while ((line = reader.ReadLine()) is not null)
+        var newlineOffset = text.AsSpan(lineStart).IndexOfAny('\r', '\n');
+        if (newlineOffset < 0)
         {
-            yield return line;
+            lineLength = text.Length - lineStart;
+            return text.Length;
         }
+
+        var lineEnd = lineStart + newlineOffset;
+        lineLength = lineEnd - lineStart;
+        var nextLineStart = lineEnd + 1;
+        if (text[lineEnd] == '\r' && nextLineStart < text.Length && text[nextLineStart] == '\n')
+        {
+            nextLineStart++;
+        }
+
+        return nextLineStart;
     }
 
-    private static string? ParseDiffHeaderPath(string rawPath)
+    private static string? ParseDiffHeaderPath(ReadOnlySpan<char> rawPath)
     {
         var path = rawPath.Trim();
-        if (path.Equals("/dev/null", StringComparison.Ordinal))
+        if (path.Equals("/dev/null".AsSpan(), StringComparison.Ordinal))
         {
             return null;
         }
 
-        if (path.StartsWith("a/", StringComparison.Ordinal) || path.StartsWith("b/", StringComparison.Ordinal))
+        if (path.StartsWith("a/".AsSpan(), StringComparison.Ordinal) || path.StartsWith("b/".AsSpan(), StringComparison.Ordinal))
         {
             path = path[2..];
         }
@@ -167,48 +271,71 @@ public sealed class GitDiffDocumentService : IGitDiffDocumentService
             path = path[1..^1];
         }
 
-        return string.IsNullOrWhiteSpace(path) ? null : NormalizePathKey(path);
+        return path.Length == 0 ? null : NormalizePathKey(path.ToString());
     }
 
-    private static void AddChunk(Dictionary<string, string> chunks, string path, string unifiedDiff)
+    private static void AddChunk(
+        Dictionary<string, BatchedFileDiff> chunks,
+        string path,
+        string unifiedDiff,
+        int start,
+        int end,
+        int addedLines,
+        int deletedLines)
     {
-        if (!string.IsNullOrWhiteSpace(path))
+        if (!string.IsNullOrWhiteSpace(path) && end > start)
         {
-            chunks[NormalizePathKey(path)] = unifiedDiff;
+            chunks[NormalizePathKey(path)] = new BatchedFileDiff(unifiedDiff[start..end], addedLines, deletedLines);
         }
     }
 
-    private static string NormalizePathKey(string path) => path.Replace('\\', '/').Trim('/');
-
-    private static DiffDocumentMetadata CreateMetadata(GitFileChange fileChange, string unifiedDiff)
+    private static BatchedFileDiff CreateBatchedFileDiff(string unifiedDiff)
     {
         var addedLines = 0;
         var deletedLines = 0;
 
-        foreach (var line in unifiedDiff.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        for (var lineStart = 0; lineStart < unifiedDiff.Length;)
         {
-            if (line.StartsWith("+++", StringComparison.Ordinal) || line.StartsWith("---", StringComparison.Ordinal))
+            var nextLineStart = GetNextLineStart(unifiedDiff, lineStart, out var lineLength);
+            var line = unifiedDiff.AsSpan(lineStart, lineLength);
+            if (line.Length > 0)
             {
-                continue;
+                if (line[0] == '+' && !IsFileHeaderLine(line))
+                {
+                    addedLines++;
+                }
+                else if (line[0] == '-' && !IsFileHeaderLine(line))
+                {
+                    deletedLines++;
+                }
             }
 
-            if (line.StartsWith('+'))
-            {
-                addedLines++;
-            }
-            else if (line.StartsWith('-'))
-            {
-                deletedLines++;
-            }
+            lineStart = nextLineStart;
         }
 
-        return new DiffDocumentMetadata(
+        return new BatchedFileDiff(unifiedDiff, addedLines, deletedLines);
+    }
+
+    private static string NormalizePathKey(string path) => path.Replace('\\', '/').Trim('/');
+
+    private static bool IsFileHeaderLine(ReadOnlySpan<char> line) =>
+        line.Length > 3 &&
+        (line.StartsWith("+++".AsSpan(), StringComparison.Ordinal) ||
+            line.StartsWith("---".AsSpan(), StringComparison.Ordinal)) &&
+        char.IsWhiteSpace(line[3]);
+
+    private static DiffDocumentMetadata CreateMetadata(GitFileChange fileChange, BatchedFileDiff diff) =>
+        new(
             new DiffDocumentId(fileChange.Path),
             fileChange.Path,
             fileChange.OldPath,
             fileChange.Status,
             fileChange.Language,
-            addedLines,
-            deletedLines);
+            diff.AddedLines,
+            diff.DeletedLines);
+
+    private sealed record BatchedFileDiff(string UnifiedDiff, int AddedLines, int DeletedLines)
+    {
+        public static BatchedFileDiff Empty { get; } = new(string.Empty, 0, 0);
     }
 }

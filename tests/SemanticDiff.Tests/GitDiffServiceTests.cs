@@ -143,6 +143,31 @@ public sealed class GitDiffServiceTests
     }
 
     [Fact]
+    public async Task GetFileDiffAsync_PreservesBlankLinesInSyntheticAddedDiff()
+    {
+        var repositoryPath = Path.Combine(Path.GetTempPath(), $"SemanticDiffTests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(repositoryPath, "src"));
+        await File.WriteAllTextAsync(Path.Combine(repositoryPath, "src", "NewFile.txt"), "first\r\n\r\nthird\r\n");
+
+        try
+        {
+            var service = new GitDiffService(new FakeGitCommandRunner(_ => new GitCommandResult(1, string.Empty, "not found")));
+            var fileChange = new GitFileChange("src/NewFile.txt", null, DiffFileStatus.Untracked, 0, 0, "TXT");
+
+            var fileDiff = await service.GetFileDiffAsync(new GitDiffRequest(repositoryPath, GitDiffScope.Worktree), fileChange, CancellationToken.None);
+
+            Assert.Contains("@@ -0,0 +1,3 @@", fileDiff.UnifiedDiff);
+            Assert.Contains("+first", fileDiff.UnifiedDiff);
+            Assert.Contains("+\n", fileDiff.UnifiedDiff.Replace("\r\n", "\n", StringComparison.Ordinal));
+            Assert.Contains("+third", fileDiff.UnifiedDiff);
+        }
+        finally
+        {
+            Directory.Delete(repositoryPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task GetFileDiffAsync_SkipsDefaultBranchDiscoveryWhenScopeDoesNotNeedIt()
     {
         var runner = new FakeGitCommandRunner(arguments =>

@@ -172,7 +172,7 @@ public sealed class GitDiffService : IGitDiffService
     {
         var result = await commandRunner.RunAsync(request.RepositoryPath, GitDiffCommandBuilder.BuildWorktreeStatusArguments(), cancellationToken).ConfigureAwait(false);
         return result.Succeeded
-            ? ParsePorcelainStatus(result.StandardOutput).Where(file => file.Status == DiffFileStatus.Untracked).ToImmutableArray()
+            ? ParsePorcelainStatus(result.StandardOutput, DiffFileStatus.Untracked)
             : ImmutableArray<GitFileChange>.Empty;
     }
 
@@ -183,25 +183,25 @@ public sealed class GitDiffService : IGitDiffService
             return ImmutableArray<GitFileChange>.Empty;
         }
 
-        var tokens = output.Split('\0', StringSplitOptions.RemoveEmptyEntries);
-        var builder = ImmutableArray.CreateBuilder<GitFileChange>();
+        var builder = ImmutableArray.CreateBuilder<GitFileChange>(Math.Max(4, CountNullTokens(output) / 2));
+        var tokenIndex = 0;
 
-        for (var tokenIndex = 0; tokenIndex < tokens.Length; tokenIndex++)
+        while (TryReadNullTerminatedToken(output, ref tokenIndex, out var statusToken))
         {
-            var statusToken = tokens[tokenIndex];
-            if (statusToken.Length == 0 || tokenIndex + 1 >= tokens.Length)
+            if (statusToken.Length == 0 || !TryReadNullTerminatedToken(output, ref tokenIndex, out var pathToken))
             {
                 continue;
             }
 
             var status = ParseStatus(statusToken[0]);
             string? oldPath = null;
-            var path = tokens[++tokenIndex];
+            var path = pathToken.ToString();
 
-            if (status is DiffFileStatus.Renamed or DiffFileStatus.Copied && tokenIndex + 1 < tokens.Length)
+            if (status is DiffFileStatus.Renamed or DiffFileStatus.Copied &&
+                TryReadNullTerminatedToken(output, ref tokenIndex, out var nextPathToken))
             {
                 oldPath = path;
-                path = tokens[++tokenIndex];
+                path = nextPathToken.ToString();
             }
 
             builder.Add(new GitFileChange(path, oldPath, status, 0, 0, LanguageFromPath(path)));
@@ -210,19 +210,18 @@ public sealed class GitDiffService : IGitDiffService
         return builder.ToImmutable();
     }
 
-    private static ImmutableArray<GitFileChange> ParsePorcelainStatus(string output)
+    private static ImmutableArray<GitFileChange> ParsePorcelainStatus(string output, DiffFileStatus? statusFilter = null)
     {
         if (string.IsNullOrEmpty(output))
         {
             return ImmutableArray<GitFileChange>.Empty;
         }
 
-        var tokens = output.Split('\0', StringSplitOptions.RemoveEmptyEntries);
-        var builder = ImmutableArray.CreateBuilder<GitFileChange>();
+        var filesByPath = new Dictionary<string, GitFileChange>(StringComparer.Ordinal);
+        var tokenIndex = 0;
 
-        for (var tokenIndex = 0; tokenIndex < tokens.Length; tokenIndex++)
+        while (TryReadNullTerminatedToken(output, ref tokenIndex, out var token))
         {
-            var token = tokens[tokenIndex];
             if (token.Length < 4)
             {
                 continue;
@@ -230,22 +229,27 @@ public sealed class GitDiffService : IGitDiffService
 
             var indexStatus = token[0];
             var workTreeStatus = token[1];
-            var path = token[3..];
+            var path = token[3..].ToString();
             string? oldPath = null;
             var status = ParsePorcelainStatus(indexStatus, workTreeStatus);
 
-            if (status == DiffFileStatus.Renamed && tokenIndex + 1 < tokens.Length)
+            if (status == DiffFileStatus.Renamed &&
+                TryReadNullTerminatedToken(output, ref tokenIndex, out var oldPathToken))
             {
-                oldPath = tokens[++tokenIndex];
+                oldPath = oldPathToken.ToString();
             }
 
-            builder.Add(new GitFileChange(path, oldPath, status, 0, 0, LanguageFromPath(path)));
+            if (statusFilter is not null && status != statusFilter)
+            {
+                continue;
+            }
+
+            filesByPath.TryAdd(path, new GitFileChange(path, oldPath, status, 0, 0, LanguageFromPath(path)));
         }
 
-        return builder
-            .GroupBy(file => file.Path, StringComparer.Ordinal)
-            .Select(group => group.First())
-            .ToImmutableArray();
+        return filesByPath.Count == 0
+            ? ImmutableArray<GitFileChange>.Empty
+            : filesByPath.Values.ToImmutableArray();
     }
 
     private static ImmutableArray<GitFileChange> MergeFileChanges(
@@ -350,30 +354,91 @@ public sealed class GitDiffService : IGitDiffService
 
     private static string CreateAddedFileDiff(string path, string text)
     {
-        var lines = SplitPatchLines(text);
+        var lineCount = CountPatchLines(text);
         var builder = new System.Text.StringBuilder();
         builder.AppendLine("--- /dev/null");
         builder.Append("+++ b/").AppendLine(path);
-        builder.Append("@@ -0,0 +").Append(lines.Count == 0 ? 0 : 1).Append(',').Append(lines.Count).AppendLine(" @@");
+        builder.Append("@@ -0,0 +").Append(lineCount == 0 ? 0 : 1).Append(',').Append(lineCount).AppendLine(" @@");
 
-        foreach (var line in lines)
+        var lineStart = 0;
+        while (TryReadPatchLine(text, ref lineStart, out var line))
         {
-            builder.Append('+').AppendLine(line);
+            builder.Append('+').Append(line).AppendLine();
         }
 
         return builder.ToString();
     }
 
-    private static IReadOnlyList<string> SplitPatchLines(string text)
+    private static bool TryReadNullTerminatedToken(string text, ref int startIndex, out ReadOnlySpan<char> token)
     {
-        var normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
-        if (normalized.Length == 0)
+        while (startIndex < text.Length)
         {
-            return [];
+            var tokenStart = startIndex;
+            var terminatorOffset = text.AsSpan(startIndex).IndexOf('\0');
+            var tokenEnd = terminatorOffset < 0 ? text.Length : startIndex + terminatorOffset;
+            startIndex = terminatorOffset < 0 ? text.Length : tokenEnd + 1;
+            if (tokenEnd > tokenStart)
+            {
+                token = text.AsSpan(tokenStart, tokenEnd - tokenStart);
+                return true;
+            }
         }
 
-        var lines = normalized.Split('\n');
-        return lines.Length > 0 && lines[^1].Length == 0 ? lines[..^1] : lines;
+        token = ReadOnlySpan<char>.Empty;
+        return false;
+    }
+
+    private static int CountNullTokens(string text)
+    {
+        var count = 0;
+        foreach (var character in text)
+        {
+            if (character == '\0')
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static int CountPatchLines(string text)
+    {
+        var count = 0;
+        var lineStart = 0;
+        while (TryReadPatchLine(text, ref lineStart, out _))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    private static bool TryReadPatchLine(string text, ref int lineStart, out ReadOnlySpan<char> line)
+    {
+        if (lineStart >= text.Length)
+        {
+            line = ReadOnlySpan<char>.Empty;
+            return false;
+        }
+
+        var newlineOffset = text.AsSpan(lineStart).IndexOfAny('\r', '\n');
+        if (newlineOffset < 0)
+        {
+            line = text.AsSpan(lineStart);
+            lineStart = text.Length;
+            return true;
+        }
+
+        var lineEnd = lineStart + newlineOffset;
+        line = text.AsSpan(lineStart, lineEnd - lineStart);
+        lineStart = lineEnd + 1;
+        if (text[lineEnd] == '\r' && lineStart < text.Length && text[lineStart] == '\n')
+        {
+            lineStart++;
+        }
+
+        return true;
     }
 
     private static string LanguageFromPath(string path)
