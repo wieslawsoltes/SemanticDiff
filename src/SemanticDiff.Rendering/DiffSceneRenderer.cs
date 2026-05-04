@@ -597,6 +597,9 @@ public sealed class DiffSceneRenderer
         using var inlineDeletedPaint = new SKPaint { Color = palette.InlineDeletedBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
         using var inlineChangedPaint = new SKPaint { Color = palette.InlineChangedBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
         using var metadataPaint = new SKPaint { Color = palette.MetadataBackground, Style = SKPaintStyle.Fill };
+        using var foldGuidePaint = new SKPaint { Color = palette.MutedTextColor.WithAlpha(90), Style = SKPaintStyle.Stroke, StrokeWidth = 1, IsAntialias = false };
+        using var foldMarkerFillPaint = new SKPaint { Color = palette.GutterBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
+        using var foldMarkerStrokePaint = new SKPaint { Color = palette.MutedTextColor.WithAlpha(190), Style = SKPaintStyle.Stroke, StrokeWidth = 1.2f, IsAntialias = true };
         var codeStyles = textResources.GetCodeTextStyles((float)node.FontSize);
         var lineStyle = textResources.GetCodeTextStyle((float)Math.Max(8, node.FontSize - 1), palette.MutedTextColor);
 
@@ -614,16 +617,17 @@ public sealed class DiffSceneRenderer
             var codeX = bodyRect.Left + gutterWidth + markerWidth + (float)DiffNode.CodeLeftPadding;
             var lineAnnotations = documentCache.GetLineAnnotations(line.Index);
             var lineLayout = documentCache.GetLineLayout(line.Index);
+            var lineNumberText = documentCache.GetLineNumberText(line.Index);
             DrawLineBackground(canvas, line, lineRect, addedPaint, deletedPaint, ignoredPaint, movedPaint, conflictPaint, metadataPaint);
             DrawLineAnnotationBand(canvas, lineAnnotations, lineRect, palette, hoveredAnnotationId);
             if (node.IsShowingFullFile)
             {
-                DrawFoldGuide(canvas, node, visibleLine, bodyRect.Left, codeX, (float)y, (float)lineHeight, palette, lineStyle, codeStyles.Default);
-                DrawFullLineNumber(canvas, line, bodyRect.Left + gutterWidth - 10, (float)(y + lineHeight * 0.73), lineStyle);
+                DrawFoldGuide(canvas, node, visibleLine, bodyRect.Left, codeX, (float)y, (float)lineHeight, lineStyle, codeStyles.Default, foldGuidePaint, foldMarkerFillPaint, foldMarkerStrokePaint);
+                DrawFullLineNumber(canvas, lineNumberText.Full, bodyRect.Left + gutterWidth - 10, (float)(y + lineHeight * 0.73), lineStyle);
             }
             else
             {
-                DrawLineNumber(canvas, line, bodyRect.Left + 8, (float)(y + lineHeight * 0.73), lineStyle);
+                DrawLineNumber(canvas, lineNumberText, bodyRect.Left + 8, (float)(y + lineHeight * 0.73), lineStyle);
                 DrawMarker(canvas, line, bodyRect.Left + gutterWidth, (float)y, markerWidth, (float)lineHeight, lineStyle);
             }
 
@@ -714,17 +718,14 @@ public sealed class DiffSceneRenderer
         }
     }
 
-    private static void DrawLineNumber(SKCanvas canvas, DiffLine line, float x, float y, TextStyle style)
+    private static void DrawLineNumber(SKCanvas canvas, LineNumberRenderText lineNumberText, float x, float y, TextStyle style)
     {
-        var oldText = line.OldLineNumber?.ToString() ?? string.Empty;
-        var newText = line.NewLineNumber?.ToString() ?? string.Empty;
-        canvas.DrawText(oldText.PadLeft(4), x, y, style.Font, style.Paint);
-        canvas.DrawText(newText.PadLeft(4), x + 42, y, style.Font, style.Paint);
+        canvas.DrawText(lineNumberText.Old, x, y, style.Font, style.Paint);
+        canvas.DrawText(lineNumberText.New, x + 42, y, style.Font, style.Paint);
     }
 
-    private static void DrawFullLineNumber(SKCanvas canvas, DiffLine line, float right, float y, TextStyle style)
+    private static void DrawFullLineNumber(SKCanvas canvas, string text, float right, float y, TextStyle style)
     {
-        var text = (line.NewLineNumber ?? line.OldLineNumber ?? line.Index + 1).ToString();
         var width = style.MeasureText(text);
         canvas.DrawText(text, right - width, y, style.Font, style.Paint);
     }
@@ -737,17 +738,12 @@ public sealed class DiffSceneRenderer
         float codeX,
         float y,
         float lineHeight,
-        RendererPalette palette,
         TextStyle lineStyle,
-        TextStyle codeStyle)
+        TextStyle codeStyle,
+        SKPaint guidePaint,
+        SKPaint markerFill,
+        SKPaint markerStroke)
     {
-        using var guidePaint = new SKPaint
-        {
-            Color = palette.MutedTextColor.WithAlpha(90),
-            Style = SKPaintStyle.Stroke,
-            StrokeWidth = 1,
-            IsAntialias = false
-        };
         var guideCount = Math.Min(5, visibleLine.ActiveFoldRegions.Length);
         for (var index = 0; index < guideCount; index++)
         {
@@ -764,8 +760,6 @@ public sealed class DiffSceneRenderer
         var centerX = gutterLeft + 23;
         var centerY = y + lineHeight * 0.5f;
         var rect = SKRect.Create(centerX - 5, centerY - 5, 10, 10);
-        using var markerFill = new SKPaint { Color = palette.GutterBackground, Style = SKPaintStyle.Fill, IsAntialias = true };
-        using var markerStroke = new SKPaint { Color = palette.MutedTextColor.WithAlpha(190), Style = SKPaintStyle.Stroke, StrokeWidth = 1.2f, IsAntialias = true };
         canvas.DrawRoundRect(rect, 2, 2, markerFill);
         canvas.DrawRoundRect(rect, 2, 2, markerStroke);
         canvas.DrawLine(rect.Left + 2, centerY, rect.Right - 2, centerY, markerStroke);
@@ -914,25 +908,18 @@ public sealed class DiffSceneRenderer
         foreach (var run in lineLayout.Runs)
         {
             var style = run.Token is null ? codeStyles.Default : codeStyles.GetStyle(run.Token);
-            DrawCodeTextRange(canvas, line.Text, run.StartColumn, run.Length, x, y, characterWidth, style);
+            DrawCodeTextRange(canvas, run.Text, run.StartColumn, x, y, characterWidth, style);
         }
     }
 
-    private static void DrawCodeTextRange(SKCanvas canvas, string text, int start, int length, float x, float y, float characterWidth, TextStyle style)
+    private static void DrawCodeTextRange(SKCanvas canvas, string text, int start, float x, float y, float characterWidth, TextStyle style)
     {
-        if (length <= 0 || start < 0 || start >= text.Length)
+        if (text.Length == 0 || start < 0)
         {
             return;
         }
 
-        var safeLength = Math.Min(length, text.Length - start);
-        var value = text.Substring(start, safeLength);
-        if (value.IndexOf('\t') >= 0)
-        {
-            value = value.Replace("\t", TabReplacement, StringComparison.Ordinal);
-        }
-
-        canvas.DrawText(value, x + start * characterWidth, y, style.Font, style.Paint);
+        canvas.DrawText(text, x + start * characterWidth, y, style.Font, style.Paint);
     }
 
     private static void DrawScrollbar(SKCanvas canvas, DiffNode node, RendererPalette palette, double cameraScale)
@@ -1353,7 +1340,7 @@ public sealed class DiffSceneRenderer
 
     private sealed record RenderGraphEdge(GraphEdge Edge, DiffNode Source, DiffNode Target, Rect2 Bounds, EdgeCurve Curve);
 
-    private readonly record struct DiffTextRun(int StartColumn, int Length, TokenSpan? Token);
+    private readonly record struct DiffTextRun(int StartColumn, string Text, TokenSpan? Token);
 
     private sealed record DiffLineRenderLayout(DiffTextRun[] Runs)
     {
@@ -1392,22 +1379,36 @@ public sealed class DiffSceneRenderer
                 start = Math.Max(start, cursor);
                 if (start > cursor)
                 {
-                    runs.Add(new DiffTextRun(cursor, start - cursor, null));
+                    runs.Add(new DiffTextRun(cursor, CreateRunText(line.Text, cursor, start - cursor), null));
                 }
 
                 if (end > start)
                 {
-                    runs.Add(new DiffTextRun(start, end - start, token));
+                    runs.Add(new DiffTextRun(start, CreateRunText(line.Text, start, end - start), token));
                     cursor = Math.Max(cursor, end);
                 }
             }
 
             if (cursor < line.Text.Length)
             {
-                runs.Add(new DiffTextRun(cursor, line.Text.Length - cursor, null));
+                runs.Add(new DiffTextRun(cursor, CreateRunText(line.Text, cursor, line.Text.Length - cursor), null));
             }
 
             return runs.Count == 0 ? Empty : new DiffLineRenderLayout(runs.ToArray());
+        }
+
+        private static string CreateRunText(string text, int start, int length)
+        {
+            var safeLength = Math.Min(length, text.Length - start);
+            if (safeLength <= 0)
+            {
+                return string.Empty;
+            }
+
+            var value = text.Substring(start, safeLength);
+            return value.IndexOf('\t') >= 0
+                ? value.Replace("\t", TabReplacement, StringComparison.Ordinal)
+                : value;
         }
 
         private static bool AreTokensOrdered(ImmutableArray<TokenSpan> tokens)
@@ -1429,11 +1430,17 @@ public sealed class DiffSceneRenderer
 
     private readonly record struct DocumentOverviewBucket(DiffLineKind Kind, bool HasText, bool HasAnnotation);
 
+    private readonly record struct LineNumberRenderText(string Old, string New, string Full)
+    {
+        public static LineNumberRenderText Empty { get; } = new("    ", "    ", string.Empty);
+    }
+
     private sealed class DocumentRenderCache
     {
         private readonly DiffDocumentSnapshot document;
         private readonly DiffAnnotation[] annotations;
         private readonly DiffLineRenderLayout[] lineLayouts;
+        private readonly LineNumberRenderText[] lineNumberTexts;
         private readonly Dictionary<int, DiffAnnotation[]> lineAnnotationsByIndex;
         private readonly Dictionary<int, DocumentOverviewBucket[]> overviewBucketsByCount = [];
 
@@ -1442,13 +1449,15 @@ public sealed class DiffSceneRenderer
             DiffAnnotation[] annotations,
             DiffAnnotation[] nodeAnnotations,
             Dictionary<int, DiffAnnotation[]> lineAnnotationsByIndex,
-            DiffLineRenderLayout[] lineLayouts)
+            DiffLineRenderLayout[] lineLayouts,
+            LineNumberRenderText[] lineNumberTexts)
         {
             this.document = document;
             this.annotations = annotations;
             NodeAnnotations = nodeAnnotations;
             this.lineAnnotationsByIndex = lineAnnotationsByIndex;
             this.lineLayouts = lineLayouts;
+            this.lineNumberTexts = lineNumberTexts;
         }
 
         public DiffAnnotation[] NodeAnnotations { get; }
@@ -1491,12 +1500,23 @@ public sealed class DiffSceneRenderer
             }
 
             var lineLayouts = new DiffLineRenderLayout[document.Lines.Length];
+            var lineNumberTexts = new LineNumberRenderText[document.Lines.Length];
             for (var index = 0; index < document.Lines.Length; index++)
             {
-                lineLayouts[index] = DiffLineRenderLayout.Create(document.Lines[index]);
+                var line = document.Lines[index];
+                lineLayouts[index] = DiffLineRenderLayout.Create(line);
+                lineNumberTexts[index] = CreateLineNumberText(line);
             }
 
-            return new DocumentRenderCache(document, sortedAnnotations, nodeAnnotations.ToArray(), lineAnnotationsByIndex, lineLayouts);
+            return new DocumentRenderCache(document, sortedAnnotations, nodeAnnotations.ToArray(), lineAnnotationsByIndex, lineLayouts, lineNumberTexts);
+        }
+
+        private static LineNumberRenderText CreateLineNumberText(DiffLine line)
+        {
+            var oldText = line.OldLineNumber?.ToString().PadLeft(4) ?? "    ";
+            var newText = line.NewLineNumber?.ToString().PadLeft(4) ?? "    ";
+            var fullText = (line.NewLineNumber ?? line.OldLineNumber ?? line.Index + 1).ToString();
+            return new LineNumberRenderText(oldText, newText, fullText);
         }
 
         public bool Matches(DiffDocumentSnapshot nextDocument, IReadOnlyList<DiffAnnotation> nextAnnotations)
@@ -1561,6 +1581,9 @@ public sealed class DiffSceneRenderer
 
         public DiffLineRenderLayout GetLineLayout(int lineIndex) =>
             lineIndex >= 0 && lineIndex < lineLayouts.Length ? lineLayouts[lineIndex] : DiffLineRenderLayout.Empty;
+
+        public LineNumberRenderText GetLineNumberText(int lineIndex) =>
+            lineIndex >= 0 && lineIndex < lineNumberTexts.Length ? lineNumberTexts[lineIndex] : LineNumberRenderText.Empty;
 
         public DocumentOverviewBucket[] GetOverviewBuckets(int bucketCount)
         {
