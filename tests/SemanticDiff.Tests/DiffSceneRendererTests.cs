@@ -40,6 +40,33 @@ public sealed class DiffSceneRendererTests
     }
 
     [Fact]
+    public void Render_ClampsMalformedTokenSpans()
+    {
+        var metadata = new DiffDocumentMetadata(new DiffDocumentId("Malformed.cs"), "Malformed.cs", null, DiffFileStatus.Modified, "C#", 1, 0);
+        var document = new DiffDocumentSnapshot(
+            metadata.Id,
+            metadata,
+            [
+                new DiffLine(
+                    0,
+                    1,
+                    1,
+                    DiffLineKind.Modified,
+                    "var value = 42;",
+                    [new TokenSpan(0, int.MaxValue, "keyword"), new TokenSpan(2, 6, "type")])
+            ]);
+        var scene = DiffCanvasScene.FromDocuments([document]);
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(800, 600));
+
+        renderer.Render(surface.Canvas, new SKSize(800, 600), scene, DiffCanvasColorTheme.Dark);
+
+        using var image = surface.Snapshot();
+        Assert.NotEqual(SKColors.Transparent, image.PeekPixels().GetPixelColor(40, 40));
+    }
+
+    [Fact]
     public void Render_AcceptsDocumentsWithConflictLines()
     {
         var factory = new DiffDocumentFactory();

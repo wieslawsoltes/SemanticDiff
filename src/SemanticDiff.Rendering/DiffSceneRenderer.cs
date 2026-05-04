@@ -748,8 +748,10 @@ public sealed class DiffSceneRenderer
             StrokeWidth = 1,
             IsAntialias = false
         };
-        foreach (var region in visibleLine.ActiveFoldRegions.Take(5))
+        var guideCount = Math.Min(5, visibleLine.ActiveFoldRegions.Length);
+        for (var index = 0; index < guideCount; index++)
         {
+            var region = visibleLine.ActiveFoldRegions[index];
             var x = GetFoldGuideX(node, region, codeX, codeStyle);
             canvas.DrawLine(x, y, x, y + lineHeight, guidePaint);
         }
@@ -954,7 +956,7 @@ public sealed class DiffSceneRenderer
             return;
         }
 
-        var primary = annotations.OrderBy(AnnotationPriority).First();
+        var primary = GetPrimaryAnnotation(annotations);
         if (primary.Kind is not (DiffAnnotationKind.Navigation or DiffAnnotationKind.ParserDiagnostic or DiffAnnotationKind.Conflict or DiffAnnotationKind.Impact or DiffAnnotationKind.ReviewComment))
         {
             return;
@@ -974,8 +976,10 @@ public sealed class DiffSceneRenderer
 
         var markerX = lineRect.Right - 14;
         var markerY = lineRect.Top + 4;
-        foreach (var annotation in annotations.Take(4))
+        var markerCount = Math.Min(4, annotations.Count);
+        for (var index = 0; index < markerCount; index++)
         {
+            var annotation = annotations[index];
             var isHovered = IsAnnotationHovered(annotation, hoveredAnnotationId);
             var markerSize = isHovered ? 9 : 7;
             var markerOffset = isHovered ? -1 : 0;
@@ -984,7 +988,16 @@ public sealed class DiffSceneRenderer
             markerY += 9;
         }
 
-        var labeled = annotations.FirstOrDefault(annotation => annotation.Kind is DiffAnnotationKind.Navigation or DiffAnnotationKind.ParserDiagnostic or DiffAnnotationKind.Conflict or DiffAnnotationKind.Impact or DiffAnnotationKind.ReviewComment);
+        DiffAnnotation? labeled = null;
+        foreach (var annotation in annotations)
+        {
+            if (annotation.Kind is DiffAnnotationKind.Navigation or DiffAnnotationKind.ParserDiagnostic or DiffAnnotationKind.Conflict or DiffAnnotationKind.Impact or DiffAnnotationKind.ReviewComment)
+            {
+                labeled = annotation;
+                break;
+            }
+        }
+
         if (labeled is null)
         {
             return;
@@ -1019,23 +1032,20 @@ public sealed class DiffSceneRenderer
             canvas.DrawText(mode, (float)node.Bounds.X + 12 + textStyle.MeasureText(summary) + 16, y, textStyle.Font, textStyle.Paint);
         }
 
-        var groupedAnnotations = annotations
-            .Where(annotation => annotation.Target == DiffAnnotationTarget.Node)
-            .GroupBy(annotation => annotation.Kind)
-            .Select(group => (Kind: group.Key, Count: group.Count(), Label: group.First().Label, IsHovered: group.Any(annotation => IsAnnotationHovered(annotation, hoveredAnnotationId))))
-            .OrderBy(group => AnnotationPriority(group.Kind))
-            .Take(4)
-            .ToArray();
-        if (groupedAnnotations.Length == 0)
+        Span<FooterAnnotationGroup> groupedAnnotations = stackalloc FooterAnnotationGroup[4];
+        var groupedAnnotationCount = BuildFooterAnnotationGroups(annotations, hoveredAnnotationId, groupedAnnotations);
+        if (groupedAnnotationCount == 0)
         {
             return;
         }
 
         var chipTextStyle = textResources.GetUiTextStyle(9.5f, palette.Background, true);
         var right = (float)node.Bounds.Right - 10;
-        foreach (var annotation in groupedAnnotations.Reverse())
+        for (var index = groupedAnnotationCount - 1; index >= 0; index--)
         {
-            var label = annotation.Count > 1 ? $"{ShortAnnotationLabel(annotation.Label)} {annotation.Count}" : ShortAnnotationLabel(annotation.Label);
+            var annotation = groupedAnnotations[index];
+            var annotationLabel = annotations[annotation.LabelAnnotationIndex].Label;
+            var label = annotation.Count > 1 ? $"{ShortAnnotationLabel(annotationLabel)} {annotation.Count}" : ShortAnnotationLabel(annotationLabel);
             var width = Math.Clamp(chipTextStyle.MeasureText(label) + 12, 34, 84);
             right -= width;
             using var chipPaint = new SKPaint { Color = AnnotationColor(annotation.Kind, palette).WithAlpha(annotation.IsHovered ? (byte)245 : (byte)215), Style = SKPaintStyle.Fill, IsAntialias = true };
@@ -1051,6 +1061,106 @@ public sealed class DiffSceneRenderer
             right -= 5;
         }
     }
+
+    private static DiffAnnotation GetPrimaryAnnotation(IReadOnlyList<DiffAnnotation> annotations)
+    {
+        var primary = annotations[0];
+        var primaryPriority = AnnotationPriority(primary);
+        for (var index = 1; index < annotations.Count; index++)
+        {
+            var candidate = annotations[index];
+            var candidatePriority = AnnotationPriority(candidate);
+            if (candidatePriority < primaryPriority)
+            {
+                primary = candidate;
+                primaryPriority = candidatePriority;
+            }
+        }
+
+        return primary;
+    }
+
+    private static int BuildFooterAnnotationGroups(IReadOnlyList<DiffAnnotation> annotations, string? hoveredAnnotationId, Span<FooterAnnotationGroup> groups)
+    {
+        var count = 0;
+        for (var annotationIndex = 0; annotationIndex < annotations.Count; annotationIndex++)
+        {
+            var annotation = annotations[annotationIndex];
+            if (annotation.Target != DiffAnnotationTarget.Node)
+            {
+                continue;
+            }
+
+            var groupIndex = -1;
+            for (var index = 0; index < count; index++)
+            {
+                if (groups[index].Kind == annotation.Kind)
+                {
+                    groupIndex = index;
+                    break;
+                }
+            }
+
+            if (groupIndex >= 0)
+            {
+                var group = groups[groupIndex];
+                group.Count++;
+                group.IsHovered |= IsAnnotationHovered(annotation, hoveredAnnotationId);
+                groups[groupIndex] = group;
+                continue;
+            }
+
+            var candidate = new FooterAnnotationGroup(
+                annotation.Kind,
+                1,
+                annotationIndex,
+                IsAnnotationHovered(annotation, hoveredAnnotationId));
+            if (count < groups.Length)
+            {
+                groups[count++] = candidate;
+                continue;
+            }
+
+            var candidatePriority = AnnotationPriority(candidate.Kind);
+            var worstIndex = 0;
+            var worstPriority = AnnotationPriority(groups[0].Kind);
+            for (var index = 1; index < groups.Length; index++)
+            {
+                var priority = AnnotationPriority(groups[index].Kind);
+                if (priority > worstPriority)
+                {
+                    worstPriority = priority;
+                    worstIndex = index;
+                }
+            }
+
+            if (candidatePriority < worstPriority)
+            {
+                groups[worstIndex] = candidate;
+            }
+        }
+
+        SortFooterAnnotationGroups(groups[..count]);
+        return count;
+    }
+
+    private static void SortFooterAnnotationGroups(Span<FooterAnnotationGroup> groups)
+    {
+        for (var index = 1; index < groups.Length; index++)
+        {
+            var current = groups[index];
+            var insertIndex = index - 1;
+            while (insertIndex >= 0 && AnnotationPriority(groups[insertIndex].Kind) > AnnotationPriority(current.Kind))
+            {
+                groups[insertIndex + 1] = groups[insertIndex];
+                insertIndex--;
+            }
+
+            groups[insertIndex + 1] = current;
+        }
+    }
+
+    private record struct FooterAnnotationGroup(DiffAnnotationKind Kind, int Count, int LabelAnnotationIndex, bool IsHovered);
 
     private static SKRect ToRect(Rect2 rectangle) => SKRect.Create((float)rectangle.X, (float)rectangle.Y, (float)rectangle.Width, (float)rectangle.Height);
 
@@ -1203,9 +1313,23 @@ public sealed class DiffSceneRenderer
         _ => 9
     };
 
-    private static bool IsAnnotationHovered(IEnumerable<DiffAnnotation> annotations, string? hoveredAnnotationId) =>
-        !string.IsNullOrWhiteSpace(hoveredAnnotationId) &&
-        annotations.Any(annotation => IsAnnotationHovered(annotation, hoveredAnnotationId));
+    private static bool IsAnnotationHovered(IEnumerable<DiffAnnotation> annotations, string? hoveredAnnotationId)
+    {
+        if (string.IsNullOrWhiteSpace(hoveredAnnotationId))
+        {
+            return false;
+        }
+
+        foreach (var annotation in annotations)
+        {
+            if (IsAnnotationHovered(annotation, hoveredAnnotationId))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static bool IsAnnotationHovered(DiffAnnotation annotation, string? hoveredAnnotationId) =>
         !string.IsNullOrWhiteSpace(hoveredAnnotationId) &&
@@ -1258,7 +1382,14 @@ public sealed class DiffSceneRenderer
                 }
 
                 var start = Math.Clamp(token.StartColumn, 0, line.Text.Length);
-                var end = Math.Clamp(token.StartColumn + token.Length, start, line.Text.Length);
+                var availableLength = line.Text.Length - start;
+                var end = start + Math.Min(token.Length, availableLength);
+                if (end <= cursor)
+                {
+                    continue;
+                }
+
+                start = Math.Max(start, cursor);
                 if (start > cursor)
                 {
                     runs.Add(new DiffTextRun(cursor, start - cursor, null));
@@ -1322,9 +1453,11 @@ public sealed class DiffSceneRenderer
 
         public DiffAnnotation[] NodeAnnotations { get; }
 
-        public static DocumentRenderCache Create(DiffDocumentSnapshot document, IReadOnlyList<DiffAnnotation> annotations)
+        public static DocumentRenderCache Create(DiffDocumentSnapshot document, IReadOnlyList<DiffAnnotation> annotations, bool annotationsAreSorted = false)
         {
-            var sortedAnnotations = CopyAndSortAnnotations(annotations);
+            var sortedAnnotations = annotationsAreSorted
+                ? CopyAnnotations(annotations)
+                : CopyAndSortAnnotations(annotations);
             var nodeAnnotations = new List<DiffAnnotation>();
             var lineAnnotationLists = new Dictionary<int, List<DiffAnnotation>>();
             for (var index = 0; index < sortedAnnotations.Length; index++)
@@ -1382,6 +1515,22 @@ public sealed class DiffSceneRenderer
             }
 
             return true;
+        }
+
+        private static DiffAnnotation[] CopyAnnotations(IReadOnlyList<DiffAnnotation> source)
+        {
+            if (source.Count == 0)
+            {
+                return Array.Empty<DiffAnnotation>();
+            }
+
+            var result = new DiffAnnotation[source.Count];
+            for (var index = 0; index < source.Count; index++)
+            {
+                result[index] = source[index];
+            }
+
+            return result;
         }
 
         private static DiffAnnotation[] CopyAndSortAnnotations(IReadOnlyList<DiffAnnotation> source)
@@ -1554,7 +1703,7 @@ public sealed class DiffSceneRenderer
                 }
                 else
                 {
-                    documents[document.Id] = DocumentRenderCache.Create(document, annotations);
+                    documents[document.Id] = DocumentRenderCache.Create(document, annotations, annotationsAreSorted: true);
                 }
             }
 
