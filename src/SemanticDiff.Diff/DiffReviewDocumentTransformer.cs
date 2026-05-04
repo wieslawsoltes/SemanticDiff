@@ -143,26 +143,62 @@ public static class DiffReviewDocumentTransformer
 
     private static ImmutableHashSet<int> FindMovedLineIndexes(ImmutableArray<DiffLine> lines)
     {
-        var deletedByText = CreateChangedLineLookup(lines, DiffLineKind.Deleted);
-        var addedByText = CreateChangedLineLookup(lines, DiffLineKind.Added);
+        var deletedCount = 0;
+        var addedCount = 0;
+        foreach (var line in lines)
+        {
+            if (line.Kind == DiffLineKind.Deleted)
+            {
+                deletedCount++;
+            }
+            else if (line.Kind == DiffLineKind.Added)
+            {
+                addedCount++;
+            }
+        }
+
+        if (deletedCount == 0 || addedCount == 0)
+        {
+            return ImmutableHashSet<int>.Empty;
+        }
+
+        return deletedCount <= addedCount
+            ? FindMovedLineIndexes(lines, DiffLineKind.Deleted, DiffLineKind.Added)
+            : FindMovedLineIndexes(lines, DiffLineKind.Added, DiffLineKind.Deleted);
+    }
+
+    private static ImmutableHashSet<int> FindMovedLineIndexes(
+        ImmutableArray<DiffLine> lines,
+        DiffLineKind lookupKind,
+        DiffLineKind probeKind)
+    {
+        var lookupByText = CreateChangedLineLookup(lines, lookupKind);
+        if (lookupByText.Count == 0)
+        {
+            return ImmutableHashSet<int>.Empty;
+        }
+
         var moved = ImmutableHashSet.CreateBuilder<int>();
 
-        foreach (var (normalizedText, deletedIndexes) in deletedByText)
+        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
         {
-            if (!addedByText.TryGetValue(normalizedText, out var addedIndexes))
+            var line = lines[lineIndex];
+            if (line.Kind != probeKind || !TryNormalizeMovedLine(line.Text, out var normalizedText))
             {
                 continue;
             }
 
-            foreach (var index in deletedIndexes)
+            if (!lookupByText.TryGetValue(normalizedText, out var matchingIndexes))
             {
-                moved.Add(index);
+                continue;
             }
 
-            foreach (var index in addedIndexes)
+            foreach (var matchingIndex in matchingIndexes)
             {
-                moved.Add(index);
+                moved.Add(matchingIndex);
             }
+
+            moved.Add(lineIndex);
         }
 
         return moved.ToImmutable();
@@ -179,8 +215,7 @@ public static class DiffReviewDocumentTransformer
                 continue;
             }
 
-            var normalizedText = NormalizeCode(line.Text);
-            if (normalizedText.Length < 4 || !normalizedText.Any(char.IsLetterOrDigit))
+            if (!TryNormalizeMovedLine(line.Text, out var normalizedText))
             {
                 continue;
             }
@@ -195,6 +230,46 @@ public static class DiffReviewDocumentTransformer
         }
 
         return lookup;
+    }
+
+    private static bool TryNormalizeMovedLine(string text, out string normalizedText)
+    {
+        normalizedText = string.Empty;
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        var normalizedLength = 0;
+        var hasLetterOrDigit = false;
+        foreach (var character in text)
+        {
+            if (char.IsWhiteSpace(character))
+            {
+                continue;
+            }
+
+            normalizedLength++;
+            hasLetterOrDigit |= char.IsLetterOrDigit(character);
+        }
+
+        if (normalizedLength < 4 || !hasLetterOrDigit)
+        {
+            return false;
+        }
+
+        normalizedText = string.Create(normalizedLength, text, static (destination, source) =>
+        {
+            var offset = 0;
+            foreach (var character in source)
+            {
+                if (!char.IsWhiteSpace(character))
+                {
+                    destination[offset++] = character;
+                }
+            }
+        });
+        return true;
     }
 
     private static bool HasSameFormattingInsensitiveText(ImmutableArray<DiffLine> lines, int[] deleted, int[] added)

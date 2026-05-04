@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using SemanticDiff.Core;
@@ -8,6 +9,8 @@ namespace SemanticDiff.Diff;
 
 public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
 {
+    private static readonly ConditionalWeakTable<ImmutableHashSet<string>, KeywordLookup> KeywordLookups = new();
+
     public string Id => "plain-text";
 
     public ValueTask<ImmutableArray<TokenSpan>> TokenizeLineAsync(
@@ -67,6 +70,8 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
         var builder = ImmutableArray.CreateBuilder<TokenSpan>();
         var column = 0;
         var keywords = definition?.Keywords ?? ImmutableHashSet<string>.Empty;
+        var keywordLookup = keywords.Count == 0 ? null : KeywordLookups.GetValue(keywords, static values => new KeywordLookup(values));
+        var normalizeKeywords = string.Equals(languageId, "sql", StringComparison.Ordinal);
         var lineCommentPrefixes = definition?.LineCommentPrefixes ?? ImmutableArray.Create("//", "#");
         var blockComments = definition?.BlockComments ?? ImmutableArray.Create(("/*", "*/"));
         var stringDelimiters = definition?.StringDelimiters ?? ImmutableArray.Create("\"", "'", "`");
@@ -117,9 +122,7 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
                     column++;
                 }
 
-                var token = text[startColumn..column];
-                var normalizedToken = languageId == "sql" ? token.ToUpperInvariant() : token;
-                if (keywords.Contains(normalizedToken))
+                if (keywordLookup is not null && keywordLookup.Contains(text.AsSpan(startColumn, column - startColumn), normalizeKeywords))
                 {
                     AddToken(builder, startColumn, column - startColumn, "keyword", "keyword", languageId);
                 }
@@ -207,7 +210,7 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
 
                 if (text[column] is '"' or '\'')
                 {
-                    var length = ReadStringLength(text, column, text[column].ToString());
+                    var length = ReadStringLength(text, column, text[column]);
                     AddToken(builder, column, length, "string", "string", languageId);
                     column += length;
                     continue;
@@ -295,8 +298,10 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
                     column++;
                 }
 
-                var token = text[startColumn..column];
-                if (token is "true" or "false" or "null")
+                var token = text.AsSpan(startColumn, column - startColumn);
+                if (token.SequenceEqual("true".AsSpan()) ||
+                    token.SequenceEqual("false".AsSpan()) ||
+                    token.SequenceEqual("null".AsSpan()))
                 {
                     AddToken(builder, startColumn, column - startColumn, "keyword", "keyword", languageId);
                 }
@@ -318,7 +323,7 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
     private static ImmutableArray<TokenSpan> TokenizeYamlLike(string text, string languageId, LanguageDefinition definition)
     {
         var builder = ImmutableArray.CreateBuilder<TokenSpan>();
-        var trimmedStart = text.Length - text.TrimStart().Length;
+        var trimmedStart = CountLeadingWhitespace(text);
         if (trimmedStart < text.Length && text[trimmedStart] is '[' or ']')
         {
             AddToken(builder, trimmedStart, 1, "punctuation", "operator", languageId);
@@ -376,7 +381,7 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
     private static ImmutableArray<TokenSpan> TokenizeMarkdown(string text, string languageId)
     {
         var builder = ImmutableArray.CreateBuilder<TokenSpan>();
-        var trimmedStart = text.Length - text.TrimStart().Length;
+        var trimmedStart = CountLeadingWhitespace(text);
         if (trimmedStart < text.Length && text[trimmedStart] == '#')
         {
             var headingLength = 0;
@@ -504,6 +509,22 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
         return text.Length - startColumn;
     }
 
+    private static int ReadStringLength(string text, int startColumn, char delimiter)
+    {
+        var column = startColumn + 1;
+        while (column < text.Length)
+        {
+            if (text[column] == delimiter)
+            {
+                return column + 1 - startColumn;
+            }
+
+            column += text[column] == '\\' && column + 1 < text.Length ? 2 : 1;
+        }
+
+        return text.Length - startColumn;
+    }
+
     private static int ReadNumberLength(string text, int startColumn)
     {
         var column = startColumn;
@@ -522,6 +543,17 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
 
     private static int SkipWhitespace(string text, int column)
     {
+        while (column < text.Length && char.IsWhiteSpace(text[column]))
+        {
+            column++;
+        }
+
+        return column;
+    }
+
+    private static int CountLeadingWhitespace(string text)
+    {
+        var column = 0;
         while (column < text.Length && char.IsWhiteSpace(text[column]))
         {
             column++;
@@ -565,6 +597,46 @@ public sealed class PlainTextDocumentTokenizer : IDocumentTokenizer
     private static bool IsXmlNameStartCharacter(char character) => char.IsLetter(character) || character is '_' or ':';
 
     private static bool IsXmlNameCharacter(char character) => IsXmlNameStartCharacter(character) || char.IsDigit(character) || character is '-' or '.';
+
+    private sealed class KeywordLookup
+    {
+        private const int MaxStackChars = 128;
+
+        private readonly ImmutableHashSet<string> keywords;
+        private readonly FrozenSet<int> lengths;
+
+        public KeywordLookup(ImmutableHashSet<string> keywords)
+        {
+            this.keywords = keywords;
+            lengths = keywords.Select(keyword => keyword.Length).ToFrozenSet();
+        }
+
+        public bool Contains(ReadOnlySpan<char> value, bool uppercase)
+        {
+            if (!lengths.Contains(value.Length))
+            {
+                return false;
+            }
+
+            return uppercase
+                ? ContainsUppercase(value)
+                : keywords.Contains(value.ToString());
+        }
+
+        private bool ContainsUppercase(ReadOnlySpan<char> value)
+        {
+            Span<char> buffer = value.Length <= MaxStackChars
+                ? stackalloc char[value.Length]
+                : new char[value.Length];
+
+            for (var index = 0; index < value.Length; index++)
+            {
+                buffer[index] = char.ToUpperInvariant(value[index]);
+            }
+
+            return keywords.Contains(buffer.ToString());
+        }
+    }
 
     private static int FindUnquotedComment(string text, char commentMarker)
     {
@@ -1012,11 +1084,20 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
 
         IStateStack? state = null;
         var currentPageStart = 0;
-        foreach (var candidate in documentCache.Pages.Values.Where(page => page.FirstLineIndex < pageStart).OrderByDescending(page => page.FirstLineIndex))
+        TokenPage? previousPage = null;
+        foreach (var candidate in documentCache.Pages.Values)
         {
-            state = candidate.EndState;
-            currentPageStart = candidate.FirstLineIndex + candidate.LineTokens.Length;
-            break;
+            if (candidate.FirstLineIndex < pageStart &&
+                (previousPage is null || candidate.FirstLineIndex > previousPage.FirstLineIndex))
+            {
+                previousPage = candidate;
+            }
+        }
+
+        if (previousPage is not null)
+        {
+            state = previousPage.EndState;
+            currentPageStart = previousPage.FirstLineIndex + previousPage.LineTokens.Length;
         }
 
         while (currentPageStart <= pageStart)

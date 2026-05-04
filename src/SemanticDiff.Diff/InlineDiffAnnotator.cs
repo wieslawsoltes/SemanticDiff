@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Immutable;
 using SemanticDiff.Core;
 
@@ -30,25 +31,24 @@ public static class InlineDiffAnnotator
             return document;
         }
 
-        var lines = document.Lines.ToArray();
-        var changed = false;
+        DiffLine[]? changedLines = null;
 
-        for (var lineIndex = 0; lineIndex < lines.Length;)
+        for (var lineIndex = 0; lineIndex < document.Lines.Length;)
         {
-            if (lines[lineIndex].Kind != DiffLineKind.Deleted)
+            if (document.Lines[lineIndex].Kind != DiffLineKind.Deleted)
             {
                 lineIndex++;
                 continue;
             }
 
             var deletedStart = lineIndex;
-            while (lineIndex < lines.Length && lines[lineIndex].Kind == DiffLineKind.Deleted)
+            while (lineIndex < document.Lines.Length && document.Lines[lineIndex].Kind == DiffLineKind.Deleted)
             {
                 lineIndex++;
             }
 
             var addedStart = lineIndex;
-            while (lineIndex < lines.Length && lines[lineIndex].Kind == DiffLineKind.Added)
+            while (lineIndex < document.Lines.Length && document.Lines[lineIndex].Kind == DiffLineKind.Added)
             {
                 lineIndex++;
             }
@@ -65,22 +65,24 @@ public static class InlineDiffAnnotator
             {
                 var deletedLineIndex = deletedStart + pairIndex;
                 var addedLineIndex = addedStart + pairIndex;
-                var (deletedSpans, addedSpans) = CreateInlineSpans(lines[deletedLineIndex].Text, lines[addedLineIndex].Text);
+                var deletedLine = document.Lines[deletedLineIndex];
+                var addedLine = document.Lines[addedLineIndex];
+                var (deletedSpans, addedSpans) = CreateInlineSpans(deletedLine.Text, addedLine.Text);
                 if (!deletedSpans.IsDefaultOrEmpty)
                 {
-                    lines[deletedLineIndex] = lines[deletedLineIndex] with { InlineSpans = deletedSpans };
-                    changed = true;
+                    changedLines ??= document.Lines.ToArray();
+                    changedLines[deletedLineIndex] = deletedLine with { InlineSpans = deletedSpans };
                 }
 
                 if (!addedSpans.IsDefaultOrEmpty)
                 {
-                    lines[addedLineIndex] = lines[addedLineIndex] with { InlineSpans = addedSpans };
-                    changed = true;
+                    changedLines ??= document.Lines.ToArray();
+                    changedLines[addedLineIndex] = addedLine with { InlineSpans = addedSpans };
                 }
             }
         }
 
-        return changed ? document with { Lines = lines.ToImmutableArray() } : document;
+        return changedLines is null ? document : document with { Lines = changedLines.ToImmutableArray() };
     }
 
     private static (ImmutableArray<DiffInlineSpan> DeletedSpans, ImmutableArray<DiffInlineSpan> AddedSpans) CreateInlineSpans(string deletedText, string addedText)
@@ -109,34 +111,51 @@ public static class InlineDiffAnnotator
 
     private static void MarkMatchedSegments(TextSegment[] deletedSegments, TextSegment[] addedSegments, bool[] deletedMatched, bool[] addedMatched)
     {
-        var table = new int[deletedSegments.Length + 1, addedSegments.Length + 1];
-        for (var deletedIndex = deletedSegments.Length - 1; deletedIndex >= 0; deletedIndex--)
+        var width = addedSegments.Length + 1;
+        var tableLength = (deletedSegments.Length + 1) * width;
+        var table = ArrayPool<int>.Shared.Rent(tableLength);
+        try
         {
-            for (var addedIndex = addedSegments.Length - 1; addedIndex >= 0; addedIndex--)
+            Array.Clear(table, deletedSegments.Length * width, width);
+            for (var deletedIndex = 0; deletedIndex < deletedSegments.Length; deletedIndex++)
             {
-                table[deletedIndex, addedIndex] = string.Equals(deletedSegments[deletedIndex].Text, addedSegments[addedIndex].Text, StringComparison.Ordinal)
-                    ? table[deletedIndex + 1, addedIndex + 1] + 1
-                    : Math.Max(table[deletedIndex + 1, addedIndex], table[deletedIndex, addedIndex + 1]);
+                table[deletedIndex * width + addedSegments.Length] = 0;
+            }
+
+            for (var deletedIndex = deletedSegments.Length - 1; deletedIndex >= 0; deletedIndex--)
+            {
+                var rowOffset = deletedIndex * width;
+                var nextRowOffset = rowOffset + width;
+                for (var addedIndex = addedSegments.Length - 1; addedIndex >= 0; addedIndex--)
+                {
+                    table[rowOffset + addedIndex] = deletedSegments[deletedIndex].TextEquals(addedSegments[addedIndex])
+                        ? table[nextRowOffset + addedIndex + 1] + 1
+                        : Math.Max(table[nextRowOffset + addedIndex], table[rowOffset + addedIndex + 1]);
+                }
+            }
+
+            for (int deletedIndex = 0, addedIndex = 0; deletedIndex < deletedSegments.Length && addedIndex < addedSegments.Length;)
+            {
+                if (deletedSegments[deletedIndex].TextEquals(addedSegments[addedIndex]))
+                {
+                    deletedMatched[deletedIndex] = true;
+                    addedMatched[addedIndex] = true;
+                    deletedIndex++;
+                    addedIndex++;
+                }
+                else if (table[(deletedIndex + 1) * width + addedIndex] >= table[deletedIndex * width + addedIndex + 1])
+                {
+                    deletedIndex++;
+                }
+                else
+                {
+                    addedIndex++;
+                }
             }
         }
-
-        for (int deletedIndex = 0, addedIndex = 0; deletedIndex < deletedSegments.Length && addedIndex < addedSegments.Length;)
+        finally
         {
-            if (string.Equals(deletedSegments[deletedIndex].Text, addedSegments[addedIndex].Text, StringComparison.Ordinal))
-            {
-                deletedMatched[deletedIndex] = true;
-                addedMatched[addedIndex] = true;
-                deletedIndex++;
-                addedIndex++;
-            }
-            else if (table[deletedIndex + 1, addedIndex] >= table[deletedIndex, addedIndex + 1])
-            {
-                deletedIndex++;
-            }
-            else
-            {
-                addedIndex++;
-            }
+            ArrayPool<int>.Shared.Return(table);
         }
     }
 
@@ -199,8 +218,12 @@ public static class InlineDiffAnnotator
             addedLength > 0 ? [new DiffInlineSpan(prefixLength, addedLength, DiffInlineKind.Inserted)] : ImmutableArray<DiffInlineSpan>.Empty);
     }
 
-    private readonly record struct TextSegment(int StartColumn, int Length, string Text)
+    private readonly record struct TextSegment(string Source, int StartColumn, int Length)
     {
+        public bool TextEquals(TextSegment other) =>
+            Length == other.Length &&
+            Source.AsSpan(StartColumn, Length).SequenceEqual(other.Source.AsSpan(other.StartColumn, other.Length));
+
         public static TextSegment[] Split(string text)
         {
             if (string.IsNullOrEmpty(text))
@@ -220,7 +243,7 @@ public static class InlineDiffAnnotator
                     column++;
                 }
 
-                segments.Add(new TextSegment(startColumn, column - startColumn, text[startColumn..column]));
+                segments.Add(new TextSegment(text, startColumn, column - startColumn));
             }
 
             return segments.ToArray();

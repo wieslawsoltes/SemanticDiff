@@ -140,7 +140,9 @@ public sealed class DiffConflictAnalyzer
             markerText));
     }
 
-    private static bool IsConflictStart(string text) => text.TrimStart().StartsWith("<<<<<<<", StringComparison.Ordinal);
+    private static bool IsConflictStart(string text) =>
+        text.AsSpan().TrimStart().StartsWith("<<<<<<<".AsSpan(), StringComparison.Ordinal);
 
-    private static bool IsConflictEnd(string text) => text.TrimStart().StartsWith(">>>>>>>", StringComparison.Ordinal);
+    private static bool IsConflictEnd(string text) =>
+        text.AsSpan().TrimStart().StartsWith(">>>>>>>".AsSpan(), StringComparison.Ordinal);
 }

@@ -197,4 +197,22 @@ public sealed class DocumentTokenizerTests
         Assert.Contains(tokens, token => token.StyleId == "keyword" && token.TokenType == "keyword");
         Assert.Contains(tokens, token => token.StyleId == "number" && token.TokenType == "number");
     }
+
+    [Fact]
+    public async Task PlainTextDocumentTokenizer_TokenizePageAsync_RecognizesSqlKeywordsCaseInsensitively()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId("query.sql"), "query.sql", null, DiffFileStatus.Modified, "SQL", 0, 0),
+            "select Name from Users where Id = 1");
+        var tokenizer = new PlainTextDocumentTokenizer();
+
+        var lines = await tokenizer.TokenizePageAsync(document, 0, document.LineCount, CancellationToken.None);
+        var tokens = lines.SelectMany(line => line.Tokens).ToArray();
+
+        Assert.Contains(tokens, token => token.StyleId == "keyword" && token.StartColumn == 0 && token.Length == 6);
+        Assert.Contains(tokens, token => token.StyleId == "keyword" && token.StartColumn == 12 && token.Length == 4);
+        Assert.Contains(tokens, token => token.StyleId == "keyword" && token.StartColumn == 23 && token.Length == 5);
+        Assert.Contains(tokens, token => token.StyleId == "number" && token.StartColumn == 34 && token.Length == 1);
+    }
 }
