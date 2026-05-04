@@ -89,6 +89,7 @@ public sealed class DiffNode
     private readonly HashSet<int> collapsedFoldStartLines = [];
     private List<string>? editableLines;
     private Dictionary<int, CodeFoldRegion>? foldRegionsByStartLineIndex;
+    private CodeFoldRegion[]? activeFoldRegionsByStartLine;
     private Dictionary<int, ImmutableArray<CodeFoldRegion>>? activeFoldRegionsByLineIndex;
     private int? visibleLineCountCache;
 
@@ -134,6 +135,7 @@ public sealed class DiffNode
         FoldRegions = foldRegions.IsDefault ? ImmutableArray<CodeFoldRegion>.Empty : foldRegions;
         editableLines = null;
         foldRegionsByStartLineIndex = null;
+        activeFoldRegionsByStartLine = null;
         activeFoldRegionsByLineIndex = null;
         visibleLineCountCache = null;
         collapsedFoldStartLines.RemoveWhere(lineIndex => lineIndex < 0 || lineIndex >= fullFileDocument.LineCount);
@@ -921,25 +923,56 @@ public sealed class DiffNode
             return cached;
         }
 
-        var builder = ImmutableArray.CreateBuilder<CodeFoldRegion>();
-        foreach (var region in FoldRegions)
+        if ((uint)lineIndex >= (uint)Document.LineCount)
         {
-            if (region.StartLineIndex < lineIndex &&
-                region.EndLineIndex >= lineIndex &&
+            return [];
+        }
+
+        var orderedRegions = GetActiveFoldRegionsByStartLine();
+        var builder = ImmutableArray.CreateBuilder<CodeFoldRegion>(Math.Min(orderedRegions.Length, 8));
+        foreach (var region in orderedRegions)
+        {
+            if (region.StartLineIndex >= lineIndex)
+            {
+                break;
+            }
+
+            if (region.EndLineIndex >= lineIndex &&
                 !collapsedFoldStartLines.Contains(region.StartLineIndex))
             {
                 builder.Add(region);
             }
         }
 
-        if (builder.Count > 1)
+        var activeRegions = builder.Count == 0 ? ImmutableArray<CodeFoldRegion>.Empty : builder.ToImmutable();
+        (activeFoldRegionsByLineIndex ??= new Dictionary<int, ImmutableArray<CodeFoldRegion>>(128))[lineIndex] = activeRegions;
+        return activeRegions;
+    }
+
+    private CodeFoldRegion[] GetActiveFoldRegionsByStartLine()
+    {
+        if (activeFoldRegionsByStartLine is { } cached)
         {
-            builder.Sort(static (left, right) => left.StartLineIndex.CompareTo(right.StartLineIndex));
+            return cached;
         }
 
-        var activeRegions = builder.ToImmutable();
-        (activeFoldRegionsByLineIndex ??= new Dictionary<int, ImmutableArray<CodeFoldRegion>>()).TryAdd(lineIndex, activeRegions);
-        return activeRegions;
+        if (FoldRegions.IsDefaultOrEmpty)
+        {
+            activeFoldRegionsByStartLine = [];
+            return activeFoldRegionsByStartLine;
+        }
+
+        var orderedRegions = FoldRegions.ToArray();
+        Array.Sort(orderedRegions, static (left, right) =>
+        {
+            var startComparison = left.StartLineIndex.CompareTo(right.StartLineIndex);
+            return startComparison != 0
+                ? startComparison
+                : left.EndLineIndex.CompareTo(right.EndLineIndex);
+        });
+
+        activeFoldRegionsByStartLine = orderedRegions;
+        return activeFoldRegionsByStartLine;
     }
 
     private void EnsureEditableLines()
