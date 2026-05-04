@@ -26,13 +26,18 @@ public sealed class TextMetricsCache : IDisposable
     private static int pretextMeasurementUnavailable;
     private readonly object gate = new();
     private readonly int maxEntries;
+    private readonly int maxEllipsizeEntries;
     private readonly Dictionary<TextMeasureKey, float> measuredWidths = [];
     private readonly Queue<TextMeasureKey> measuredWidthOrder = [];
+    private readonly Dictionary<TextEllipsizeKey, string> middleEllipsizedTexts = [];
+    private readonly Queue<TextEllipsizeKey> middleEllipsizedTextOrder = [];
+    private readonly Dictionary<TextFontDescriptor, string> pretextFontStrings = [];
     private readonly ConcurrentDictionary<TypefaceKey, CachedTypeface> typefaces = [];
 
     public TextMetricsCache(int maxEntries = 16384)
     {
         this.maxEntries = Math.Max(256, maxEntries);
+        maxEllipsizeEntries = Math.Max(128, this.maxEntries / 2);
         EnsurePretextBackend();
     }
 
@@ -85,6 +90,37 @@ public sealed class TextMetricsCache : IDisposable
             return text;
         }
 
+        var widthKey = QuantizeWidth(maxWidth);
+        if (widthKey <= 0)
+        {
+            return string.Empty;
+        }
+
+        var key = new TextEllipsizeKey(fontDescriptor, text, widthKey);
+        lock (gate)
+        {
+            if (middleEllipsizedTexts.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        var best = MiddleEllipsizeCore(text, widthKey / 10f, fontDescriptor);
+        lock (gate)
+        {
+            if (!middleEllipsizedTexts.ContainsKey(key))
+            {
+                middleEllipsizedTexts[key] = best;
+                middleEllipsizedTextOrder.Enqueue(key);
+                TrimMiddleEllipsizedTexts();
+            }
+        }
+
+        return best;
+    }
+
+    private string MiddleEllipsizeCore(string text, float maxWidth, TextFontDescriptor fontDescriptor)
+    {
         if (MeasureNaturalWidth(TextEllipsis, fontDescriptor) > maxWidth)
         {
             return string.Empty;
@@ -117,6 +153,9 @@ public sealed class TextMetricsCache : IDisposable
         return best;
     }
 
+    private static int QuantizeWidth(float maxWidth) =>
+        Math.Max(0, (int)MathF.Floor(maxWidth * 10));
+
     private static void EnsurePretextBackend()
     {
         if (Interlocked.Exchange(ref pretextBackendInitialized, 1) == 1)
@@ -146,13 +185,14 @@ public sealed class TextMetricsCache : IDisposable
         }
     }
 
-    private static float? TryMeasureWithPretext(string text, TextFontDescriptor fontDescriptor)
+    private float? TryMeasureWithPretext(string text, TextFontDescriptor fontDescriptor)
     {
         if (Volatile.Read(ref pretextMeasurementUnavailable) == 1)
         {
             return null;
         }
 
+        var pretextFontString = GetPretextFontString(fontDescriptor);
         lock (PretextMeasurementGate)
         {
             if (Volatile.Read(ref pretextMeasurementUnavailable) == 1)
@@ -164,7 +204,7 @@ public sealed class TextMetricsCache : IDisposable
             {
                 var prepared = PretextLayout.PrepareWithSegments(
                     text,
-                    fontDescriptor.ToPretextFontString(),
+                    pretextFontString,
                     new PrepareOptions(WhiteSpaceMode.PreWrap));
                 return (float)PretextLayout.MeasureNaturalWidth(prepared);
             }
@@ -173,6 +213,21 @@ public sealed class TextMetricsCache : IDisposable
                 Volatile.Write(ref pretextMeasurementUnavailable, 1);
                 return null;
             }
+        }
+    }
+
+    private string GetPretextFontString(TextFontDescriptor fontDescriptor)
+    {
+        lock (gate)
+        {
+            if (pretextFontStrings.TryGetValue(fontDescriptor, out var cached))
+            {
+                return cached;
+            }
+
+            var fontString = fontDescriptor.ToPretextFontString();
+            pretextFontStrings[fontDescriptor] = fontString;
+            return fontString;
         }
     }
 
@@ -240,6 +295,9 @@ public sealed class TextMetricsCache : IDisposable
         {
             measuredWidths.Clear();
             measuredWidthOrder.Clear();
+            middleEllipsizedTexts.Clear();
+            middleEllipsizedTextOrder.Clear();
+            pretextFontStrings.Clear();
         }
     }
 
@@ -265,7 +323,17 @@ public sealed class TextMetricsCache : IDisposable
         }
     }
 
+    private void TrimMiddleEllipsizedTexts()
+    {
+        while (middleEllipsizedTextOrder.Count > maxEllipsizeEntries)
+        {
+            middleEllipsizedTexts.Remove(middleEllipsizedTextOrder.Dequeue());
+        }
+    }
+
     private readonly record struct TextMeasureKey(TextFontDescriptor FontDescriptor, string Text);
+
+    private readonly record struct TextEllipsizeKey(TextFontDescriptor FontDescriptor, string Text, int MaxWidthTenths);
 
     private readonly record struct TypefaceKey(string FamilyName, bool Bold, bool Italic);
 
