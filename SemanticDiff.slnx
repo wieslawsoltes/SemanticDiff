@@ -15,6 +15,9 @@
   <Folder Name="/tests/">
     <Project Path="tests/SemanticDiff.Tests/SemanticDiff.Tests.csproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/SemanticDiff.Benchmarks/SemanticDiff.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/SemanticDiff.Controls.Uno.Sample/SemanticDiff.Controls.Uno.Sample.csproj" />
   </Folder>
