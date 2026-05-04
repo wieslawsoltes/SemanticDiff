@@ -63,6 +63,9 @@ public static class DiffReviewDocumentTransformer
     private static ImmutableHashSet<int> FindIgnoredLineIndexes(ImmutableArray<DiffLine> lines)
     {
         var ignored = ImmutableHashSet.CreateBuilder<int>();
+        var run = new List<int>();
+        var deleted = new List<int>();
+        var added = new List<int>();
 
         for (var lineIndex = 0; lineIndex < lines.Length;)
         {
@@ -73,8 +76,21 @@ public static class DiffReviewDocumentTransformer
             }
 
             var runStart = lineIndex;
+            run.Clear();
+            deleted.Clear();
+            added.Clear();
             while (lineIndex < lines.Length && IsChangedLine(lines[lineIndex]))
             {
+                run.Add(lineIndex);
+                if (lines[lineIndex].Kind == DiffLineKind.Deleted)
+                {
+                    deleted.Add(lineIndex);
+                }
+                else
+                {
+                    added.Add(lineIndex);
+                }
+
                 if (string.IsNullOrWhiteSpace(lines[lineIndex].Text))
                 {
                     ignored.Add(lineIndex);
@@ -83,10 +99,7 @@ public static class DiffReviewDocumentTransformer
                 lineIndex++;
             }
 
-            var run = Enumerable.Range(runStart, lineIndex - runStart).ToArray();
-            var deleted = run.Where(index => lines[index].Kind == DiffLineKind.Deleted).ToArray();
-            var added = run.Where(index => lines[index].Kind == DiffLineKind.Added).ToArray();
-            if (deleted.Length == 0 || added.Length == 0)
+            if (lineIndex == runStart || deleted.Count == 0 || added.Count == 0)
             {
                 continue;
             }
@@ -107,6 +120,10 @@ public static class DiffReviewDocumentTransformer
 
     private static void AddImportOrderOnlyHunkIndexes(ImmutableArray<DiffLine> lines, ISet<int> ignored)
     {
+        var changedIndexes = new List<int>();
+        var deleted = new List<int>();
+        var added = new List<int>();
+
         for (var lineIndex = 0; lineIndex < lines.Length;)
         {
             if (!IsHunkHeader(lines[lineIndex]))
@@ -121,17 +138,40 @@ public static class DiffReviewDocumentTransformer
                 lineIndex++;
             }
 
-            var changedIndexes = Enumerable.Range(hunkStart, lineIndex - hunkStart)
-                .Where(index => IsChangedLine(lines[index]))
-                .ToArray();
-            if (changedIndexes.Length == 0 || changedIndexes.Any(index => !IsImportLine(lines[index].Text)))
+            changedIndexes.Clear();
+            deleted.Clear();
+            added.Clear();
+            var isImportOnlyHunk = true;
+            for (var index = hunkStart; index < lineIndex; index++)
+            {
+                if (!IsChangedLine(lines[index]))
+                {
+                    continue;
+                }
+
+                if (!IsImportLine(lines[index].Text))
+                {
+                    isImportOnlyHunk = false;
+                    break;
+                }
+
+                changedIndexes.Add(index);
+                if (lines[index].Kind == DiffLineKind.Deleted)
+                {
+                    deleted.Add(index);
+                }
+                else
+                {
+                    added.Add(index);
+                }
+            }
+
+            if (!isImportOnlyHunk || changedIndexes.Count == 0)
             {
                 continue;
             }
 
-            var deleted = changedIndexes.Where(index => lines[index].Kind == DiffLineKind.Deleted).ToArray();
-            var added = changedIndexes.Where(index => lines[index].Kind == DiffLineKind.Added).ToArray();
-            if (deleted.Length > 0 && added.Length > 0 && HasSameImportSet(lines, deleted, added))
+            if (deleted.Count > 0 && added.Count > 0 && HasSameImportSet(lines, deleted, added))
             {
                 foreach (var index in changedIndexes)
                 {
@@ -272,27 +312,56 @@ public static class DiffReviewDocumentTransformer
         return true;
     }
 
-    private static bool HasSameFormattingInsensitiveText(ImmutableArray<DiffLine> lines, int[] deleted, int[] added)
+    private static bool HasSameFormattingInsensitiveText(ImmutableArray<DiffLine> lines, IReadOnlyList<int> deleted, IReadOnlyList<int> added)
     {
-        var deletedText = NormalizeCode(deleted.Select(index => lines[index].Text));
+        var deletedText = NormalizeCode(lines, deleted);
         if (deletedText.Length == 0)
         {
             return false;
         }
 
-        return string.Equals(deletedText, NormalizeCode(added.Select(index => lines[index].Text)), StringComparison.Ordinal);
+        return string.Equals(deletedText, NormalizeCode(lines, added), StringComparison.Ordinal);
     }
 
-    private static bool HasSameImportSet(ImmutableArray<DiffLine> lines, int[] deleted, int[] added)
+    private static bool HasSameImportSet(ImmutableArray<DiffLine> lines, IReadOnlyList<int> deleted, IReadOnlyList<int> added)
     {
-        if (!deleted.All(index => IsImportLine(lines[index].Text)) || !added.All(index => IsImportLine(lines[index].Text)))
+        var imports = new Dictionary<string, int>(deleted.Count, StringComparer.Ordinal);
+        foreach (var index in deleted)
         {
-            return false;
+            if (!IsImportLine(lines[index].Text))
+            {
+                return false;
+            }
+
+            var import = NormalizeImportLine(lines[index].Text);
+            imports.TryGetValue(import, out var count);
+            imports[import] = count + 1;
         }
 
-        var deletedImports = deleted.Select(index => NormalizeImportLine(lines[index].Text)).OrderBy(import => import, StringComparer.Ordinal).ToArray();
-        var addedImports = added.Select(index => NormalizeImportLine(lines[index].Text)).OrderBy(import => import, StringComparer.Ordinal).ToArray();
-        return deletedImports.SequenceEqual(addedImports, StringComparer.Ordinal);
+        foreach (var index in added)
+        {
+            if (!IsImportLine(lines[index].Text))
+            {
+                return false;
+            }
+
+            var import = NormalizeImportLine(lines[index].Text);
+            if (!imports.TryGetValue(import, out var count))
+            {
+                return false;
+            }
+
+            if (count == 1)
+            {
+                imports.Remove(import);
+            }
+            else
+            {
+                imports[import] = count - 1;
+            }
+        }
+
+        return imports.Count == 0;
     }
 
     private static bool IsChangedLine(DiffLine line) => line.Kind is DiffLineKind.Added or DiffLineKind.Deleted;
@@ -309,7 +378,40 @@ public static class DiffReviewDocumentTransformer
 
     private static string NormalizeImportLine(string text) => NormalizeCode(text.Trim().TrimEnd(';', ','));
 
-    private static string NormalizeCode(IEnumerable<string> lines) => NormalizeCode(string.Concat(lines));
+    private static string NormalizeCode(ImmutableArray<DiffLine> lines, IReadOnlyList<int> indexes)
+    {
+        var normalizedLength = 0;
+        foreach (var index in indexes)
+        {
+            foreach (var character in lines[index].Text)
+            {
+                if (!char.IsWhiteSpace(character))
+                {
+                    normalizedLength++;
+                }
+            }
+        }
+
+        if (normalizedLength == 0)
+        {
+            return string.Empty;
+        }
+
+        return string.Create(normalizedLength, (lines, indexes), static (destination, state) =>
+        {
+            var offset = 0;
+            foreach (var index in state.indexes)
+            {
+                foreach (var character in state.lines[index].Text)
+                {
+                    if (!char.IsWhiteSpace(character))
+                    {
+                        destination[offset++] = character;
+                    }
+                }
+            }
+        });
+    }
 
     private static string NormalizeCode(string text)
     {
