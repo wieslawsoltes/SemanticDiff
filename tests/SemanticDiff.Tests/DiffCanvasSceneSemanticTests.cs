@@ -102,6 +102,32 @@ public sealed class DiffCanvasSceneSemanticTests
     }
 
     [Fact]
+    public void FullFileNodeMode_VisibleRowsCarryNestedActiveFoldRegions()
+    {
+        var factory = new DiffDocumentFactory();
+        var diff = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 1, 0), "class A { }");
+        var full = factory.CreateFromText(diff.Metadata, "class A\n{\n    void M()\n    {\n        Run();\n    }\n}", DiffLineKind.Context);
+        var scene = DiffCanvasScene.FromDocuments([diff]);
+        scene.SetFullFileDocuments([
+            new DiffNodeFullFileContent(
+                diff.Id,
+                full,
+                [
+                    new CodeFoldRegion(0, 6, "class A"),
+                    new CodeFoldRegion(2, 5, "void M")
+                ],
+                full.ToSourceText())
+        ]);
+        scene.SetShowFullFileNodes(true);
+        var node = scene.Nodes[0];
+
+        var rows = node.GetVisibleRows(4, 1);
+
+        Assert.Single(rows);
+        Assert.Equal([0, 2], rows[0].ActiveFoldRegions.Select(region => region.StartLineIndex));
+    }
+
+    [Fact]
     public void FullFileNodeMode_UsesAnnotatedFullFileLines()
     {
         var factory = new DiffDocumentFactory();

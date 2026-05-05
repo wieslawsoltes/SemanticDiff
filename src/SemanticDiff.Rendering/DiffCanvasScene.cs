@@ -106,7 +106,6 @@ public sealed class DiffNode
     private List<string>? editableLines;
     private Dictionary<int, CodeFoldRegion>? foldRegionsByStartLineIndex;
     private CodeFoldRegion[]? activeFoldRegionsByStartLine;
-    private Dictionary<int, ImmutableArray<CodeFoldRegion>>? activeFoldRegionsByLineIndex;
     private int? visibleLineCountCache;
     private int cachedLineCountTextLineCount = -1;
     private string cachedLineCountText = string.Empty;
@@ -154,7 +153,6 @@ public sealed class DiffNode
         editableLines = null;
         foldRegionsByStartLineIndex = null;
         activeFoldRegionsByStartLine = null;
-        activeFoldRegionsByLineIndex = null;
         visibleLineCountCache = null;
         collapsedFoldStartLines.RemoveWhere(lineIndex => lineIndex < 0 || lineIndex >= fullFileDocument.LineCount);
         ApplyDocumentMode();
@@ -230,7 +228,6 @@ public sealed class DiffNode
         }
 
         visibleLineCountCache = null;
-        activeFoldRegionsByLineIndex = null;
         ClampScrollOffset();
         return true;
     }
@@ -750,15 +747,47 @@ public sealed class DiffNode
 
         var rows = ImmutableArray.CreateBuilder<DiffNodeVisibleLine>(requestedCount);
         var foldRegions = GetFoldRegionsByStartLineIndex();
+        var orderedRegions = GetActiveFoldRegionsByStartLine();
+        var activeRegions = new List<CodeFoldRegion>(Math.Min(orderedRegions.Length, 8));
+        var nextRegionIndex = 0;
+        var activeVersion = 0;
+        var activeSnapshotVersion = -1;
+        var activeSnapshot = ImmutableArray<CodeFoldRegion>.Empty;
         var rowIndex = 0;
         for (var lineIndex = 0; lineIndex < Document.LineCount; lineIndex++)
         {
             var line = Document.Lines[lineIndex];
+            if (RemoveExpiredActiveFoldRegions(activeRegions, line.Index))
+            {
+                activeVersion++;
+            }
+
+            while (nextRegionIndex < orderedRegions.Length && orderedRegions[nextRegionIndex].StartLineIndex < line.Index)
+            {
+                var candidate = orderedRegions[nextRegionIndex];
+                if (candidate.EndLineIndex >= line.Index &&
+                    !collapsedFoldStartLines.Contains(candidate.StartLineIndex))
+                {
+                    activeRegions.Add(candidate);
+                    activeVersion++;
+                }
+
+                nextRegionIndex++;
+            }
+
+            if (activeSnapshotVersion != activeVersion)
+            {
+                activeSnapshot = activeRegions.Count == 0
+                    ? ImmutableArray<CodeFoldRegion>.Empty
+                    : activeRegions.ToImmutableArray();
+                activeSnapshotVersion = activeVersion;
+            }
+
             foldRegions.TryGetValue(line.Index, out var foldRegion);
             var isCollapsed = foldRegion is not null && collapsedFoldStartLines.Contains(foldRegion.StartLineIndex);
             if (rowIndex >= normalizedFirstRow && rows.Count < requestedCount)
             {
-                rows.Add(new DiffNodeVisibleLine(rowIndex, line.Index, line, foldRegion, isCollapsed, GetActiveFoldRegions(line.Index)));
+                rows.Add(new DiffNodeVisibleLine(rowIndex, line.Index, line, foldRegion, isCollapsed, activeSnapshot));
                 if (rows.Count == requestedCount)
                 {
                     break;
@@ -773,6 +802,23 @@ public sealed class DiffNode
         }
 
         return rows.ToImmutable();
+    }
+
+    private static bool RemoveExpiredActiveFoldRegions(List<CodeFoldRegion> activeRegions, int lineIndex)
+    {
+        var removed = false;
+        for (var index = activeRegions.Count - 1; index >= 0; index--)
+        {
+            if (activeRegions[index].EndLineIndex >= lineIndex)
+            {
+                continue;
+            }
+
+            activeRegions.RemoveAt(index);
+            removed = true;
+        }
+
+        return removed;
     }
 
     public Rect2 GetScrollbarThumbBounds(double cameraScale)
@@ -926,45 +972,6 @@ public sealed class DiffNode
         CaretLineIndex = Math.Clamp(CaretLineIndex, 0, Math.Max(0, Document.LineCount - 1));
         CaretColumn = Math.Clamp(CaretColumn, 0, GetEditableLine(CaretLineIndex).Length);
         ClampScrollOffset();
-    }
-
-    private ImmutableArray<CodeFoldRegion> GetActiveFoldRegions(int lineIndex)
-    {
-        if (FoldRegions.IsDefaultOrEmpty)
-        {
-            return [];
-        }
-
-        if (activeFoldRegionsByLineIndex is not null &&
-            activeFoldRegionsByLineIndex.TryGetValue(lineIndex, out var cached))
-        {
-            return cached;
-        }
-
-        if ((uint)lineIndex >= (uint)Document.LineCount)
-        {
-            return [];
-        }
-
-        var orderedRegions = GetActiveFoldRegionsByStartLine();
-        var builder = ImmutableArray.CreateBuilder<CodeFoldRegion>(Math.Min(orderedRegions.Length, 8));
-        foreach (var region in orderedRegions)
-        {
-            if (region.StartLineIndex >= lineIndex)
-            {
-                break;
-            }
-
-            if (region.EndLineIndex >= lineIndex &&
-                !collapsedFoldStartLines.Contains(region.StartLineIndex))
-            {
-                builder.Add(region);
-            }
-        }
-
-        var activeRegions = builder.Count == 0 ? ImmutableArray<CodeFoldRegion>.Empty : builder.ToImmutable();
-        (activeFoldRegionsByLineIndex ??= new Dictionary<int, ImmutableArray<CodeFoldRegion>>(128))[lineIndex] = activeRegions;
-        return activeRegions;
     }
 
     private CodeFoldRegion[] GetActiveFoldRegionsByStartLine()
@@ -1312,7 +1319,6 @@ public sealed class DiffNode
         FullFileDocument = nextDocument;
         FullText = string.Join(Environment.NewLine, editableLines);
         Document = nextDocument;
-        activeFoldRegionsByLineIndex = null;
         visibleLineCountCache = null;
     }
 
