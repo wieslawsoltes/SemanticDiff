@@ -210,6 +210,22 @@ public sealed class CodeFileViewerControl : Grid
     private bool isSelectingText;
     private int editableLinesVersion = -1;
     private IReadOnlyDictionary<int, SemanticLineInsight> semanticLineInsightsByLine = new Dictionary<int, SemanticLineInsight>();
+    private IReadOnlyList<DiffLine>? cachedLineMetricsSource;
+    private int cachedLineMetricsLineCount = -1;
+    private float cachedLineMetricsCharWidth;
+    private bool cachedLineMetricsDiffMode;
+    private float cachedLineMetricsGutterWidth;
+    private double cachedLineMetricsContentWidth;
+    private SKPicture? cachedMinimapContentPicture;
+    private IReadOnlyList<DiffLine>? cachedMinimapContentLinesSource;
+    private int cachedMinimapContentVisibleRowCount = -1;
+    private int cachedMinimapContentSemanticCount = -1;
+    private int cachedMinimapContentCollapsedFoldCount = -1;
+    private bool cachedMinimapContentShowDiffAnnotations;
+    private bool cachedMinimapContentShowSemanticInsights;
+    private ElementTheme cachedMinimapContentTheme = ElementTheme.Default;
+    private float cachedMinimapContentWidth = -1;
+    private float cachedMinimapContentHeight = -1;
     private double minimapGrabOffsetY;
     private Point2 selectionAutoScrollPoint;
     private DispatcherTimer? selectionAutoScrollTimer;
@@ -218,6 +234,8 @@ public sealed class CodeFileViewerControl : Grid
     private CodeCompletionSession? completionSession;
     private int completionRequestVersion;
     private bool isCommittingCompletion;
+
+    private readonly record struct LineMetrics(float GutterWidth, double TextContentWidth);
 
     public CodeFileViewerControl()
     {
@@ -251,12 +269,17 @@ public sealed class CodeFileViewerControl : Grid
         GotFocus += (_, _) => RequestRender();
         LostFocus += (_, _) => RequestRender();
         Loaded += (_, _) => RequestDeferredRender();
+        Unloaded += (_, _) => InvalidateMinimapContentCache();
         SizeChanged += (_, _) =>
         {
             ClampScrollOffset();
             RequestRender();
         };
-        ActualThemeChanged += (_, _) => RequestRender();
+        ActualThemeChanged += (_, _) =>
+        {
+            InvalidateMinimapContentCache();
+            RequestRender();
+        };
     }
 
     public object? Lines
@@ -519,6 +542,7 @@ public sealed class CodeFileViewerControl : Grid
     {
         if (dependencyObject is CodeFileViewerControl control)
         {
+            control.InvalidateLineMetricsCache();
             control.ClampScrollOffset();
             control.UpdateCompletionPresenterPosition();
             control.RequestDeferredRender();
@@ -529,6 +553,7 @@ public sealed class CodeFileViewerControl : Grid
     {
         if (dependencyObject is CodeFileViewerControl control)
         {
+            control.InvalidateMinimapContentCache();
             control.RequestDeferredRender();
         }
     }
@@ -539,6 +564,7 @@ public sealed class CodeFileViewerControl : Grid
         {
             control.semanticLineInsightsByLine = BuildSemanticInsightMap(args.NewValue);
             control.hoveredSemanticLineNumber = null;
+            control.InvalidateMinimapContentCache();
             ToolTipService.SetToolTip(control, null);
             control.RequestDeferredRender();
         }
@@ -552,6 +578,7 @@ public sealed class CodeFileViewerControl : Grid
             control.editorInitialized = false;
             control.editableLinesVersion = -1;
             control.visibleRowsDirty = true;
+            control.InvalidateLineMetricsCache();
             control.ClearSelection();
             control.isDraggingHorizontalScrollbar = false;
             control.ClampScrollOffset();
@@ -567,6 +594,7 @@ public sealed class CodeFileViewerControl : Grid
             control.editorInitialized = false;
             control.editableLinesVersion = -1;
             control.visibleRowsDirty = true;
+            control.InvalidateLineMetricsCache();
             control.isDraggingHorizontalScrollbar = false;
             control.ClampScrollOffset();
             control.RequestDeferredRender();
@@ -579,6 +607,8 @@ public sealed class CodeFileViewerControl : Grid
         {
             control.editableLinesVersion = -1;
             control.editableLines = [];
+            control.InvalidateLineMetricsCache();
+            control.InvalidateMinimapContentCache();
             control.RequestDeferredRender();
         }
     }
@@ -805,6 +835,7 @@ public sealed class CodeFileViewerControl : Grid
             }
 
             visibleRowsDirty = true;
+            InvalidateMinimapContentCache();
             ClampScrollOffset();
             ToolTipService.SetToolTip(this, CreateFoldTooltip(region));
             RequestRender();
@@ -1970,6 +2001,8 @@ public sealed class CodeFileViewerControl : Grid
         collapsedFoldStarts.Clear();
         visibleRowsDirty = true;
         editableLinesVersion = -1;
+        InvalidateLineMetricsCache();
+        InvalidateMinimapContentCache();
         ClampScrollOffset();
         EnsureCaretVisible();
         UpdateEditableTextProperty();
@@ -3606,18 +3639,12 @@ public sealed class CodeFileViewerControl : Grid
         using (new SKAutoCanvasRestore(canvasSurface, doSave: true))
         {
             canvasSurface.ClipRect(inner);
-            using var minimapPaint = new SKPaint { Style = SKPaintStyle.Fill, IsAntialias = false };
-            // Detailed rows preserve token colors for normal files; aggregation keeps very large files O(viewport pixels).
-            if (visibleRows.Length <= MinimapDetailedRowLimit)
+            if (GetOrCreateMinimapContentPicture(palette, lines, inner) is { } contentPicture)
             {
-                DrawDetailedMinimapRows(canvasSurface, palette, lines, inner, minimapPaint);
-            }
-            else
-            {
-                DrawAggregatedMinimapRows(canvasSurface, palette, lines, inner, minimapPaint);
+                canvasSurface.DrawPicture(contentPicture);
             }
 
-            DrawMinimapSemanticInsights(canvasSurface, palette, lines, inner, minimapPaint);
+            using var minimapPaint = new SKPaint { Style = SKPaintStyle.Fill, IsAntialias = false };
             DrawMinimapSelection(canvasSurface, palette, inner, minimapPaint);
         }
 
@@ -3635,6 +3662,57 @@ public sealed class CodeFileViewerControl : Grid
             canvasSurface.DrawRoundRect(viewport, 3, 3, viewportPaint);
             canvasSurface.DrawRoundRect(viewport, 3, 3, viewportBorderPaint);
         }
+    }
+
+    private SKPicture? GetOrCreateMinimapContentPicture(
+        CodeFileViewerPalette palette,
+        IReadOnlyList<DiffLine> lines,
+        SKRect inner)
+    {
+        var width = MathF.Round(inner.Width, 2);
+        var height = MathF.Round(inner.Height, 2);
+        var semanticCount = semanticLineInsightsByLine.Count;
+        var theme = ActualTheme;
+        if (cachedMinimapContentPicture is not null &&
+            ReferenceEquals(cachedMinimapContentLinesSource, lines) &&
+            cachedMinimapContentVisibleRowCount == visibleRows.Length &&
+            cachedMinimapContentSemanticCount == semanticCount &&
+            cachedMinimapContentCollapsedFoldCount == collapsedFoldStarts.Count &&
+            cachedMinimapContentShowDiffAnnotations == ShowDiffAnnotations &&
+            cachedMinimapContentShowSemanticInsights == ShowSemanticInsights &&
+            cachedMinimapContentTheme == theme &&
+            cachedMinimapContentWidth.Equals(width) &&
+            cachedMinimapContentHeight.Equals(height))
+        {
+            return cachedMinimapContentPicture;
+        }
+
+        InvalidateMinimapContentCache();
+        using var recorder = new SKPictureRecorder();
+        var recordingCanvas = recorder.BeginRecording(inner);
+        using var minimapPaint = new SKPaint { Style = SKPaintStyle.Fill, IsAntialias = false };
+        // Detailed rows preserve token colors for normal files; aggregation keeps very large files O(viewport pixels).
+        if (visibleRows.Length <= MinimapDetailedRowLimit)
+        {
+            DrawDetailedMinimapRows(recordingCanvas, palette, lines, inner, minimapPaint);
+        }
+        else
+        {
+            DrawAggregatedMinimapRows(recordingCanvas, palette, lines, inner, minimapPaint);
+        }
+
+        DrawMinimapSemanticInsights(recordingCanvas, palette, lines, inner, minimapPaint);
+        cachedMinimapContentPicture = recorder.EndRecording();
+        cachedMinimapContentLinesSource = lines;
+        cachedMinimapContentVisibleRowCount = visibleRows.Length;
+        cachedMinimapContentSemanticCount = semanticCount;
+        cachedMinimapContentCollapsedFoldCount = collapsedFoldStarts.Count;
+        cachedMinimapContentShowDiffAnnotations = ShowDiffAnnotations;
+        cachedMinimapContentShowSemanticInsights = ShowSemanticInsights;
+        cachedMinimapContentTheme = theme;
+        cachedMinimapContentWidth = width;
+        cachedMinimapContentHeight = height;
+        return cachedMinimapContentPicture;
     }
 
     private void DrawDetailedMinimapRows(
@@ -4221,6 +4299,7 @@ public sealed class CodeFileViewerControl : Grid
         collapsedFoldStarts.RemoveWhere(start => !foldRegionsByStart.ContainsKey(start));
         visibleRows = layout.VisibleRows;
         visibleRowsDirty = false;
+        InvalidateMinimapContentCache();
     }
 
     private int GetVisibleRowIndexForLine(int lineIndex)
@@ -4478,21 +4557,71 @@ public sealed class CodeFileViewerControl : Grid
         cachedBoundLines = null;
         cachedFoldRegionsSource = null;
         cachedFoldRegions = null;
+        InvalidateLineMetricsCache();
+        InvalidateMinimapContentCache();
     }
 
     private float CalculateGutterWidth(float charWidth, IReadOnlyList<DiffLine> lines)
+        => GetLineMetrics(charWidth, lines).GutterWidth;
+
+    private LineMetrics GetLineMetrics(float charWidth, IReadOnlyList<DiffLine> lines)
     {
+        if (ReferenceEquals(cachedLineMetricsSource, lines) &&
+            cachedLineMetricsLineCount == lines.Count &&
+            cachedLineMetricsCharWidth.Equals(charWidth) &&
+            cachedLineMetricsDiffMode == IsDiffMode)
+        {
+            return new LineMetrics(cachedLineMetricsGutterWidth, cachedLineMetricsContentWidth);
+        }
+
         var maxLineNumber = 1;
+        var maxVisualColumn = 0;
         for (var index = 0; index < lines.Count; index++)
         {
             var line = lines[index];
             maxLineNumber = Math.Max(maxLineNumber, Math.Max(line.OldLineNumber ?? 0, line.NewLineNumber ?? line.Index + 1));
+            if (line.Text.Length != 0)
+            {
+                maxVisualColumn = Math.Max(maxVisualColumn, CodeTextLayout.GetVisualColumn(line.Text, line.Text.Length));
+            }
         }
 
         var digits = Math.Max(3, CountDecimalDigits(maxLineNumber));
-        return IsDiffMode
+        var gutterWidth = IsDiffMode
             ? LeftPadding + digits * charWidth * 2 + 62
             : LeftPadding + FoldGutterWidth + digits * charWidth + 18;
+        var textContentWidth = maxVisualColumn * charWidth + TextPadding;
+
+        cachedLineMetricsSource = lines;
+        cachedLineMetricsLineCount = lines.Count;
+        cachedLineMetricsCharWidth = charWidth;
+        cachedLineMetricsDiffMode = IsDiffMode;
+        cachedLineMetricsGutterWidth = gutterWidth;
+        cachedLineMetricsContentWidth = textContentWidth;
+
+        return new LineMetrics(gutterWidth, textContentWidth);
+    }
+
+    private void InvalidateLineMetricsCache()
+    {
+        cachedLineMetricsSource = null;
+        cachedLineMetricsLineCount = -1;
+        cachedLineMetricsCharWidth = 0;
+        cachedLineMetricsDiffMode = false;
+        cachedLineMetricsGutterWidth = 0;
+        cachedLineMetricsContentWidth = 0;
+    }
+
+    private void InvalidateMinimapContentCache()
+    {
+        cachedMinimapContentPicture?.Dispose();
+        cachedMinimapContentPicture = null;
+        cachedMinimapContentLinesSource = null;
+        cachedMinimapContentVisibleRowCount = -1;
+        cachedMinimapContentSemanticCount = -1;
+        cachedMinimapContentCollapsedFoldCount = -1;
+        cachedMinimapContentWidth = -1;
+        cachedMinimapContentHeight = -1;
     }
 
     private static int CountDecimalDigits(int value)
@@ -4555,21 +4684,8 @@ public sealed class CodeFileViewerControl : Grid
     private static double GetTextViewportWidth(float gutterWidth, float contentRight) =>
         Math.Max(0, contentRight - gutterWidth - TextPadding);
 
-    private static double GetTextContentWidth(IReadOnlyList<DiffLine> lines, float charWidth)
-    {
-        if (lines.Count == 0)
-        {
-            return 0;
-        }
-
-        var maxVisualColumn = 0;
-        foreach (var line in lines)
-        {
-            maxVisualColumn = Math.Max(maxVisualColumn, CodeTextLayout.GetVisualColumn(line.Text, line.Text.Length));
-        }
-
-        return maxVisualColumn * charWidth + TextPadding;
-    }
+    private double GetTextContentWidth(IReadOnlyList<DiffLine> lines, float charWidth)
+        => GetLineMetrics(charWidth, lines).TextContentWidth;
 
     private SKRect GetScrollbarTrack(double width, double height) =>
         SKRect.Create((float)(width - ScrollbarWidth - ScrollbarMargin), ScrollbarMargin, ScrollbarWidth, (float)Math.Max(0, height - ScrollbarMargin * 2));

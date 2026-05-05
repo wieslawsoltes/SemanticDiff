@@ -106,6 +106,8 @@ public sealed class DiffNode
     private List<string>? editableLines;
     private Dictionary<int, CodeFoldRegion>? foldRegionsByStartLineIndex;
     private CodeFoldRegion[]? activeFoldRegionsByStartLine;
+    private ImmutableArray<DiffNodeVisibleLine> foldedVisibleRowsCache = [];
+    private bool foldedVisibleRowsDirty = true;
     private int? visibleLineCountCache;
     private int cachedLineCountTextLineCount = -1;
     private string cachedLineCountText = string.Empty;
@@ -153,7 +155,7 @@ public sealed class DiffNode
         editableLines = null;
         foldRegionsByStartLineIndex = null;
         activeFoldRegionsByStartLine = null;
-        visibleLineCountCache = null;
+        InvalidateVisibleRows();
         collapsedFoldStartLines.RemoveWhere(lineIndex => lineIndex < 0 || lineIndex >= fullFileDocument.LineCount);
         ApplyDocumentMode();
     }
@@ -227,7 +229,7 @@ public sealed class DiffNode
             collapsedFoldStartLines.Remove(startLineIndex);
         }
 
-        visibleLineCountCache = null;
+        InvalidateVisibleRows();
         ClampScrollOffset();
         return true;
     }
@@ -735,8 +737,9 @@ public sealed class DiffNode
             return GetFlatVisibleRows(firstRowIndex, count);
         }
 
+        var cachedRows = GetFoldedVisibleRows();
         var normalizedFirstRow = Math.Max(0, firstRowIndex);
-        var remainingRows = Math.Max(0, GetVisibleLineCount() - normalizedFirstRow);
+        var remainingRows = Math.Max(0, cachedRows.Length - normalizedFirstRow);
         var requestedCount = count == int.MaxValue
             ? remainingRows
             : Math.Min(remainingRows, Math.Max(0, count));
@@ -745,7 +748,37 @@ public sealed class DiffNode
             return [];
         }
 
+        if (normalizedFirstRow == 0 && requestedCount == cachedRows.Length)
+        {
+            return cachedRows;
+        }
+
         var rows = ImmutableArray.CreateBuilder<DiffNodeVisibleLine>(requestedCount);
+        var end = normalizedFirstRow + requestedCount;
+        for (var index = normalizedFirstRow; index < end; index++)
+        {
+            rows.Add(cachedRows[index]);
+        }
+
+        return rows.ToImmutable();
+    }
+
+    private ImmutableArray<DiffNodeVisibleLine> GetFoldedVisibleRows()
+    {
+        if (!foldedVisibleRowsDirty)
+        {
+            return foldedVisibleRowsCache;
+        }
+
+        if (!IsShowingFullFile || FoldRegions.IsDefaultOrEmpty || Document.LineCount == 0)
+        {
+            foldedVisibleRowsCache = [];
+            visibleLineCountCache = IsShowingFullFile && !FoldRegions.IsDefaultOrEmpty ? 0 : null;
+            foldedVisibleRowsDirty = false;
+            return foldedVisibleRowsCache;
+        }
+
+        var rows = ImmutableArray.CreateBuilder<DiffNodeVisibleLine>(Document.LineCount);
         var foldRegions = GetFoldRegionsByStartLineIndex();
         var orderedRegions = GetActiveFoldRegionsByStartLine();
         var activeRegions = new List<CodeFoldRegion>(Math.Min(orderedRegions.Length, 8));
@@ -785,14 +818,7 @@ public sealed class DiffNode
 
             foldRegions.TryGetValue(line.Index, out var foldRegion);
             var isCollapsed = foldRegion is not null && collapsedFoldStartLines.Contains(foldRegion.StartLineIndex);
-            if (rowIndex >= normalizedFirstRow && rows.Count < requestedCount)
-            {
-                rows.Add(new DiffNodeVisibleLine(rowIndex, line.Index, line, foldRegion, isCollapsed, activeSnapshot));
-                if (rows.Count == requestedCount)
-                {
-                    break;
-                }
-            }
+            rows.Add(new DiffNodeVisibleLine(rowIndex, line.Index, line, foldRegion, isCollapsed, activeSnapshot));
 
             rowIndex++;
             if (foldRegion is not null && isCollapsed)
@@ -801,7 +827,10 @@ public sealed class DiffNode
             }
         }
 
-        return rows.ToImmutable();
+        foldedVisibleRowsCache = rows.ToImmutable();
+        visibleLineCountCache = foldedVisibleRowsCache.Length;
+        foldedVisibleRowsDirty = false;
+        return foldedVisibleRowsCache;
     }
 
     private static bool RemoveExpiredActiveFoldRegions(List<CodeFoldRegion> activeRegions, int lineIndex)
@@ -922,26 +951,7 @@ public sealed class DiffNode
             return Document.LineCount;
         }
 
-        if (visibleLineCountCache is { } cached)
-        {
-            return cached;
-        }
-
-        var foldRegions = GetFoldRegionsByStartLineIndex();
-        var count = 0;
-        for (var lineIndex = 0; lineIndex < Document.LineCount; lineIndex++)
-        {
-            var line = Document.Lines[lineIndex];
-            if (foldRegions.TryGetValue(line.Index, out var foldRegion) && collapsedFoldStartLines.Contains(foldRegion.StartLineIndex))
-            {
-                lineIndex = Math.Max(lineIndex, foldRegion.EndLineIndex);
-            }
-
-            count++;
-        }
-
-        visibleLineCountCache = count;
-        return count;
+        return visibleLineCountCache ?? GetFoldedVisibleRows().Length;
     }
 
     private Dictionary<int, CodeFoldRegion> GetFoldRegionsByStartLineIndex()
@@ -998,6 +1008,13 @@ public sealed class DiffNode
 
         activeFoldRegionsByStartLine = orderedRegions;
         return activeFoldRegionsByStartLine;
+    }
+
+    private void InvalidateVisibleRows()
+    {
+        visibleLineCountCache = null;
+        foldedVisibleRowsCache = [];
+        foldedVisibleRowsDirty = true;
     }
 
     private void EnsureEditableLines()
@@ -1319,7 +1336,7 @@ public sealed class DiffNode
         FullFileDocument = nextDocument;
         FullText = string.Join(Environment.NewLine, editableLines);
         Document = nextDocument;
-        visibleLineCountCache = null;
+        InvalidateVisibleRows();
     }
 
     private void EnsureCaretVisible()
@@ -1354,27 +1371,22 @@ public sealed class DiffNode
             return targetLineIndex;
         }
 
-        var foldRegions = GetFoldRegionsByStartLineIndex();
-        var rowIndex = 0;
-        for (var lineIndex = 0; lineIndex < Document.LineCount; lineIndex++)
+        var rows = GetFoldedVisibleRows();
+        for (var index = 0; index < rows.Length; index++)
         {
-            var line = Document.Lines[lineIndex];
-            if (line.Index == targetLineIndex)
+            var row = rows[index];
+            if (row.LineIndex == targetLineIndex)
             {
-                return rowIndex;
+                return row.RowIndex;
             }
 
-            if (foldRegions.TryGetValue(line.Index, out var foldRegion) && collapsedFoldStartLines.Contains(foldRegion.StartLineIndex))
+            if (row.IsFoldCollapsed &&
+                row.FoldRegion is { } foldRegion &&
+                targetLineIndex >= foldRegion.StartLineIndex &&
+                targetLineIndex <= foldRegion.EndLineIndex)
             {
-                if (targetLineIndex <= foldRegion.EndLineIndex)
-                {
-                    return rowIndex;
-                }
-
-                lineIndex = Math.Max(lineIndex, foldRegion.EndLineIndex);
+                return row.RowIndex;
             }
-
-            rowIndex++;
         }
 
         return -1;
@@ -1406,26 +1418,14 @@ public sealed class DiffNode
             return true;
         }
 
-        var foldRegions = GetFoldRegionsByStartLineIndex();
-        var rowIndex = 0;
-        for (var documentLineIndex = 0; documentLineIndex < Document.LineCount; documentLineIndex++)
+        var rows = GetFoldedVisibleRows();
+        if (targetRowIndex >= rows.Length)
         {
-            var line = Document.Lines[documentLineIndex];
-            if (rowIndex == targetRowIndex)
-            {
-                lineIndex = line.Index;
-                return true;
-            }
-
-            if (foldRegions.TryGetValue(line.Index, out var foldRegion) && collapsedFoldStartLines.Contains(foldRegion.StartLineIndex))
-            {
-                documentLineIndex = Math.Max(documentLineIndex, foldRegion.EndLineIndex);
-            }
-
-            rowIndex++;
+            return false;
         }
 
-        return false;
+        lineIndex = rows[targetRowIndex].LineIndex;
+        return true;
     }
 
     private static int IndexOfVisibleLine(ImmutableArray<DiffNodeVisibleLine> rows, int lineIndex)
