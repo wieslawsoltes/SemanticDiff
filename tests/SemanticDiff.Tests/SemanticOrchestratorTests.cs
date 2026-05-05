@@ -142,4 +142,23 @@ public sealed class SemanticOrchestratorTests
 
         Assert.True(graph.Edges.Count(edge => edge.Kind == SemanticEdgeKind.ProjectReference && edge.Label == "area") >= 3);
     }
+
+    [Fact]
+    public async Task AnalyzeAsync_InfersRepositoryAreaEdgesForFileOnlyCSharpDocuments()
+    {
+        var factory = new DiffDocumentFactory();
+        var documents = Enumerable.Range(0, 3)
+            .Select(index => factory.CreateFromText(
+                new DiffDocumentMetadata(new DiffDocumentId($"src/App/AssemblyInfo{index}.cs"), $"src/App/AssemblyInfo{index}.cs", null, DiffFileStatus.Modified, "C#", 0, 0),
+                $"global using Sample.Generated{index};"))
+            .ToImmutableArray();
+        var orchestrator = new SemanticOrchestrator([new CSharpSemanticProvider()]);
+
+        var graph = await orchestrator.AnalyzeAsync(
+            new SemanticAnalysisRequest(string.Empty, null, documents, SemanticAnalysisMode.FastSyntaxOnly),
+            CancellationToken.None);
+
+        Assert.Equal(3, graph.Anchors.Count(anchor => anchor.Kind == SemanticAnchorKind.File));
+        Assert.True(graph.Edges.Count(edge => edge.Kind == SemanticEdgeKind.ProjectReference && edge.Label == "area") >= 2);
+    }
 }

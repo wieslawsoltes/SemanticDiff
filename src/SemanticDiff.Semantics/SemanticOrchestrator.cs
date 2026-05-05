@@ -325,6 +325,7 @@ public sealed class SemanticOrchestrator
     };
 
     private static bool IsRepositoryAreaAnchor(SemanticAnchor anchor) => anchor.Kind is
+        SemanticAnchorKind.File or
         SemanticAnchorKind.Type or
         SemanticAnchorKind.XamlRoot or
         SemanticAnchorKind.Project or
