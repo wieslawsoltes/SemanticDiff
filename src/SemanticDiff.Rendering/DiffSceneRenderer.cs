@@ -1645,12 +1645,22 @@ public sealed class DiffSceneRenderer
             DiffCanvasScene scene,
             int geometryVersion,
             DiffNode[] nodes,
+            DiffDocumentSnapshot[] nodeDocuments,
+            Rect2[] nodeBounds,
+            GraphEdge[] sceneEdges,
+            DiffAnnotationVisibilityState annotationVisibility,
+            int annotationCount,
             RenderGraphEdge[] edges,
             Dictionary<DiffDocumentId, DocumentRenderCache> documents)
         {
             Scene = scene;
             GeometryVersion = geometryVersion;
             Nodes = nodes;
+            NodeDocuments = nodeDocuments;
+            NodeBounds = nodeBounds;
+            SceneEdges = sceneEdges;
+            AnnotationVisibility = annotationVisibility;
+            AnnotationCount = annotationCount;
             Edges = edges;
             Documents = documents;
         }
@@ -1661,6 +1671,16 @@ public sealed class DiffSceneRenderer
 
         public DiffNode[] Nodes { get; }
 
+        private DiffDocumentSnapshot[] NodeDocuments { get; }
+
+        private Rect2[] NodeBounds { get; }
+
+        private GraphEdge[] SceneEdges { get; }
+
+        private DiffAnnotationVisibilityState AnnotationVisibility { get; }
+
+        private int AnnotationCount { get; }
+
         public RenderGraphEdge[] Edges { get; }
 
         public Dictionary<DiffDocumentId, DocumentRenderCache> Documents { get; }
@@ -1668,16 +1688,24 @@ public sealed class DiffSceneRenderer
         public static RenderSceneCache Create(DiffCanvasScene scene, RenderSceneCache? previous)
         {
             var nodes = scene.Nodes.ToArray();
-            var nodesById = new Dictionary<string, DiffNode>(nodes.Length, StringComparer.Ordinal);
+            var nodeDocuments = new DiffDocumentSnapshot[nodes.Length];
+            var nodeBounds = new Rect2[nodes.Length];
+            var nodesById = new Dictionary<string, DiffNode>(nodes.Length * 2, StringComparer.Ordinal);
             for (var index = 0; index < nodes.Length; index++)
             {
                 var node = nodes[index];
+                nodeDocuments[index] = node.Document;
+                nodeBounds[index] = node.Bounds;
                 nodesById[node.Document.Id.Value] = node;
+                nodesById[node.DiffDocument.Id.Value] = node;
             }
 
-            var edges = new List<RenderGraphEdge>(scene.Edges.Count);
-            foreach (var graphEdge in scene.Edges)
+            var sceneEdges = new GraphEdge[scene.Edges.Count];
+            var edges = new List<RenderGraphEdge>(sceneEdges.Length);
+            for (var index = 0; index < sceneEdges.Length; index++)
             {
+                var graphEdge = scene.Edges[index];
+                sceneEdges[index] = graphEdge;
                 var edge = CreateRenderGraphEdge(graphEdge, nodesById);
                 if (edge is not null)
                 {
@@ -1736,12 +1764,54 @@ public sealed class DiffSceneRenderer
                 }
             }
 
-            return new RenderSceneCache(scene, scene.GeometryVersion, nodes, edges.ToArray(), documents);
+            return new RenderSceneCache(
+                scene,
+                scene.GeometryVersion,
+                nodes,
+                nodeDocuments,
+                nodeBounds,
+                sceneEdges,
+                scene.AnnotationVisibility,
+                scene.Annotations.Length,
+                edges.ToArray(),
+                documents);
         }
 
         private static readonly DiffAnnotation[] EmptyAnnotations = [];
 
-        public bool Matches(DiffCanvasScene scene) => ReferenceEquals(scene, Scene) && scene.GeometryVersion == GeometryVersion;
+        public bool Matches(DiffCanvasScene scene)
+        {
+            if (!ReferenceEquals(scene, Scene) ||
+                scene.GeometryVersion != GeometryVersion ||
+                scene.Nodes.Count != Nodes.Length ||
+                scene.Edges.Count != SceneEdges.Length ||
+                scene.Annotations.Length != AnnotationCount ||
+                scene.AnnotationVisibility != AnnotationVisibility)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < Nodes.Length; index++)
+            {
+                var node = scene.Nodes[index];
+                if (!ReferenceEquals(node, Nodes[index]) ||
+                    !ReferenceEquals(node.Document, NodeDocuments[index]) ||
+                    node.Bounds != NodeBounds[index])
+                {
+                    return false;
+                }
+            }
+
+            for (var index = 0; index < SceneEdges.Length; index++)
+            {
+                if (scene.Edges[index] != SceneEdges[index])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
 
         public void Dispose()
         {

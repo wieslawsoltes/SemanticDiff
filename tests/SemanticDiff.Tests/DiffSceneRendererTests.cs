@@ -351,6 +351,62 @@ public sealed class DiffSceneRendererTests
     }
 
     [Fact]
+    public void Render_RebuildsCachedEdgesWhenNodeBoundsChangeOutsideSceneVersion()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("B.cs"), "B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var graph = new SemanticGraph(
+            [
+                new SemanticAnchor("A:type", first.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "A"),
+                new SemanticAnchor("B:type", second.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "B")
+            ],
+            [
+                new SemanticEdge("A->B", "A:type", "B:type", SemanticEdgeKind.SymbolReference, 0.82, "B")
+            ]);
+        var layout = new GraphLayoutResult([
+            new DiffNodeLayout(first.Id, new Rect2(40, 40, 620, 420)),
+            new DiffNodeLayout(second.Id, new Rect2(30_000, 30_000, 620, 420))
+        ]);
+        var scene = DiffCanvasScene.FromDocuments([first, second], graph, layoutResult: layout, groupingMode: GraphGroupingMode.None);
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(1_600, 900));
+        renderer.Render(surface.Canvas, new SKSize(1_600, 900), scene, DiffCanvasColorTheme.Dark);
+
+        scene.Nodes[1].Bounds = new Rect2(760, 40, 620, 420);
+        renderer.Render(surface.Canvas, new SKSize(1_600, 900), scene, DiffCanvasColorTheme.Dark);
+
+        Assert.Equal(scene.Edges.Count, renderer.LastRenderStats.DrawnEdgeCount);
+    }
+
+    [Fact]
+    public void Render_ConnectsEdgesWhenNodeDisplaysAlternateFullFileDocument()
+    {
+        var factory = new DiffDocumentFactory();
+        var first = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { }");
+        var second = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("B.cs"), "B.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class B { }");
+        var firstFull = factory.CreateFromText(new DiffDocumentMetadata(new DiffDocumentId("workspace/A.cs"), "A.cs", null, DiffFileStatus.Modified, "C#", 0, 0), "class A { void Full() { } }");
+        var graph = new SemanticGraph(
+            [
+                new SemanticAnchor("A:type", first.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "A"),
+                new SemanticAnchor("B:type", second.Id, new TextRange(0, 1, 1, 1), SemanticAnchorKind.Type, "B")
+            ],
+            [
+                new SemanticEdge("A->B", "A:type", "B:type", SemanticEdgeKind.SymbolReference, 0.82, "B")
+            ]);
+        var scene = DiffCanvasScene.FromDocuments([first, second], graph, groupingMode: GraphGroupingMode.None);
+        scene.Nodes[0].SetFullFileDocument(firstFull, [], "class A { void Full() { } }");
+        scene.Nodes[0].ApplyWorkspaceMode(showFullFile: true, enableEditing: false);
+        var renderer = new DiffSceneRenderer();
+
+        using var surface = SKSurface.Create(new SKImageInfo(1_400, 900));
+        renderer.Render(surface.Canvas, new SKSize(1_400, 900), scene, DiffCanvasColorTheme.Dark);
+
+        Assert.Equal(scene.Edges.Count, renderer.LastRenderStats.DrawnEdgeCount);
+    }
+
+    [Fact]
     public void Render_InteractiveMode_SkipsDetailedBodiesAndCachedEdgePaths()
     {
         var factory = new DiffDocumentFactory();
