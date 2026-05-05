@@ -185,6 +185,10 @@ public sealed class CodeFileViewerControl : Grid
     private readonly HashSet<int> collapsedFoldStarts = [];
     private ImmutableArray<VisibleCodeRow> visibleRows = [];
     private ImmutableArray<DiffLine> editableLines = [];
+    private object? cachedBoundLinesSource;
+    private IReadOnlyList<DiffLine>? cachedBoundLines;
+    private object? cachedFoldRegionsSource;
+    private IReadOnlyList<CodeFoldRegion>? cachedFoldRegions;
     private Dictionary<int, CodeFoldRegion> foldRegionsByStart = [];
     private Size2 lastCanvasSize = Size2.Zero;
     private double scrollOffsetX;
@@ -499,6 +503,7 @@ public sealed class CodeFileViewerControl : Grid
             control.isDraggingMinimap = false;
             control.activePointerId = null;
             control.StopSelectionAutoScroll();
+            control.InvalidateBoundContentCaches();
             control.editorInitialized = false;
             control.editableLinesVersion = -1;
             control.ClearSelection();
@@ -4253,7 +4258,24 @@ public sealed class CodeFileViewerControl : Grid
 
     private void TrimCollapsedFoldState()
     {
-        var starts = GetFoldRegions().Select(region => region.StartLineIndex).ToHashSet();
+        if (collapsedFoldStarts.Count == 0)
+        {
+            return;
+        }
+
+        var foldRegions = GetFoldRegions();
+        if (foldRegions.Count == 0)
+        {
+            collapsedFoldStarts.Clear();
+            return;
+        }
+
+        var starts = new HashSet<int>(foldRegions.Count);
+        for (var index = 0; index < foldRegions.Count; index++)
+        {
+            starts.Add(foldRegions[index].StartLineIndex);
+        }
+
         collapsedFoldStarts.RemoveWhere(start => !starts.Contains(start));
     }
 
@@ -4345,12 +4367,25 @@ public sealed class CodeFileViewerControl : Grid
         return new DiffDocumentSnapshot(metadata.Id, metadata, lines);
     }
 
-    private IReadOnlyList<DiffLine> GetBoundLines() => Lines switch
+    private IReadOnlyList<DiffLine> GetBoundLines()
     {
-        IReadOnlyList<DiffLine> list => list,
-        IEnumerable<DiffLine> enumerable => enumerable.ToArray(),
-        _ => Array.Empty<DiffLine>()
-    };
+        var source = Lines;
+        if (ReferenceEquals(cachedBoundLinesSource, source) && cachedBoundLines is { } cached)
+        {
+            return cached;
+        }
+
+        var lines = source switch
+        {
+            IReadOnlyList<DiffLine> list => list,
+            IEnumerable<DiffLine> enumerable => enumerable.ToArray(),
+            _ => Array.Empty<DiffLine>()
+        };
+
+        cachedBoundLinesSource = source;
+        cachedBoundLines = lines;
+        return lines;
+    }
 
     private void EnsureEditorDocument()
     {
@@ -4359,13 +4394,40 @@ public sealed class CodeFileViewerControl : Grid
             return;
         }
 
-        editorDocument.SetText(Text ?? string.Join('\n', GetBoundLines().Select(line => line.Text)));
+        editorDocument.SetText(Text ?? BuildTextFromLines(GetBoundLines()));
         caretPosition = editorDocument.ClampPosition(caretPosition);
         selectionAnchor = selectionAnchor is { } anchor ? editorDocument.ClampPosition(anchor) : caretPosition;
         selectionActive = selectionActive is { } active ? editorDocument.ClampPosition(active) : caretPosition;
         editableLinesVersion = -1;
         visibleRowsDirty = true;
         editorInitialized = true;
+    }
+
+    private static string BuildTextFromLines(IReadOnlyList<DiffLine> lines)
+    {
+        if (lines.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var capacity = Math.Max(0, lines.Count - 1);
+        for (var index = 0; index < lines.Count; index++)
+        {
+            capacity += lines[index].Text.Length;
+        }
+
+        var builder = new System.Text.StringBuilder(capacity);
+        for (var index = 0; index < lines.Count; index++)
+        {
+            if (index > 0)
+            {
+                builder.Append('\n');
+            }
+
+            builder.Append(lines[index].Text);
+        }
+
+        return builder.ToString();
     }
 
     private bool TryGetSemanticInsight(DiffLine line, out SemanticLineInsight insight)
@@ -4385,14 +4447,38 @@ public sealed class CodeFileViewerControl : Grid
     private static int GetSemanticLineNumber(DiffLine line) =>
         line.NewLineNumber ?? line.OldLineNumber ?? line.Index + 1;
 
-    private IReadOnlyList<CodeFoldRegion> GetFoldRegions() => IsDiffMode
-        ? Array.Empty<CodeFoldRegion>()
-        : FoldRegions switch
+    private IReadOnlyList<CodeFoldRegion> GetFoldRegions()
+    {
+        if (IsDiffMode)
+        {
+            return Array.Empty<CodeFoldRegion>();
+        }
+
+        var source = FoldRegions;
+        if (ReferenceEquals(cachedFoldRegionsSource, source) && cachedFoldRegions is { } cached)
+        {
+            return cached;
+        }
+
+        var regions = source switch
         {
             IReadOnlyList<CodeFoldRegion> list => list,
             IEnumerable<CodeFoldRegion> enumerable => enumerable.ToArray(),
             _ => Array.Empty<CodeFoldRegion>()
         };
+
+        cachedFoldRegionsSource = source;
+        cachedFoldRegions = regions;
+        return regions;
+    }
+
+    private void InvalidateBoundContentCaches()
+    {
+        cachedBoundLinesSource = null;
+        cachedBoundLines = null;
+        cachedFoldRegionsSource = null;
+        cachedFoldRegions = null;
+    }
 
     private float CalculateGutterWidth(float charWidth, IReadOnlyList<DiffLine> lines)
     {
