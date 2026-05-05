@@ -63,6 +63,89 @@ public sealed partial class MainViewModel
         return FocusExplorerItem(item);
     }
 
+    public string GetExplorerNodePathText(FileExplorerNodeViewModel? node) =>
+        node is null ? string.Empty : FormatExplorerNodeLabel(node);
+
+    public string GetExplorerNodeFullPathText(FileExplorerNodeViewModel? node)
+    {
+        if (node is null || string.IsNullOrWhiteSpace(node.Path))
+        {
+            return string.Empty;
+        }
+
+        if (Path.IsPathRooted(node.Path) || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            return node.Path;
+        }
+
+        return Path.GetFullPath(Path.Combine(currentRepositoryPath, NormalizeRepositoryPath(node.Path)));
+    }
+
+    public string GetExplorerNodeChildPathsText(FileExplorerNodeViewModel? node)
+    {
+        if (node is null)
+        {
+            return string.Empty;
+        }
+
+        if (node.IsFile)
+        {
+            return node.Path;
+        }
+
+        var normalizedPath = NormalizeRepositoryPath(node.Path);
+        var prefix = string.IsNullOrWhiteSpace(normalizedPath) ? string.Empty : $"{normalizedPath.TrimEnd('/')}/";
+        var builder = new System.Text.StringBuilder();
+        foreach (var item in allExplorerItems)
+        {
+            if (!string.IsNullOrWhiteSpace(item.Path) && IsPathUnderFolder(item.Path, normalizedPath, prefix))
+            {
+                if (builder.Length > 0)
+                {
+                    builder.AppendLine();
+                }
+
+                builder.Append(item.Path);
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    public async Task<string?> LoadExplorerNodeContentTextAsync(FileExplorerNodeViewModel? node, CancellationToken cancellationToken = default)
+    {
+        if (node is null || !node.IsFile || string.IsNullOrWhiteSpace(node.Path))
+        {
+            return null;
+        }
+
+        var operation = BeginBackgroundOperation($"Copying file content for {node.Path}");
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, operation.Token);
+        try
+        {
+            ReportProgress(operation, 0.25, $"Loading {node.Path}");
+            var text = await LoadFileContentByPathAsync(node.Path, linkedCancellation.Token);
+            CompleteOperation(operation, text is null ? "File content unavailable" : "File content ready");
+            if (text is null)
+            {
+                AddDiagnostic("Warning", $"Could not load contents for {node.Path}");
+            }
+
+            return text;
+        }
+        catch (OperationCanceledException)
+        {
+            CompleteOperation(operation, "File content copy canceled");
+            return null;
+        }
+        catch (Exception exception)
+        {
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "File content copy failed");
+            return null;
+        }
+    }
+
     public Task OpenFileDiffTabAsync(FileExplorerNodeViewModel? node, FileDiffDisplayMode displayMode)
     {
         if (node is null)
@@ -612,6 +695,48 @@ public sealed partial class MainViewModel
             0);
         var document = new DiffDocumentFactory().CreateFromText(metadata, text, DiffLineKind.Context);
         return await CreateFullFileDocumentAsync(document, text, appState.EnableTokenization, cancellationToken);
+    }
+
+    private async Task<string?> LoadFileContentByPathAsync(string path, CancellationToken cancellationToken)
+    {
+        var normalizedPath = NormalizeRepositoryPath(path);
+        var document = currentDocuments.FirstOrDefault(document =>
+            string.Equals(NormalizeRepositoryPath(document.Metadata.Path), normalizedPath, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(document.Metadata.OldPath) &&
+                string.Equals(NormalizeRepositoryPath(document.Metadata.OldPath), normalizedPath, StringComparison.OrdinalIgnoreCase)));
+        if (document is not null)
+        {
+            return await LoadFullFileTextAsync(document, cancellationToken);
+        }
+
+        if (currentGitSnapshot is not null && !string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            try
+            {
+                var fileChange = new GitFileChange(normalizedPath, null, DiffFileStatus.Unchanged, 0, 0, LanguageFromPath(normalizedPath));
+                var text = await new GitDiffService().GetFileContentAsync(currentGitSnapshot.Request, fileChange, cancellationToken);
+                if (!string.IsNullOrEmpty(text) || await HasRepositoryFileAsync(normalizedPath, cancellationToken))
+                {
+                    return text;
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                AddDiagnostic("Warning", $"Git file content load failed: {exception.Message}");
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            return null;
+        }
+
+        var absolutePath = Path.IsPathRooted(path)
+            ? path
+            : Path.Combine(currentRepositoryPath, normalizedPath);
+        return File.Exists(absolutePath)
+            ? await File.ReadAllTextAsync(absolutePath, cancellationToken)
+            : null;
     }
 
     private async Task<bool> HasRepositoryFileAsync(string path, CancellationToken cancellationToken)

@@ -12,7 +12,11 @@
       </ResourceDictionary.MergedDictionaries>
 
     <DataTemplate x:Key="WorkspaceTabHeaderTemplate">
-      <Grid MinHeight="30" MinWidth="104" Padding="10,0" Tag="{Binding}">
+      <Grid MinHeight="30"
+            MinWidth="104"
+            Padding="10,0"
+            Tag="{Binding}"
+            RightTapped="OnWorkspaceTabHeaderRightTapped">
         <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="6" VerticalAlignment="Center">
           <TextBlock Text="{Binding IconGlyph}"
                      FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"

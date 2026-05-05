@@ -1,6 +1,8 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
+using System.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -1238,6 +1240,37 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private void OnWorkspaceTabHeaderRightTapped(object sender, RightTappedRoutedEventArgs args)
+    {
+        if (sender is not FrameworkElement { Tag: ViewModels.WorkspaceTabViewModel tab } element)
+        {
+            return;
+        }
+
+        ViewModel.SelectedWorkspaceTab = tab;
+
+        var menu = new MenuFlyout();
+        var copyTitleItem = new MenuFlyoutItem { Text = "Copy tab title" };
+        copyTitleItem.Click += (_, _) => CopyTextToClipboard(tab.Header, "tab title");
+        menu.Items.Add(copyTitleItem);
+
+        if (!string.IsNullOrWhiteSpace(tab.DetailText))
+        {
+            var copyDetailsItem = new MenuFlyoutItem { Text = "Copy tab details" };
+            copyDetailsItem.Click += (_, _) => CopyTextToClipboard(tab.DetailText, "tab details");
+            menu.Items.Add(copyDetailsItem);
+        }
+
+        if (tab.FileDiff is { } fileDiff)
+        {
+            menu.Items.Add(new MenuFlyoutSeparator());
+            AddFileDiffClipboardMenuItems(menu, fileDiff);
+        }
+
+        menu.ShowAt(element, new FlyoutShowOptions { Position = args.GetPosition(element) });
+        args.Handled = true;
+    }
+
     private void OnFileDiffModeClicked(object sender, RoutedEventArgs args)
     {
         if (sender is not FrameworkElement { DataContext: ViewModels.WorkspaceTabViewModel tab, Tag: string mode })
@@ -1389,13 +1422,7 @@ public sealed partial class MainPage : Page
         menu.Items.Add(blameItem);
 
         var copyLineItem = new MenuFlyoutItem { Text = "Copy line text" };
-        copyLineItem.Click += (_, _) =>
-        {
-            var package = new DataPackage();
-            package.SetText(args.Line.Text);
-            Clipboard.SetContent(package);
-            ViewModel.ReportInteractionInfo($"Copied line {args.LineNumber}");
-        };
+        copyLineItem.Click += (_, _) => CopyTextToClipboard(args.Line.Text, $"line {args.LineNumber}");
         menu.Items.Add(copyLineItem);
 
         menu.ShowAt(element, new FlyoutShowOptions { Position = args.Position });
@@ -1525,10 +1552,7 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        var package = new DataPackage();
-        package.SetText(item.CommitId);
-        Clipboard.SetContent(package);
-        ViewModel.ReportGitHistoryCommitHashCopied(item);
+        CopyTextToClipboard(item.CommitId, $"commit hash {item.ShortId}");
     }
 
     private void OnGitHistorySetRangeStartClicked(object sender, RoutedEventArgs args)
@@ -1669,6 +1693,7 @@ public sealed partial class MainPage : Page
         };
         primaryItem.Click += OnExplorerNodeContextNavigateClicked;
         menu.Items.Add(primaryItem);
+        AddExplorerClipboardMenuItems(menu, item);
 
         menu.Items.Add(new MenuFlyoutSeparator());
         if (item.HasChildren)
@@ -1961,8 +1986,10 @@ public sealed partial class MainPage : Page
         }
 
         var menu = new MenuFlyout();
+        AddGitReferenceClipboardMenuItems(menu, item);
         if (item.IsSelectableReference)
         {
+            menu.Items.Add(new MenuFlyoutSeparator());
             var workspaceItem = new MenuFlyoutItem
             {
                 Text = item.PullRequest is { } reviewRequest
@@ -2334,6 +2361,191 @@ public sealed partial class MainPage : Page
         {
             ViewModel.ReportInteractionError($"Could not focus {focusRequest.DocumentId} in the active workspace");
         }
+    }
+
+    private void AddFileDiffClipboardMenuItems(MenuFlyout menu, ViewModels.FileDiffTabViewModel fileDiff)
+    {
+        var copyPathItem = new MenuFlyoutItem { Text = "Copy file path" };
+        copyPathItem.Click += (_, _) => CopyTextToClipboard(fileDiff.Path, "file path");
+        menu.Items.Add(copyPathItem);
+
+        var copyFullPathItem = new MenuFlyoutItem { Text = "Copy full file path" };
+        copyFullPathItem.Click += (_, _) => CopyTextToClipboard(BuildFileDiffFullPath(fileDiff), "full file path");
+        menu.Items.Add(copyFullPathItem);
+
+        menu.Items.Add(new MenuFlyoutSeparator());
+
+        var copyDisplayedContentsItem = new MenuFlyoutItem { Text = "Copy displayed contents" };
+        copyDisplayedContentsItem.Click += (_, _) => CopyTextToClipboard(BuildFileDiffDisplayedText(fileDiff), "displayed file contents");
+        menu.Items.Add(copyDisplayedContentsItem);
+
+        var copyFullFileContentsItem = new MenuFlyoutItem { Text = "Copy full file contents" };
+        copyFullFileContentsItem.Click += (_, _) => CopyTextToClipboard(BuildFileDiffFullFileText(fileDiff), "full file contents");
+        menu.Items.Add(copyFullFileContentsItem);
+
+        var copyDiffContentsItem = new MenuFlyoutItem { Text = "Copy diff contents" };
+        copyDiffContentsItem.Click += (_, _) => CopyTextToClipboard(BuildLinesText(fileDiff.CurrentDiffOnlyLines), "diff contents");
+        menu.Items.Add(copyDiffContentsItem);
+    }
+
+    private void AddExplorerClipboardMenuItems(MenuFlyout menu, ViewModels.FileExplorerNodeViewModel item)
+    {
+        var copyPathItem = new MenuFlyoutItem { Text = item.IsFile ? "Copy file path" : "Copy folder path" };
+        copyPathItem.Click += (_, _) => CopyTextToClipboard(ViewModel.GetExplorerNodePathText(item), item.IsFile ? "file path" : "folder path");
+        menu.Items.Add(copyPathItem);
+
+        var copyFullPathItem = new MenuFlyoutItem { Text = item.IsFile ? "Copy full file path" : "Copy full folder path" };
+        copyFullPathItem.Click += (_, _) => CopyTextToClipboard(ViewModel.GetExplorerNodeFullPathText(item), item.IsFile ? "full file path" : "full folder path");
+        menu.Items.Add(copyFullPathItem);
+
+        if (item.IsFile)
+        {
+            var copyContentItem = new MenuFlyoutItem { Text = "Copy file contents" };
+            copyContentItem.Click += async (_, _) =>
+            {
+                var text = await ViewModel.LoadExplorerNodeContentTextAsync(item);
+                CopyTextToClipboard(text, "file contents");
+            };
+            menu.Items.Add(copyContentItem);
+        }
+        else
+        {
+            var copyDescendantPathsItem = new MenuFlyoutItem { Text = "Copy descendant file paths" };
+            copyDescendantPathsItem.Click += (_, _) => CopyTextToClipboard(ViewModel.GetExplorerNodeChildPathsText(item), "descendant file paths");
+            menu.Items.Add(copyDescendantPathsItem);
+        }
+    }
+
+    private void AddGitReferenceClipboardMenuItems(MenuFlyout menu, ViewModels.GitReferenceTreeItemViewModel item)
+    {
+        var copyPathItem = new MenuFlyoutItem { Text = item.IsSelectableReference ? "Copy reference path" : "Copy item path" };
+        copyPathItem.Click += (_, _) => CopyTextToClipboard(BuildGitReferencePathText(item), "git reference path");
+        menu.Items.Add(copyPathItem);
+
+        var copyDetailsItem = new MenuFlyoutItem { Text = "Copy reference details" };
+        copyDetailsItem.Click += (_, _) => CopyTextToClipboard(BuildGitReferenceDetailsText(item), "git reference details");
+        menu.Items.Add(copyDetailsItem);
+    }
+
+    private void CopyTextToClipboard(string? text, string description)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            ViewModel.ReportInteractionInfo($"Nothing to copy for {description}");
+            return;
+        }
+
+        try
+        {
+            var package = new DataPackage();
+            package.SetText(text);
+            Clipboard.SetContent(package);
+            ViewModel.ReportInteractionInfo($"Copied {description}");
+        }
+        catch (Exception exception)
+        {
+            ViewModel.ReportInteractionError($"Clipboard copy failed: {exception.Message}");
+        }
+    }
+
+    private static string BuildFileDiffDisplayedText(ViewModels.FileDiffTabViewModel fileDiff) =>
+        fileDiff.IsFullFileMode
+            ? BuildFileDiffFullFileText(fileDiff)
+            : BuildLinesText(fileDiff.CurrentDiffOnlyLines);
+
+    private static string BuildFileDiffFullFileText(ViewModels.FileDiffTabViewModel fileDiff) =>
+        !string.IsNullOrEmpty(fileDiff.FullText)
+            ? fileDiff.FullText
+            : BuildLinesText(fileDiff.CurrentFullFileLines);
+
+    private static string BuildLinesText(ImmutableArray<DiffLine> lines)
+    {
+        if (lines.IsDefaultOrEmpty)
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(capacity: Math.Min(lines.Length * 96, 1024 * 1024));
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (i > 0)
+            {
+                builder.AppendLine();
+            }
+
+            builder.Append(lines[i].Text);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string BuildFileDiffFullPath(ViewModels.FileDiffTabViewModel fileDiff)
+    {
+        if (Path.IsPathRooted(fileDiff.Path) || string.IsNullOrWhiteSpace(fileDiff.RepositoryPath))
+        {
+            return fileDiff.Path;
+        }
+
+        return Path.GetFullPath(Path.Combine(fileDiff.RepositoryPath, fileDiff.Path.Replace('\\', '/')));
+    }
+
+    private static string BuildGitReferencePathText(ViewModels.GitReferenceTreeItemViewModel item)
+    {
+        if (item.Branch is { } branch)
+        {
+            return branch.ReferenceName;
+        }
+
+        if (item.PullRequest is { } reviewRequest)
+        {
+            var headReference = string.IsNullOrWhiteSpace(reviewRequest.RemoteName)
+                ? reviewRequest.HeadRefName
+                : $"{reviewRequest.RemoteName}/{reviewRequest.HeadRefName}";
+            return $"{reviewRequest.BaseReferenceName}...{headReference}";
+        }
+
+        const string remotePrefix = "remote:";
+        return item.Id.StartsWith(remotePrefix, StringComparison.Ordinal)
+            ? item.Id[remotePrefix.Length..]
+            : item.DisplayName;
+    }
+
+    private static string BuildGitReferenceDetailsText(ViewModels.GitReferenceTreeItemViewModel item)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine(item.DisplayName);
+
+        if (!string.IsNullOrWhiteSpace(item.DetailText))
+        {
+            builder.AppendLine(item.DetailText);
+        }
+
+        if (item.Branch is { } branch)
+        {
+            builder.Append("reference: ").AppendLine(branch.ReferenceName);
+            builder.Append("remote: ").AppendLine(string.IsNullOrWhiteSpace(branch.RemoteName) ? "local" : branch.RemoteName);
+            builder.Append("kind: ").AppendLine(branch.IsRemote ? "remote branch" : "local branch");
+            builder.Append("current: ").AppendLine(branch.IsCurrent ? "yes" : "no");
+            builder.Append("default: ").AppendLine(branch.IsDefault ? "yes" : "no");
+        }
+        else if (item.PullRequest is { } reviewRequest)
+        {
+            builder.Append("kind: ").AppendLine(reviewRequest.KindText);
+            builder.Append("number: ").AppendLine(reviewRequest.NumberText);
+            builder.Append("title: ").AppendLine(reviewRequest.Title);
+            builder.Append("state: ").AppendLine(reviewRequest.State.ToString());
+            builder.Append("base: ").AppendLine(reviewRequest.BaseReferenceName);
+            builder.Append("head: ").Append(reviewRequest.HeadRepository).Append(':').AppendLine(reviewRequest.HeadRefName);
+            builder.Append("remote: ").AppendLine(string.IsNullOrWhiteSpace(reviewRequest.RemoteName) ? "origin" : reviewRequest.RemoteName);
+        }
+        else
+        {
+            builder.Append("item: ").AppendLine(item.Id);
+            builder.Append("kind: ").AppendLine(item.Kind.ToString());
+            builder.Append("children: ").AppendLine(item.Count.ToString(CultureInfo.InvariantCulture));
+        }
+
+        return builder.ToString().TrimEnd();
     }
 
     private static string TrimMenuText(string value)
