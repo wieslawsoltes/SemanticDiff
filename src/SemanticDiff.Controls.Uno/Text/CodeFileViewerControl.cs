@@ -228,6 +228,8 @@ public sealed class CodeFileViewerControl : Grid
     private float cachedMinimapContentWidth = -1;
     private float cachedMinimapContentHeight = -1;
     private double minimapGrabOffsetY;
+    private MinimapScrollMetrics activeMinimapScrollMetrics;
+    private bool hasActiveMinimapScrollMetrics;
     private Point2 selectionAutoScrollPoint;
     private DispatcherTimer? selectionAutoScrollTimer;
     private UiRenderScheduler? deferredRenderScheduler;
@@ -237,6 +239,12 @@ public sealed class CodeFileViewerControl : Grid
     private bool isCommittingCompletion;
 
     private readonly record struct LineMetrics(float GutterWidth, double TextContentWidth);
+
+    private readonly record struct MinimapScrollMetrics(
+        SKRect InnerBounds,
+        float ThumbHeight,
+        double ScrollableContentHeight,
+        float TrackScrollableHeight);
 
     public CodeFileViewerControl()
     {
@@ -270,9 +278,14 @@ public sealed class CodeFileViewerControl : Grid
         GotFocus += (_, _) => RequestRender();
         LostFocus += (_, _) => RequestRender();
         Loaded += (_, _) => RequestDeferredRender();
-        Unloaded += (_, _) => InvalidateMinimapContentCache();
+        Unloaded += (_, _) =>
+        {
+            InvalidateMinimapContentCache();
+            ClearTransientScrollState();
+        };
         SizeChanged += (_, _) =>
         {
+            ClearTransientScrollState();
             ClampScrollOffset();
             RequestRender();
         };
@@ -700,6 +713,7 @@ public sealed class CodeFileViewerControl : Grid
         var hasHorizontalScrollbar = ShouldShowHorizontalScrollbar(width, height, gutterWidth, lines);
         var viewportHeight = GetVerticalViewportHeight(height, hasHorizontalScrollbar);
         ClampScrollOffset();
+        var isScrollDragRendering = isDraggingMinimap || isDraggingScrollbar || isDraggingHorizontalScrollbar;
         DrawGutter(canvasSurface, palette, gutterWidth, height, IsDiffMode);
 
         var firstRow = Math.Max(0, (int)Math.Floor((scrollOffsetY - TopPadding) / LineHeight));
@@ -732,25 +746,35 @@ public sealed class CodeFileViewerControl : Grid
             }
             else
             {
-                DrawFoldGutterGuide(canvasSurface, palette, row, y, LineHeight);
+                if (!isScrollDragRendering)
+                {
+                    DrawFoldGutterGuide(canvasSurface, palette, row, y, LineHeight);
+                }
+
                 DrawLineNumber(canvasSurface, line.Index + 1, gutterWidth, y, BaselineOffset, lineNumberPaint, font, RegularFontDescriptor);
-                DrawFoldMarker(canvasSurface, palette, row, y, LineHeight);
+                if (!isScrollDragRendering)
+                {
+                    DrawFoldMarker(canvasSurface, palette, row, y, LineHeight);
+                }
             }
 
             using (new SKAutoCanvasRestore(canvasSurface, doSave: true))
             {
                 canvasSurface.ClipRect(textClip);
-                if (!IsDiffMode)
+                if (!IsDiffMode && !isScrollDragRendering)
                 {
                     DrawFoldGuide(canvasSurface, palette, lines, row, scrolledTextLeft, contentRight, y, LineHeight, charWidth);
                 }
 
                 DrawSelection(canvasSurface, palette, row, line, scrolledTextLeft, y, charWidth, contentRight);
                 DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, scrolledTextLeft, contentRight, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, tokenPaints, BoldFontDescriptor, palette);
-                DrawCaret(canvasSurface, palette, row, line, scrolledTextLeft, y, charWidth, contentRight);
+                if (!isScrollDragRendering)
+                {
+                    DrawCaret(canvasSurface, palette, row, line, scrolledTextLeft, y, charWidth, contentRight);
+                }
             }
 
-            if (TryGetSemanticInsight(line, out var semanticInsight))
+            if (!isScrollDragRendering && TryGetSemanticInsight(line, out var semanticInsight))
             {
                 DrawSemanticInsight(canvasSurface, palette, semanticInsight, gutterWidth, contentRight, y, LineHeight, BaselineOffset, font, BoldFontDescriptor);
             }
@@ -758,7 +782,7 @@ public sealed class CodeFileViewerControl : Grid
 
         if (ShouldShowMinimap(width, height))
         {
-            DrawMinimap(canvasSurface, palette, lines, width, height, viewportHeight);
+            DrawMinimap(canvasSurface, palette, lines, width, height, viewportHeight, isScrollDragRendering);
         }
         else
         {
@@ -784,16 +808,22 @@ public sealed class CodeFileViewerControl : Grid
         CloseCompletion();
         StopSelectionAutoScroll();
         var point = ToCanvasPoint(pointerPoint.Position);
-        if (TryHitTestMinimap(point, out var minimapBounds, out var minimapViewport))
+        if (TryHitTestMinimap(point, out _, out var minimapViewport, out var minimapScrollMetrics))
         {
             isDraggingMinimap = true;
             activePointerId = args.Pointer.PointerId;
+            activeMinimapScrollMetrics = minimapScrollMetrics;
+            hasActiveMinimapScrollMetrics = true;
             minimapGrabOffsetY = minimapViewport.Contains((float)point.X, (float)point.Y)
                 ? point.Y - minimapViewport.Top
                 : minimapViewport.Height * 0.5;
             if (!minimapViewport.Contains((float)point.X, (float)point.Y))
             {
-                DragMinimap(point.Y, minimapBounds);
+                DragMinimap(point.Y, minimapScrollMetrics);
+            }
+            else
+            {
+                RequestScrollRender();
             }
 
             CapturePointer(args.Pointer);
@@ -921,13 +951,20 @@ public sealed class CodeFileViewerControl : Grid
     {
         if (activePointerId == args.Pointer.PointerId)
         {
+            var wasScrollDrag = isDraggingScrollbar || isDraggingHorizontalScrollbar || isDraggingMinimap;
             isDraggingScrollbar = false;
             isDraggingHorizontalScrollbar = false;
             isDraggingMinimap = false;
+            hasActiveMinimapScrollMetrics = false;
             isSelectingText = false;
             activePointerId = null;
             StopSelectionAutoScroll();
             ReleasePointerCaptures();
+            if (wasScrollDrag)
+            {
+                RequestRender();
+            }
+
             args.Handled = true;
         }
     }
@@ -961,13 +998,16 @@ public sealed class CodeFileViewerControl : Grid
         }
         else
         {
+            EnsureVisibleRows();
+            var viewportHeight = GetVerticalViewportHeight();
+            var contentHeight = TopPadding + visibleRows.Length * LineHeight + BottomPadding;
             scrollOffsetY -= delta / 120.0 * LineHeight * 3;
-            ClampVerticalScrollOffset();
+            scrollOffsetY = Math.Clamp(scrollOffsetY, 0, Math.Max(0, contentHeight - viewportHeight));
         }
 
         if (HasScrollOffsetChanged(previousOffsetX, previousOffsetY))
         {
-            RequestRender();
+            RequestScrollRender();
         }
 
         args.Handled = true;
@@ -2891,8 +2931,9 @@ public sealed class CodeFileViewerControl : Grid
 
     private void DragScrollbar(double pointerY)
     {
+        EnsureVisibleRows();
         var viewportHeight = GetVerticalViewportHeight();
-        var contentHeight = GetContentHeight();
+        var contentHeight = TopPadding + visibleRows.Length * LineHeight + BottomPadding;
         if (contentHeight <= viewportHeight)
         {
             scrollOffsetY = 0;
@@ -2904,11 +2945,14 @@ public sealed class CodeFileViewerControl : Grid
         var trackScrollable = Math.Max(1, track.Height - thumbHeight);
         var thumbTop = Math.Clamp(pointerY - scrollbarGrabOffsetY, track.Top, track.Bottom - thumbHeight);
         var previousOffsetY = scrollOffsetY;
-        scrollOffsetY = (thumbTop - track.Top) / trackScrollable * (contentHeight - viewportHeight);
-        ClampVerticalScrollOffset();
+        var scrollableContentHeight = Math.Max(0, contentHeight - viewportHeight);
+        scrollOffsetY = Math.Clamp(
+            (thumbTop - track.Top) / trackScrollable * scrollableContentHeight,
+            0,
+            scrollableContentHeight);
         if (HasScrollOffsetChanged(previousOffsetY))
         {
-            RequestRender();
+            RequestScrollRender();
         }
     }
 
@@ -2936,41 +2980,51 @@ public sealed class CodeFileViewerControl : Grid
         ClampHorizontalScrollOffset();
         if (HasHorizontalScrollOffsetChanged(previousOffsetX))
         {
-            RequestRender();
+            RequestScrollRender();
         }
     }
 
     private void DragMinimap(double pointerY)
     {
-        var size = GetCanvasSize();
-        var bounds = GetMinimapBounds((float)size.Width, (float)size.Height);
-        DragMinimap(pointerY, bounds);
+        if (!hasActiveMinimapScrollMetrics)
+        {
+            var size = GetCanvasSize();
+            var bounds = GetMinimapBounds((float)size.Width, (float)size.Height);
+            if (!TryGetMinimapScrollMetrics(bounds, GetVerticalViewportHeight(), out activeMinimapScrollMetrics))
+            {
+                return;
+            }
+
+            hasActiveMinimapScrollMetrics = true;
+        }
+
+        DragMinimap(pointerY, activeMinimapScrollMetrics);
     }
 
-    private void DragMinimap(double pointerY, SKRect minimapBounds)
+    private void DragMinimap(double pointerY, MinimapScrollMetrics metrics)
     {
-        EnsureVisibleRows();
-        var viewportHeight = GetVerticalViewportHeight();
-        var contentHeight = GetContentHeight();
-        if (visibleRows.Length == 0 || contentHeight <= viewportHeight)
+        if (metrics.ScrollableContentHeight <= 0 || metrics.TrackScrollableHeight <= 0)
         {
+            var previousOffsetBeforeReset = scrollOffsetY;
             scrollOffsetY = 0;
-            RequestRender();
+            if (HasScrollOffsetChanged(previousOffsetBeforeReset))
+            {
+                RequestScrollRender();
+            }
+
             return;
         }
 
-        var inner = GetMinimapInnerBounds(minimapBounds);
-        var viewport = GetMinimapViewport(minimapBounds, viewportHeight);
+        var inner = metrics.InnerBounds;
         var availableTop = inner.Top;
-        var availableBottom = Math.Max(availableTop, inner.Bottom - viewport.Height);
+        var availableBottom = Math.Max(availableTop, inner.Bottom - metrics.ThumbHeight);
         var thumbTop = Math.Clamp(pointerY - minimapGrabOffsetY, availableTop, availableBottom);
-        var ratio = (thumbTop - inner.Top) / Math.Max(1, inner.Height - viewport.Height);
+        var ratio = (thumbTop - inner.Top) / metrics.TrackScrollableHeight;
         var previousOffsetY = scrollOffsetY;
-        scrollOffsetY = ratio * Math.Max(0, contentHeight - viewportHeight);
-        ClampVerticalScrollOffset();
+        scrollOffsetY = Math.Clamp(ratio * metrics.ScrollableContentHeight, 0, metrics.ScrollableContentHeight);
         if (HasScrollOffsetChanged(previousOffsetY))
         {
-            RequestRender();
+            RequestScrollRender();
         }
     }
 
@@ -3592,7 +3646,7 @@ public sealed class CodeFileViewerControl : Grid
 
     private void DrawScrollbar(SKCanvas canvasSurface, CodeFileViewerPalette palette, float width, double viewportHeight)
     {
-        var contentHeight = GetContentHeight();
+        var contentHeight = TopPadding + visibleRows.Length * LineHeight + BottomPadding;
         if (contentHeight <= viewportHeight)
         {
             return;
@@ -3636,7 +3690,14 @@ public sealed class CodeFileViewerControl : Grid
         canvasSurface.DrawRoundRect(thumb, HorizontalScrollbarHeight / 2, HorizontalScrollbarHeight / 2, thumbPaint);
     }
 
-    private void DrawMinimap(SKCanvas canvasSurface, CodeFileViewerPalette palette, IReadOnlyList<DiffLine> lines, float width, float height, double viewportHeight)
+    private void DrawMinimap(
+        SKCanvas canvasSurface,
+        CodeFileViewerPalette palette,
+        IReadOnlyList<DiffLine> lines,
+        float width,
+        float height,
+        double viewportHeight,
+        bool isScrollDragRendering)
     {
         EnsureVisibleRows();
         if (visibleRows.Length == 0)
@@ -3659,13 +3720,19 @@ public sealed class CodeFileViewerControl : Grid
         using (new SKAutoCanvasRestore(canvasSurface, doSave: true))
         {
             canvasSurface.ClipRect(inner);
-            if (GetOrCreateMinimapContentPicture(palette, lines, inner) is { } contentPicture)
+            var contentPicture = isScrollDragRendering && !IsMinimapContentCacheCurrent(lines, inner)
+                ? null
+                : GetOrCreateMinimapContentPicture(palette, lines, inner);
+            if (contentPicture is not null)
             {
                 canvasSurface.DrawPicture(contentPicture);
             }
 
-            using var minimapPaint = new SKPaint { Style = SKPaintStyle.Fill, IsAntialias = false };
-            DrawMinimapSelection(canvasSurface, palette, inner, minimapPaint);
+            if (!isScrollDragRendering)
+            {
+                using var minimapPaint = new SKPaint { Style = SKPaintStyle.Fill, IsAntialias = false };
+                DrawMinimapSelection(canvasSurface, palette, inner, minimapPaint);
+            }
         }
 
         var viewport = GetMinimapViewport(bounds, viewportHeight);
@@ -3684,29 +3751,34 @@ public sealed class CodeFileViewerControl : Grid
         }
     }
 
+    private bool IsMinimapContentCacheCurrent(IReadOnlyList<DiffLine> lines, SKRect inner)
+    {
+        var width = MathF.Round(inner.Width, 2);
+        var height = MathF.Round(inner.Height, 2);
+        return cachedMinimapContentPicture is not null &&
+            ReferenceEquals(cachedMinimapContentLinesSource, lines) &&
+            cachedMinimapContentVisibleRowCount == visibleRows.Length &&
+            cachedMinimapContentSemanticCount == semanticLineInsightsByLine.Count &&
+            cachedMinimapContentCollapsedFoldCount == collapsedFoldStarts.Count &&
+            cachedMinimapContentShowDiffAnnotations == ShowDiffAnnotations &&
+            cachedMinimapContentShowSemanticInsights == ShowSemanticInsights &&
+            cachedMinimapContentTheme == ActualTheme &&
+            cachedMinimapContentWidth.Equals(width) &&
+            cachedMinimapContentHeight.Equals(height);
+    }
+
     private SKPicture? GetOrCreateMinimapContentPicture(
         CodeFileViewerPalette palette,
         IReadOnlyList<DiffLine> lines,
         SKRect inner)
     {
-        var width = MathF.Round(inner.Width, 2);
-        var height = MathF.Round(inner.Height, 2);
-        var semanticCount = semanticLineInsightsByLine.Count;
-        var theme = ActualTheme;
-        if (cachedMinimapContentPicture is not null &&
-            ReferenceEquals(cachedMinimapContentLinesSource, lines) &&
-            cachedMinimapContentVisibleRowCount == visibleRows.Length &&
-            cachedMinimapContentSemanticCount == semanticCount &&
-            cachedMinimapContentCollapsedFoldCount == collapsedFoldStarts.Count &&
-            cachedMinimapContentShowDiffAnnotations == ShowDiffAnnotations &&
-            cachedMinimapContentShowSemanticInsights == ShowSemanticInsights &&
-            cachedMinimapContentTheme == theme &&
-            cachedMinimapContentWidth.Equals(width) &&
-            cachedMinimapContentHeight.Equals(height))
+        if (IsMinimapContentCacheCurrent(lines, inner))
         {
             return cachedMinimapContentPicture;
         }
 
+        var width = MathF.Round(inner.Width, 2);
+        var height = MathF.Round(inner.Height, 2);
         InvalidateMinimapContentCache();
         using var recorder = new SKPictureRecorder();
         var recordingCanvas = recorder.BeginRecording(inner);
@@ -3725,11 +3797,11 @@ public sealed class CodeFileViewerControl : Grid
         cachedMinimapContentPicture = recorder.EndRecording();
         cachedMinimapContentLinesSource = lines;
         cachedMinimapContentVisibleRowCount = visibleRows.Length;
-        cachedMinimapContentSemanticCount = semanticCount;
+        cachedMinimapContentSemanticCount = semanticLineInsightsByLine.Count;
         cachedMinimapContentCollapsedFoldCount = collapsedFoldStarts.Count;
         cachedMinimapContentShowDiffAnnotations = ShowDiffAnnotations;
         cachedMinimapContentShowSemanticInsights = ShowSemanticInsights;
-        cachedMinimapContentTheme = theme;
+        cachedMinimapContentTheme = ActualTheme;
         cachedMinimapContentWidth = width;
         cachedMinimapContentHeight = height;
         return cachedMinimapContentPicture;
@@ -4172,6 +4244,7 @@ public sealed class CodeFileViewerControl : Grid
 
     private bool TryHitTestScrollbar(Point2 point, out SKRect thumb)
     {
+        EnsureVisibleRows();
         var size = GetCanvasSize();
         if (ShouldShowMinimap((float)size.Width, (float)size.Height))
         {
@@ -4180,7 +4253,7 @@ public sealed class CodeFileViewerControl : Grid
         }
 
         var viewportHeight = GetVerticalViewportHeight();
-        var contentHeight = GetContentHeight();
+        var contentHeight = TopPadding + visibleRows.Length * LineHeight + BottomPadding;
         if (contentHeight <= viewportHeight)
         {
             thumb = SKRect.Empty;
@@ -4226,19 +4299,37 @@ public sealed class CodeFileViewerControl : Grid
         return track.Contains((float)point.X, (float)point.Y);
     }
 
-    private bool TryHitTestMinimap(Point2 point, out SKRect bounds, out SKRect viewport)
+    private bool TryHitTestMinimap(
+        Point2 point,
+        out SKRect bounds,
+        out SKRect viewport,
+        out MinimapScrollMetrics scrollMetrics)
     {
         var size = GetCanvasSize();
         if (!ShouldShowMinimap((float)size.Width, (float)size.Height))
         {
             bounds = SKRect.Empty;
             viewport = SKRect.Empty;
+            scrollMetrics = default;
             return false;
         }
 
         bounds = GetMinimapBounds((float)size.Width, (float)size.Height);
-        viewport = GetMinimapViewport(bounds, GetVerticalViewportHeight());
-        return bounds.Contains((float)point.X, (float)point.Y);
+        if (!bounds.Contains((float)point.X, (float)point.Y))
+        {
+            viewport = SKRect.Empty;
+            scrollMetrics = default;
+            return false;
+        }
+
+        if (!TryGetMinimapScrollMetrics(bounds, GetVerticalViewportHeight(), out scrollMetrics))
+        {
+            viewport = SKRect.Empty;
+            return false;
+        }
+
+        viewport = GetMinimapViewport(scrollMetrics);
+        return true;
     }
 
     private bool IsPointInRightOverlay(Point2 point)
@@ -4665,6 +4756,7 @@ public sealed class CodeFileViewerControl : Grid
         cachedBoundLines = null;
         cachedFoldRegionsSource = null;
         cachedFoldRegions = null;
+        hasActiveMinimapScrollMetrics = false;
         InvalidateLineMetricsCache();
         InvalidateMinimapContentCache();
     }
@@ -4897,25 +4989,48 @@ public sealed class CodeFileViewerControl : Grid
 
     private SKRect GetMinimapViewport(SKRect minimapBounds, double viewportHeight)
     {
+        return TryGetMinimapScrollMetrics(minimapBounds, viewportHeight, out var metrics)
+            ? GetMinimapViewport(metrics)
+            : SKRect.Empty;
+    }
+
+    private bool TryGetMinimapScrollMetrics(SKRect minimapBounds, double viewportHeight, out MinimapScrollMetrics metrics)
+    {
         EnsureVisibleRows();
         var inner = GetMinimapInnerBounds(minimapBounds);
         if (inner.Width <= 0 || inner.Height <= 0 || visibleRows.Length == 0)
         {
-            return SKRect.Empty;
+            metrics = default;
+            return false;
         }
 
-        var contentHeight = GetContentHeight();
+        var contentHeight = TopPadding + visibleRows.Length * LineHeight + BottomPadding;
         if (contentHeight <= viewportHeight)
+        {
+            metrics = new MinimapScrollMetrics(inner, inner.Height, 0, 0);
+            return true;
+        }
+
+        var scrollableContentHeight = Math.Max(1, contentHeight - viewportHeight);
+        var viewportRatio = Math.Clamp(viewportHeight / Math.Max(1, contentHeight), 0, 1);
+        var thumbHeight = (float)Math.Clamp(inner.Height * viewportRatio, MinimapViewportMinHeight, inner.Height);
+        var trackScrollableHeight = Math.Max(1, inner.Height - thumbHeight);
+        metrics = new MinimapScrollMetrics(inner, thumbHeight, scrollableContentHeight, trackScrollableHeight);
+        return true;
+    }
+
+    private SKRect GetMinimapViewport(MinimapScrollMetrics metrics)
+    {
+        var inner = metrics.InnerBounds;
+        if (metrics.ScrollableContentHeight <= 0 || metrics.TrackScrollableHeight <= 0)
         {
             return inner;
         }
 
-        var scrollable = Math.Max(1, contentHeight - viewportHeight);
-        var viewportRatio = Math.Clamp(viewportHeight / Math.Max(1, contentHeight), 0, 1);
-        var thumbHeight = (float)Math.Clamp(inner.Height * viewportRatio, MinimapViewportMinHeight, inner.Height);
-        var thumbTop = inner.Top + (float)(scrollOffsetY / scrollable * Math.Max(1, inner.Height - thumbHeight));
-        thumbTop = Math.Clamp(thumbTop, inner.Top, Math.Max(inner.Top, inner.Bottom - thumbHeight));
-        return SKRect.Create(inner.Left, thumbTop, inner.Width, thumbHeight);
+        var thumbTop = inner.Top + (float)(Math.Clamp(scrollOffsetY, 0, metrics.ScrollableContentHeight) /
+            metrics.ScrollableContentHeight * metrics.TrackScrollableHeight);
+        thumbTop = Math.Clamp(thumbTop, inner.Top, Math.Max(inner.Top, inner.Bottom - metrics.ThumbHeight));
+        return SKRect.Create(inner.Left, thumbTop, inner.Width, metrics.ThumbHeight);
     }
 
     private Point2 ToCanvasPoint(Point point)
@@ -4944,7 +5059,20 @@ public sealed class CodeFileViewerControl : Grid
         return new Size2(Math.Max(1, ActualWidth), Math.Max(1, ActualHeight));
     }
 
-    private void RequestRender() => canvas.Invalidate();
+    private void RequestRender()
+    {
+        canvas.Invalidate();
+    }
+
+    private void RequestScrollRender()
+    {
+        canvas.Invalidate();
+    }
+
+    private void ClearTransientScrollState()
+    {
+        hasActiveMinimapScrollMetrics = false;
+    }
 
     private void RequestDeferredRender()
     {
