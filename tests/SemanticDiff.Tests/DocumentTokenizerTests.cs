@@ -58,6 +58,46 @@ public sealed class DocumentTokenizerTests
     }
 
     [Fact]
+    public async Task TextMateDocumentTokenizer_TokenizePageAsync_ReturnsRequestedRangeAcrossInternalPages()
+    {
+        var factory = new DiffDocumentFactory();
+        var source = string.Join(
+            Environment.NewLine,
+            Enumerable.Range(0, 40).Select(index => $"public string Value{index} => \"{index}\";"));
+        var document = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId("Generated.cs"), "Generated.cs", null, DiffFileStatus.Modified, "C#", 0, 0),
+            source);
+        var tokenizer = new TextMateDocumentTokenizer(pageSize: 16);
+
+        var lines = await tokenizer.TokenizePageAsync(document, 14, 8, CancellationToken.None);
+
+        Assert.Equal(Enumerable.Range(14, 8).ToArray(), lines.Select(line => line.Index).ToArray());
+        Assert.Contains(lines.SelectMany(line => line.Tokens), token => token.Source == "textmate" && token.StyleId == "string");
+    }
+
+    [Fact]
+    public async Task TextMateDocumentTokenizer_TokenizeLineAsync_MatchesPagedTokens()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId("Sample.cs"), "Sample.cs", null, DiffFileStatus.Modified, "C#", 0, 0),
+            """
+            public sealed class Sample
+            {
+                public string Name =>
+                    "SemanticDiff";
+            }
+            """);
+        var tokenizer = new TextMateDocumentTokenizer(pageSize: 2);
+
+        var lines = await tokenizer.TokenizePageAsync(document, 0, document.LineCount, CancellationToken.None);
+        var tokens = await tokenizer.TokenizeLineAsync(document, document.Lines[3], CancellationToken.None);
+
+        Assert.Equal(lines[3].Tokens.ToArray(), tokens.ToArray());
+        Assert.Contains(tokens, token => token.Source == "textmate" && token.StyleId == "string");
+    }
+
+    [Fact]
     public async Task PlainTextDocumentTokenizer_TokenizePageAsync_TokenizesXmlWithoutBuilderCapacityFailure()
     {
         var factory = new DiffDocumentFactory();
@@ -153,6 +193,52 @@ public sealed class DocumentTokenizerTests
 
         Assert.Contains(tokens, token => token.StyleId == "function" && token.Source == "fallback");
         Assert.DoesNotContain(tokens, token => token.Source == "textmate");
+    }
+
+    [Fact]
+    public async Task AdaptiveDocumentTokenizer_TokenizePageAsync_KeepsTextMateForLargeCSharpFiles()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId("Generated.cs"), "Generated.cs", null, DiffFileStatus.Modified, "C#", 0, 0),
+            """
+            public sealed class Generated
+            {
+                public string Name => "Semantic";
+            }
+            """);
+        var options = new AdaptiveTokenizationOptions(LargeDocumentLineThreshold: 2);
+        var tokenizer = new AdaptiveDocumentTokenizer(pageSize: 2, options: options);
+
+        var lines = await tokenizer.TokenizePageAsync(document, 0, document.LineCount, CancellationToken.None);
+        var tokens = lines.SelectMany(line => line.Tokens).ToArray();
+
+        Assert.Contains(tokens, token => token.StyleId == "keyword" && token.Source == "textmate");
+        Assert.DoesNotContain(tokens, token => token.Source == "fallback");
+    }
+
+    [Fact]
+    public async Task TextMateDocumentTokenizer_TryGetTokenizedLines_DoesNotBlockOnCacheMiss()
+    {
+        var factory = new DiffDocumentFactory();
+        var document = factory.CreateFromText(
+            new DiffDocumentMetadata(new DiffDocumentId("Sample.cs"), "Sample.cs", null, DiffFileStatus.Modified, "C#", 0, 0),
+            """
+            public sealed class Sample
+            {
+                public string Name => "Semantic";
+            }
+            """);
+        var tokenizer = new TextMateDocumentTokenizer(pageSize: 2);
+
+        Assert.False(tokenizer.TryGetTokenizedLines(document, 0, 2, out var uncachedLines));
+        Assert.True(uncachedLines.IsDefaultOrEmpty);
+
+        await tokenizer.PrimeTokenizationAsync(document, 1, CancellationToken.None);
+
+        Assert.True(tokenizer.TryGetTokenizedLines(document, 0, 2, out var cachedLines));
+        Assert.Equal([0, 1], cachedLines.Select(line => line.Index).ToArray());
+        Assert.Contains(cachedLines.SelectMany(line => line.Tokens), token => token.Source == "textmate");
     }
 
     [Fact]

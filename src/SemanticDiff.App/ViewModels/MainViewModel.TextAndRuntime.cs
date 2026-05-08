@@ -56,7 +56,7 @@ public sealed partial class MainViewModel
     {
         const int tokenPageSize = 128;
         var document = new DiffDocumentFactory().CreateFromText(sourceDocument.Metadata, fullText, DiffLineKind.Context);
-        if (!enableTokenization)
+        if (!enableTokenization || ShouldDeferFullFileTextMateTokenization(document))
         {
             return document;
         }
@@ -72,6 +72,44 @@ public sealed partial class MainViewModel
         }
 
         return document with { Lines = lineBuilder.ToImmutable() };
+    }
+
+    private static bool ShouldDeferFullFileTextMateTokenization(DiffDocumentSnapshot document)
+    {
+        const int lineThreshold = 2_000;
+        const int characterThreshold = 250_000;
+
+        if (!IsCSharpDocument(document))
+        {
+            return false;
+        }
+
+        if (document.LineCount >= lineThreshold)
+        {
+            return true;
+        }
+
+        var characterCount = 0L;
+        foreach (var line in document.Lines)
+        {
+            characterCount += line.Text.Length;
+            if (characterCount >= characterThreshold)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsCSharpDocument(DiffDocumentSnapshot document)
+    {
+        var extension = System.IO.Path.GetExtension(document.Metadata.Path).TrimStart('.');
+        return string.Equals(extension, "cs", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(extension, "csx", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(document.Metadata.Language, "C#", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(document.Metadata.Language, "csharp", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(document.Metadata.Language, "cs", StringComparison.OrdinalIgnoreCase);
     }
 
     private static ImmutableArray<CodeFoldRegion> CreateFoldRegions(DiffDocumentSnapshot document, CancellationToken cancellationToken = default)
@@ -110,7 +148,7 @@ public sealed partial class MainViewModel
     {
         if (enabled)
         {
-            await EnsureSceneFullFileDocumentsAsync(null, CancellationToken.None);
+            await EnsureSceneFullFileDocumentsAsync(Scene, null, CancellationToken.None);
         }
 
         IsFullCodeWorkspaceEnabled = enabled;
@@ -123,7 +161,7 @@ public sealed partial class MainViewModel
     {
         if (enabled && !IsFullCodeWorkspaceEnabled)
         {
-            await EnsureSceneFullFileDocumentsAsync(null, CancellationToken.None);
+            await EnsureSceneFullFileDocumentsAsync(Scene, null, CancellationToken.None);
             IsFullCodeWorkspaceEnabled = true;
             Scene.SetShowFullFileNodes(true);
         }
@@ -136,13 +174,19 @@ public sealed partial class MainViewModel
 
     public async Task ToggleNodeFullFileViewAsync(string documentId)
     {
+        await ToggleNodeFullFileViewAsync(documentId, Scene);
+    }
+
+    public async Task ToggleNodeFullFileViewAsync(string documentId, DiffCanvasScene? targetScene)
+    {
         if (string.IsNullOrWhiteSpace(documentId))
         {
             return;
         }
 
-        await EnsureSceneFullFileDocumentsAsync(documentId, CancellationToken.None);
-        if (Scene.ToggleNodeFullFileView(documentId))
+        var scene = targetScene ?? Scene;
+        await EnsureSceneFullFileDocumentsAsync(scene, documentId, CancellationToken.None);
+        if (scene.ToggleNodeFullFileView(documentId) && ReferenceEquals(scene, Scene))
         {
             OnPropertyChanged(nameof(Scene));
         }
@@ -150,12 +194,18 @@ public sealed partial class MainViewModel
 
     public void ClearNodeFullFileViewOverride(string documentId)
     {
+        ClearNodeFullFileViewOverride(documentId, Scene);
+    }
+
+    public void ClearNodeFullFileViewOverride(string documentId, DiffCanvasScene? targetScene)
+    {
         if (string.IsNullOrWhiteSpace(documentId))
         {
             return;
         }
 
-        if (Scene.ClearNodeFullFileViewOverride(documentId))
+        var scene = targetScene ?? Scene;
+        if (scene.ClearNodeFullFileViewOverride(documentId) && ReferenceEquals(scene, Scene))
         {
             OnPropertyChanged(nameof(Scene));
         }
@@ -163,13 +213,19 @@ public sealed partial class MainViewModel
 
     public async Task ToggleNodeEditingAsync(string documentId)
     {
+        await ToggleNodeEditingAsync(documentId, Scene);
+    }
+
+    public async Task ToggleNodeEditingAsync(string documentId, DiffCanvasScene? targetScene)
+    {
         if (string.IsNullOrWhiteSpace(documentId))
         {
             return;
         }
 
-        await EnsureSceneFullFileDocumentsAsync(documentId, CancellationToken.None);
-        if (Scene.ToggleNodeEditing(documentId))
+        var scene = targetScene ?? Scene;
+        await EnsureSceneFullFileDocumentsAsync(scene, documentId, CancellationToken.None);
+        if (scene.ToggleNodeEditing(documentId) && ReferenceEquals(scene, Scene))
         {
             OnPropertyChanged(nameof(Scene));
         }
@@ -177,20 +233,26 @@ public sealed partial class MainViewModel
 
     public void ClearNodeEditingOverride(string documentId)
     {
+        ClearNodeEditingOverride(documentId, Scene);
+    }
+
+    public void ClearNodeEditingOverride(string documentId, DiffCanvasScene? targetScene)
+    {
         if (string.IsNullOrWhiteSpace(documentId))
         {
             return;
         }
 
-        if (Scene.ClearNodeEditingOverride(documentId))
+        var scene = targetScene ?? Scene;
+        if (scene.ClearNodeEditingOverride(documentId) && ReferenceEquals(scene, Scene))
         {
             OnPropertyChanged(nameof(Scene));
         }
     }
 
-    private async Task EnsureSceneFullFileDocumentsAsync(string? documentId, CancellationToken cancellationToken)
+    private async Task EnsureSceneFullFileDocumentsAsync(DiffCanvasScene targetScene, string? documentId, CancellationToken cancellationToken)
     {
-        var missingNodes = Scene.Nodes
+        var missingNodes = targetScene.Nodes
             .Where(node =>
                 (documentId is null || string.Equals(node.DiffDocument.Id.Value, documentId, StringComparison.Ordinal)) &&
                 !node.HasFullFileDocument)
@@ -216,7 +278,8 @@ public sealed partial class MainViewModel
                     operation,
                     0.1 + (double)index / missingNodes.Length * 0.8,
                     $"Loading full-code node {index + 1:N0}/{missingNodes.Length:N0}: {ShortenPath(node.DiffDocument.Metadata.Path)}");
-                var fullText = await LoadFullFileTextAsync(node.DiffDocument, operation.Token);
+                var fullText = await LoadFileContentByPathAsync(node.DiffDocument.Metadata.Path, operation.Token)
+                    ?? await LoadFullFileTextAsync(node.DiffDocument, operation.Token);
                 var fullDocument = await CreateFullFileDocumentAsync(node.DiffDocument, fullText, appState.EnableTokenization, operation.Token);
                 var foldRegions = CreateFoldRegions(fullDocument, operation.Token);
                 var fileView = fileDiffDocumentBuilder.Build(node.DiffDocument, fullDocument, fullText, foldRegions);
@@ -224,8 +287,12 @@ public sealed partial class MainViewModel
                 builder.Add(new DiffNodeFullFileContent(node.DiffDocument.Id, annotatedFullDocument, fileView.FoldRegions, fileView.FullText));
             }
 
-            Scene.SetFullFileDocuments(builder.ToImmutable());
-            OnPropertyChanged(nameof(Scene));
+            targetScene.SetFullFileDocuments(builder.ToImmutable());
+            if (ReferenceEquals(targetScene, Scene))
+            {
+                OnPropertyChanged(nameof(Scene));
+            }
+
             CompleteOperation(operation, "Full-code node content ready");
         }
         catch (OperationCanceledException)

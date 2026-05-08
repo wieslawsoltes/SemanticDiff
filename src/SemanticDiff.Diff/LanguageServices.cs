@@ -456,7 +456,7 @@ internal static class TokenClassification
             (styleId, tokenType) = MapScope(scope);
         }
 
-        return (styleId, tokenType, modifiers.Distinct(StringComparer.Ordinal).ToImmutableArray());
+        return (styleId, tokenType, modifiers.Count == 0 ? ImmutableArray<string>.Empty : modifiers.ToImmutable());
     }
 
     public static string StyleFromTokenType(string tokenType) => tokenType switch
@@ -584,32 +584,45 @@ internal static class TokenClassification
     {
         if (scope.Contains("entity.name", StringComparison.Ordinal))
         {
-            modifiers.Add("declaration");
+            AddModifier(modifiers, "declaration");
         }
 
         if (scope.Contains("support.", StringComparison.Ordinal))
         {
-            modifiers.Add("defaultLibrary");
+            AddModifier(modifiers, "defaultLibrary");
         }
 
         if (scope.Contains("constant", StringComparison.Ordinal) || scope.Contains("readonly", StringComparison.Ordinal))
         {
-            modifiers.Add("readonly");
+            AddModifier(modifiers, "readonly");
         }
 
         if (scope.Contains("static", StringComparison.Ordinal))
         {
-            modifiers.Add("static");
+            AddModifier(modifiers, "static");
         }
 
         if (scope.Contains("deprecated", StringComparison.Ordinal))
         {
-            modifiers.Add("deprecated");
+            AddModifier(modifiers, "deprecated");
         }
 
         if (scope.Contains("documentation", StringComparison.Ordinal))
         {
-            modifiers.Add("documentation");
+            AddModifier(modifiers, "documentation");
         }
+    }
+
+    private static void AddModifier(ImmutableArray<string>.Builder modifiers, string modifier)
+    {
+        for (var index = 0; index < modifiers.Count; index++)
+        {
+            if (string.Equals(modifiers[index], modifier, StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+
+        modifiers.Add(modifier);
     }
 }

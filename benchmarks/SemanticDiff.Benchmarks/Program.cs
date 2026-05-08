@@ -1,4 +1,3 @@
 using BenchmarkDotNet.Running;
-using SemanticDiff.Benchmarks;
 
-BenchmarkRunner.Run<GraphLayoutBenchmarks>();
+BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);

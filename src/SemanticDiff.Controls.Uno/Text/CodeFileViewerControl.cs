@@ -1,4 +1,7 @@
+using System.Buffers;
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -51,6 +54,10 @@ public sealed class CodeFileViewerControl : Grid
     private const double DefaultViewportHeight = 520;
     private const double SelectionAutoScrollMargin = 34;
     private const double SelectionAutoScrollMinimumStep = 2;
+    private const int PreparedLineCacheLimit = 2048;
+    private const int EditableTextMatePageSize = 128;
+    private const int EditableTokenizationOverscanRows = 96;
+    private const int ForegroundTextMateLineBudget = 512;
 
     public static readonly DependencyProperty LinesProperty = DependencyProperty.Register(
         nameof(Lines),
@@ -181,8 +188,9 @@ public sealed class CodeFileViewerControl : Grid
     private readonly ListView completionList;
     private readonly TextBlock completionStatusText;
     private readonly CodeTextEditorDocument editorDocument = new();
-    private readonly AdaptiveDocumentTokenizer editableTokenizer = new();
+    private readonly TextMateDocumentTokenizer editableTextMateTokenizer = new(EditableTextMatePageSize);
     private readonly PlainTextDocumentTokenizer editableFallbackTokenizer = new();
+    private readonly object editableTokenizationGate = new();
     private readonly HashSet<int> collapsedFoldStarts = [];
     private ImmutableArray<VisibleCodeRow> visibleRows = [];
     private ImmutableArray<DiffLine> editableLines = [];
@@ -210,6 +218,15 @@ public sealed class CodeFileViewerControl : Grid
     private bool isDraggingMinimap;
     private bool isSelectingText;
     private int editableLinesVersion = -1;
+    private DiffDocumentSnapshot? editableTokenDocument;
+    private int editableTokenDocumentVersion = -1;
+    private int editableTokenPrimeTargetLine = -1;
+    private int editableTokenCacheRevision;
+    private int editableLinesTokenCacheRevision = -1;
+    private int editableLinesTokenWindowFirst = -1;
+    private int editableLinesTokenWindowLineCount = -1;
+    private Task? editableTokenizationTask;
+    private CancellationTokenSource? editableTokenizationCts;
     private IReadOnlyDictionary<int, SemanticLineInsight> semanticLineInsightsByLine = new Dictionary<int, SemanticLineInsight>();
     private IReadOnlyList<DiffLine>? cachedLineMetricsSource;
     private int cachedLineMetricsLineCount = -1;
@@ -218,6 +235,8 @@ public sealed class CodeFileViewerControl : Grid
     private float cachedLineMetricsGutterWidth;
     private double cachedLineMetricsContentWidth;
     private SKPicture? cachedMinimapContentPicture;
+    private readonly Dictionary<PreparedLineRenderKey, PreparedCodeLine> preparedLineCache = [];
+    private readonly Queue<PreparedLineRenderKey> preparedLineCacheOrder = [];
     private IReadOnlyList<DiffLine>? cachedMinimapContentLinesSource;
     private int cachedMinimapContentVisibleRowCount = -1;
     private int cachedMinimapContentSemanticCount = -1;
@@ -245,6 +264,44 @@ public sealed class CodeFileViewerControl : Grid
         float ThumbHeight,
         double ScrollableContentHeight,
         float TrackScrollableHeight);
+
+    private readonly struct PreparedLineRenderKey : IEquatable<PreparedLineRenderKey>
+    {
+        private readonly DiffLine line;
+        private readonly int lineIdentity;
+        private readonly float fontSize;
+        private readonly int visibleVisualColumnStart;
+        private readonly int visibleVisualColumnEnd;
+        private readonly bool useLightPalette;
+
+        public PreparedLineRenderKey(
+            DiffLine line,
+            float fontSize,
+            int visibleVisualColumnStart,
+            int visibleVisualColumnEnd,
+            bool useLightPalette)
+        {
+            this.line = line;
+            lineIdentity = RuntimeHelpers.GetHashCode(line);
+            this.fontSize = fontSize;
+            this.visibleVisualColumnStart = visibleVisualColumnStart;
+            this.visibleVisualColumnEnd = visibleVisualColumnEnd;
+            this.useLightPalette = useLightPalette;
+        }
+
+        public bool Equals(PreparedLineRenderKey other) =>
+            ReferenceEquals(line, other.line) &&
+            fontSize.Equals(other.fontSize) &&
+            visibleVisualColumnStart == other.visibleVisualColumnStart &&
+            visibleVisualColumnEnd == other.visibleVisualColumnEnd &&
+            useLightPalette == other.useLightPalette;
+
+        public override bool Equals(object? obj) =>
+            obj is PreparedLineRenderKey other && Equals(other);
+
+        public override int GetHashCode() =>
+            HashCode.Combine(lineIdentity, fontSize, visibleVisualColumnStart, visibleVisualColumnEnd, useLightPalette);
+    }
 
     public CodeFileViewerControl()
     {
@@ -281,6 +338,7 @@ public sealed class CodeFileViewerControl : Grid
         Unloaded += (_, _) =>
         {
             InvalidateMinimapContentCache();
+            ClearPreparedLineCache();
             ClearTransientScrollState();
         };
         SizeChanged += (_, _) =>
@@ -292,6 +350,7 @@ public sealed class CodeFileViewerControl : Grid
         ActualThemeChanged += (_, _) =>
         {
             InvalidateMinimapContentCache();
+            ClearPreparedLineCache();
             RequestRender();
         };
     }
@@ -543,6 +602,7 @@ public sealed class CodeFileViewerControl : Grid
             control.InvalidateBoundContentCaches();
             control.editorInitialized = false;
             control.editableLinesVersion = -1;
+            control.ResetEditableTokenization(cancelRunningWork: true);
             control.ClearSelection();
             control.TrimCollapsedFoldState();
             control.ClampScrollOffset();
@@ -557,6 +617,7 @@ public sealed class CodeFileViewerControl : Grid
         if (dependencyObject is CodeFileViewerControl control)
         {
             control.InvalidateLineMetricsCache();
+            control.ClearPreparedLineCache();
             control.ClampScrollOffset();
             control.UpdateCompletionPresenterPosition();
             control.RequestDeferredRender();
@@ -591,8 +652,10 @@ public sealed class CodeFileViewerControl : Grid
             control.CloseCompletion();
             control.editorInitialized = false;
             control.editableLinesVersion = -1;
+            control.ResetEditableTokenization(cancelRunningWork: true);
             control.visibleRowsDirty = true;
             control.InvalidateLineMetricsCache();
+            control.ClearPreparedLineCache();
             control.ClearSelection();
             control.isDraggingHorizontalScrollbar = false;
             control.ClampScrollOffset();
@@ -607,8 +670,10 @@ public sealed class CodeFileViewerControl : Grid
             control.CloseCompletion();
             control.editorInitialized = false;
             control.editableLinesVersion = -1;
+            control.ResetEditableTokenization(cancelRunningWork: true);
             control.visibleRowsDirty = true;
             control.InvalidateLineMetricsCache();
+            control.ClearPreparedLineCache();
             control.isDraggingHorizontalScrollbar = false;
             control.ClampScrollOffset();
             control.RequestDeferredRender();
@@ -621,8 +686,10 @@ public sealed class CodeFileViewerControl : Grid
         {
             control.editableLinesVersion = -1;
             control.editableLines = [];
+            control.ResetEditableTokenization(cancelRunningWork: true);
             control.InvalidateLineMetricsCache();
             control.InvalidateMinimapContentCache();
+            control.ClearPreparedLineCache();
             control.RequestDeferredRender();
         }
     }
@@ -650,33 +717,124 @@ public sealed class CodeFileViewerControl : Grid
             return new Dictionary<int, SemanticLineInsight>();
         }
 
-        return insights
-            .GroupBy(insight => insight.LineNumber)
-            .ToDictionary(group => group.Key, group => MergeSemanticInsights(group.ToImmutableArray()));
+        Dictionary<int, SemanticLineInsight>? singleInsights = null;
+        Dictionary<int, List<SemanticLineInsight>>? duplicateInsights = null;
+        for (var index = 0; index < insights.Length; index++)
+        {
+            var insight = insights[index];
+            singleInsights ??= new Dictionary<int, SemanticLineInsight>(insights.Length);
+            if (!singleInsights.TryAdd(insight.LineNumber, insight))
+            {
+                duplicateInsights ??= [];
+                if (!duplicateInsights.TryGetValue(insight.LineNumber, out var duplicates))
+                {
+                    duplicates = [singleInsights[insight.LineNumber]];
+                    duplicateInsights[insight.LineNumber] = duplicates;
+                }
+
+                duplicates.Add(insight);
+            }
+        }
+
+        if (singleInsights is null)
+        {
+            return new Dictionary<int, SemanticLineInsight>();
+        }
+
+        if (duplicateInsights is null)
+        {
+            return singleInsights;
+        }
+
+        foreach (var (lineNumber, duplicates) in duplicateInsights)
+        {
+            singleInsights[lineNumber] = MergeSemanticInsights(CollectionsMarshal.AsSpan(duplicates));
+        }
+
+        return singleInsights;
     }
 
-    private static SemanticLineInsight MergeSemanticInsights(ImmutableArray<SemanticLineInsight> insights)
+    private static SemanticLineInsight MergeSemanticInsights(ReadOnlySpan<SemanticLineInsight> insights)
     {
         if (insights.Length == 1)
         {
             return insights[0];
         }
 
-        var dominant = insights
-            .OrderByDescending(insight => insight.IsChanged)
-            .ThenByDescending(insight => insight.IsImpacted)
-            .ThenByDescending(insight => insight.LinkCount)
-            .ThenBy(insight => insight.KindText, StringComparer.OrdinalIgnoreCase)
-            .First();
+        var dominant = insights[0];
+        var anchorCount = 0;
+        var linkCount = 0;
+        var isChanged = false;
+        var isImpacted = false;
+        List<string>? details = null;
+        for (var index = 0; index < insights.Length; index++)
+        {
+            var insight = insights[index];
+            if (CompareDominance(insight, dominant) < 0)
+            {
+                dominant = insight;
+            }
+
+            anchorCount += insight.AnchorCount;
+            linkCount += insight.LinkCount;
+            isChanged |= insight.IsChanged;
+            isImpacted |= insight.IsImpacted;
+            if (!string.IsNullOrWhiteSpace(insight.Detail) &&
+                (details is null || !ContainsOrdinal(details, insight.Detail)))
+            {
+                details ??= [];
+                if (details.Count < 3)
+                {
+                    details.Add(insight.Detail);
+                }
+            }
+        }
+
         return new SemanticLineInsight(
             dominant.LineNumber,
             $"{insights.Length:N0} sem",
-            string.Join(" | ", insights.Select(insight => insight.Detail).Distinct(StringComparer.Ordinal).Take(3)),
+            details is { Count: > 0 } ? string.Join(" | ", details) : dominant.Detail,
             dominant.Kind,
-            insights.Sum(insight => insight.AnchorCount),
-            insights.Sum(insight => insight.LinkCount),
-            insights.Any(insight => insight.IsChanged),
-            insights.Any(insight => insight.IsImpacted));
+            anchorCount,
+            linkCount,
+            isChanged,
+            isImpacted);
+    }
+
+    private static bool ContainsOrdinal(List<string> values, string value)
+    {
+        for (var index = 0; index < values.Count; index++)
+        {
+            if (string.Equals(values[index], value, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int CompareDominance(SemanticLineInsight left, SemanticLineInsight right)
+    {
+        var result = right.IsChanged.CompareTo(left.IsChanged);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = right.IsImpacted.CompareTo(left.IsImpacted);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        result = right.LinkCount.CompareTo(left.LinkCount);
+        if (result != 0)
+        {
+            return result;
+        }
+
+        return string.Compare(left.KindText, right.KindText, StringComparison.OrdinalIgnoreCase);
     }
 
     private void OnPaintSurface(object? sender, SKPaintSurfaceEventArgs args)
@@ -713,7 +871,6 @@ public sealed class CodeFileViewerControl : Grid
         var hasHorizontalScrollbar = ShouldShowHorizontalScrollbar(width, height, gutterWidth, lines);
         var viewportHeight = GetVerticalViewportHeight(height, hasHorizontalScrollbar);
         ClampScrollOffset();
-        var isScrollDragRendering = isDraggingMinimap || isDraggingScrollbar || isDraggingHorizontalScrollbar;
         DrawGutter(canvasSurface, palette, gutterWidth, height, IsDiffMode);
 
         var firstRow = Math.Max(0, (int)Math.Floor((scrollOffsetY - TopPadding) / LineHeight));
@@ -728,6 +885,10 @@ public sealed class CodeFileViewerControl : Grid
         var textClip = SKRect.Create(gutterWidth, 0, Math.Max(0, contentRight - gutterWidth), (float)viewportHeight);
         var fixedTextLeft = gutterWidth + TextPadding;
         var scrolledTextLeft = fixedTextLeft - (float)scrollOffsetX;
+        var visibleVisualColumnStart = Math.Max(0, (int)Math.Floor((textClip.Left - scrolledTextLeft) / Math.Max(1, charWidth)) - 2);
+        var visibleVisualColumnEnd = Math.Max(
+            visibleVisualColumnStart + 1,
+            (int)Math.Ceiling((textClip.Right - scrolledTextLeft) / Math.Max(1, charWidth)) + 2);
         for (var rowIndex = firstRow; rowIndex <= lastRow; rowIndex++)
         {
             var row = visibleRows[rowIndex];
@@ -746,35 +907,25 @@ public sealed class CodeFileViewerControl : Grid
             }
             else
             {
-                if (!isScrollDragRendering)
-                {
-                    DrawFoldGutterGuide(canvasSurface, palette, row, y, LineHeight);
-                }
-
+                DrawFoldGutterGuide(canvasSurface, palette, row, y, LineHeight);
                 DrawLineNumber(canvasSurface, line.Index + 1, gutterWidth, y, BaselineOffset, lineNumberPaint, font, RegularFontDescriptor);
-                if (!isScrollDragRendering)
-                {
-                    DrawFoldMarker(canvasSurface, palette, row, y, LineHeight);
-                }
+                DrawFoldMarker(canvasSurface, palette, row, y, LineHeight);
             }
 
             using (new SKAutoCanvasRestore(canvasSurface, doSave: true))
             {
                 canvasSurface.ClipRect(textClip);
-                if (!IsDiffMode && !isScrollDragRendering)
+                if (!IsDiffMode)
                 {
                     DrawFoldGuide(canvasSurface, palette, lines, row, scrolledTextLeft, contentRight, y, LineHeight, charWidth);
                 }
 
                 DrawSelection(canvasSurface, palette, row, line, scrolledTextLeft, y, charWidth, contentRight);
-                DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, scrolledTextLeft, contentRight, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, tokenPaints, BoldFontDescriptor, palette);
-                if (!isScrollDragRendering)
-                {
-                    DrawCaret(canvasSurface, palette, row, line, scrolledTextLeft, y, charWidth, contentRight);
-                }
+                DrawCodeLine(canvasSurface, lines[row.LineIndex], row.CollapsedRegion, scrolledTextLeft, contentRight, y, BaselineOffset, LineHeight, charWidth, font, boldFont, defaultPaint, foldPaint, tokenPaints, BoldFontDescriptor, palette, visibleVisualColumnStart, visibleVisualColumnEnd);
+                DrawCaret(canvasSurface, palette, row, line, scrolledTextLeft, y, charWidth, contentRight);
             }
 
-            if (!isScrollDragRendering && TryGetSemanticInsight(line, out var semanticInsight))
+            if (TryGetSemanticInsight(line, out var semanticInsight))
             {
                 DrawSemanticInsight(canvasSurface, palette, semanticInsight, gutterWidth, contentRight, y, LineHeight, BaselineOffset, font, BoldFontDescriptor);
             }
@@ -782,7 +933,7 @@ public sealed class CodeFileViewerControl : Grid
 
         if (ShouldShowMinimap(width, height))
         {
-            DrawMinimap(canvasSurface, palette, lines, width, height, viewportHeight, isScrollDragRendering);
+            DrawMinimap(canvasSurface, palette, lines, width, height, viewportHeight);
         }
         else
         {
@@ -2049,8 +2200,10 @@ public sealed class CodeFileViewerControl : Grid
         collapsedFoldStarts.Clear();
         visibleRowsDirty = true;
         editableLinesVersion = -1;
+        ResetEditableTokenization(cancelRunningWork: true);
         InvalidateLineMetricsCache();
         InvalidateMinimapContentCache();
+        ClearPreparedLineCache();
         ClampScrollOffset();
         EnsureCaretVisible();
         UpdateEditableTextProperty();
@@ -3433,7 +3586,9 @@ public sealed class CodeFileViewerControl : Grid
         SKPaint foldPaint,
         TokenPaintCache tokenPaints,
         TextFontDescriptor boldFontDescriptor,
-        CodeFileViewerPalette palette)
+        CodeFileViewerPalette palette,
+        int visibleVisualColumnStart,
+        int visibleVisualColumnEnd)
     {
         if (line.Kind == DiffLineKind.Imaginary)
         {
@@ -3441,7 +3596,7 @@ public sealed class CodeFileViewerControl : Grid
             return;
         }
 
-        DrawTokenizedText(canvasSurface, line.Text, line.Tokens, x, y + baselineOffset, charWidth, font, boldFont, defaultPaint, palette, tokenPaints);
+        DrawPreparedCodeText(canvasSurface, line, x, y + baselineOffset, charWidth, font, boldFont, defaultPaint, palette, tokenPaints, visibleVisualColumnStart, visibleVisualColumnEnd);
         if (collapsedRegion is null)
         {
             return;
@@ -3548,10 +3703,9 @@ public sealed class CodeFileViewerControl : Grid
         return $"{action} {title} ({region.CollapsedLineCount:N0} hidden lines)";
     }
 
-    private static void DrawTokenizedText(
+    private void DrawPreparedCodeText(
         SKCanvas canvasSurface,
-        string text,
-        ImmutableArray<TokenSpan> tokens,
+        DiffLine line,
         float x,
         float baseline,
         float charWidth,
@@ -3559,48 +3713,214 @@ public sealed class CodeFileViewerControl : Grid
         SKFont boldFont,
         SKPaint defaultPaint,
         CodeFileViewerPalette palette,
-        TokenPaintCache tokenPaints)
+        TokenPaintCache tokenPaints,
+        int visibleVisualColumnStart,
+        int visibleVisualColumnEnd)
+    {
+        if (string.IsNullOrEmpty(line.Text))
+        {
+            return;
+        }
+
+        var preparedLine = GetOrCreatePreparedCodeLine(line, font, boldFont, palette, visibleVisualColumnStart, visibleVisualColumnEnd);
+        foreach (var run in preparedLine.Runs)
+        {
+            var paint = run.Color == palette.Text ? defaultPaint : tokenPaints.Get(run.Color);
+            canvasSurface.DrawText(run.Blob, x + run.VisualColumn * charWidth, baseline, paint);
+        }
+    }
+
+    private PreparedCodeLine GetOrCreatePreparedCodeLine(
+        DiffLine line,
+        SKFont font,
+        SKFont boldFont,
+        CodeFileViewerPalette palette,
+        int visibleVisualColumnStart,
+        int visibleVisualColumnEnd)
+    {
+        visibleVisualColumnStart = Math.Max(0, visibleVisualColumnStart);
+        visibleVisualColumnEnd = Math.Max(visibleVisualColumnStart + 1, visibleVisualColumnEnd);
+        var key = new PreparedLineRenderKey(
+            line,
+            EffectiveFontSize,
+            visibleVisualColumnStart,
+            visibleVisualColumnEnd,
+            ActualTheme == ElementTheme.Light);
+
+        if (preparedLineCache.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        var prepared = BuildPreparedCodeLine(line.Text, line.Tokens, font, boldFont, palette, visibleVisualColumnStart, visibleVisualColumnEnd);
+        preparedLineCache[key] = prepared;
+        preparedLineCacheOrder.Enqueue(key);
+        TrimPreparedLineCache();
+        return prepared;
+    }
+
+    private static PreparedCodeLine BuildPreparedCodeLine(
+        string text,
+        ImmutableArray<TokenSpan> tokens,
+        SKFont font,
+        SKFont boldFont,
+        CodeFileViewerPalette palette,
+        int visibleVisualColumnStart,
+        int visibleVisualColumnEnd)
     {
         if (string.IsNullOrEmpty(text))
         {
-            return;
+            return PreparedCodeLine.Empty;
         }
 
+        List<PendingTextRun>? pendingRuns = null;
         var cursor = 0;
-        if (tokens.IsDefault)
+        var hasTabs = text.AsSpan().IndexOf('\t') >= 0;
+        if (tokens.IsDefaultOrEmpty)
         {
-            DrawTextRange(canvasSurface, text, 0, text.Length, x, baseline, charWidth, font, defaultPaint);
-            return;
+            AddPendingTextRun(ref pendingRuns, 0, text.Length, isBold: false, palette.Text);
+            return CreatePreparedLine(text, pendingRuns, font, boldFont, hasTabs, visibleVisualColumnStart, visibleVisualColumnEnd);
         }
 
-        var tokenSource = tokens;
-        if (!AreTokensOrdered(tokenSource))
+        if (AreTokensOrdered(tokens))
         {
-            tokenSource = tokenSource.Sort(static (left, right) => left.StartColumn.CompareTo(right.StartColumn));
+            for (var index = 0; index < tokens.Length; index++)
+            {
+                AppendPendingTokenRun(ref pendingRuns, text, tokens[index], ref cursor, palette);
+            }
         }
-
-        foreach (var token in tokenSource)
+        else
         {
-            var start = Math.Clamp(token.StartColumn, 0, text.Length);
-            var end = Math.Clamp(token.StartColumn + token.Length, start, text.Length);
-            if (start > cursor)
+            var sortedTokens = tokens.ToArray();
+            Array.Sort(sortedTokens, static (left, right) => left.StartColumn.CompareTo(right.StartColumn));
+            for (var index = 0; index < sortedTokens.Length; index++)
             {
-                DrawTextRange(canvasSurface, text, cursor, start - cursor, x, baseline, charWidth, font, defaultPaint);
+                AppendPendingTokenRun(ref pendingRuns, text, sortedTokens[index], ref cursor, palette);
             }
-
-            if (end > start)
-            {
-                var tokenPaint = tokenPaints.Get(CodeTextStyleMap.TokenColor(token, palette));
-                DrawTextRange(canvasSurface, text, start, end - start, x, baseline, charWidth, CodeTextStyleMap.IsBoldToken(token) ? boldFont : font, tokenPaint);
-            }
-
-            cursor = Math.Max(cursor, end);
         }
 
         if (cursor < text.Length)
         {
-            DrawTextRange(canvasSurface, text, cursor, text.Length - cursor, x, baseline, charWidth, font, defaultPaint);
+            AddPendingTextRun(ref pendingRuns, cursor, text.Length - cursor, isBold: false, palette.Text);
         }
+
+        return CreatePreparedLine(text, pendingRuns, font, boldFont, hasTabs, visibleVisualColumnStart, visibleVisualColumnEnd);
+    }
+
+    private static PreparedCodeLine CreatePreparedLine(
+        string text,
+        List<PendingTextRun>? pendingRuns,
+        SKFont font,
+        SKFont boldFont,
+        bool hasTabs,
+        int visibleVisualColumnStart,
+        int visibleVisualColumnEnd)
+    {
+        if (pendingRuns is null || pendingRuns.Count == 0)
+        {
+            return PreparedCodeLine.Empty;
+        }
+
+        List<PreparedTextRun>? runs = null;
+        try
+        {
+            for (var index = 0; index < pendingRuns.Count; index++)
+            {
+                var pending = pendingRuns[index];
+                AddPreparedTextRun(
+                    ref runs,
+                    text,
+                    pending.Start,
+                    pending.Length,
+                    pending.IsBold ? boldFont : font,
+                    pending.Color,
+                    hasTabs,
+                    visibleVisualColumnStart,
+                    visibleVisualColumnEnd);
+            }
+
+            return CompletePreparedLine(ref runs);
+        }
+        finally
+        {
+            DisposePreparedRuns(runs);
+        }
+    }
+
+    private static PreparedCodeLine CompletePreparedLine(ref List<PreparedTextRun>? runs)
+    {
+        var preparedLine = PreparedCodeLine.Create(runs);
+        runs = null;
+        return preparedLine;
+    }
+
+    private static void DisposePreparedRuns(List<PreparedTextRun>? runs)
+    {
+        if (runs is null)
+        {
+            return;
+        }
+
+        for (var index = 0; index < runs.Count; index++)
+        {
+            runs[index].Blob.Dispose();
+        }
+    }
+
+    private static void AppendPendingTokenRun(
+        ref List<PendingTextRun>? runs,
+        string text,
+        TokenSpan token,
+        ref int cursor,
+        CodeFileViewerPalette palette)
+    {
+        var start = Math.Clamp(token.StartColumn, 0, text.Length);
+        var end = Math.Clamp(token.StartColumn + token.Length, start, text.Length);
+        if (start > cursor)
+        {
+            AddPendingTextRun(ref runs, cursor, start - cursor, isBold: false, palette.Text);
+        }
+
+        var drawStart = Math.Max(start, cursor);
+        if (end > drawStart)
+        {
+            AddPendingTextRun(
+                ref runs,
+                drawStart,
+                end - drawStart,
+                CodeTextStyleMap.IsBoldToken(token),
+                CodeTextStyleMap.TokenColor(token, palette));
+        }
+
+        cursor = Math.Max(cursor, end);
+    }
+
+    private static void AddPendingTextRun(
+        ref List<PendingTextRun>? runs,
+        int start,
+        int length,
+        bool isBold,
+        SKColor color)
+    {
+        if (length <= 0)
+        {
+            return;
+        }
+
+        runs ??= [];
+        if (runs.Count > 0)
+        {
+            var previous = runs[^1];
+            if (previous.Start + previous.Length == start &&
+                previous.IsBold == isBold &&
+                previous.Color == color)
+            {
+                runs[^1] = previous with { Length = previous.Length + length };
+                return;
+            }
+        }
+
+        runs.Add(new PendingTextRun(start, length, isBold, color));
     }
 
     private static bool AreTokensOrdered(ImmutableArray<TokenSpan> tokens)
@@ -3619,22 +3939,144 @@ public sealed class CodeFileViewerControl : Grid
         return true;
     }
 
-    private static void DrawTextRange(SKCanvas canvasSurface, string text, int start, int length, float x, float baseline, float charWidth, SKFont font, SKPaint paint)
+    private static void AddPreparedTextRun(
+        ref List<PreparedTextRun>? runs,
+        string text,
+        int start,
+        int length,
+        SKFont font,
+        SKColor color,
+        bool hasTabs,
+        int visibleVisualColumnStart,
+        int visibleVisualColumnEnd)
     {
-        if (length <= 0 || start < 0 || start >= text.Length)
+        if (!TryGetVisibleTextRange(
+                text,
+                start,
+                length,
+                hasTabs,
+                visibleVisualColumnStart,
+                visibleVisualColumnEnd,
+                out var drawStart,
+                out var drawLength,
+                out var visualColumn))
         {
             return;
         }
 
-        var safeLength = Math.Min(length, text.Length - start);
-        var visualColumn = CodeTextLayout.GetVisualColumn(text, start);
-        var value = text.Substring(start, safeLength);
-        if (value.IndexOf('\t') >= 0)
+        var blob = CreateTextBlob(text, drawStart, drawLength, hasTabs, font);
+        if (blob is null)
         {
-            value = value.Replace("\t", TabReplacement, StringComparison.Ordinal);
+            return;
         }
 
-        canvasSurface.DrawText(value, x + visualColumn * charWidth, baseline, font, paint);
+        runs ??= [];
+        runs.Add(new PreparedTextRun(blob, visualColumn, color));
+    }
+
+    private static bool TryGetVisibleTextRange(
+        string text,
+        int start,
+        int length,
+        bool hasTabs,
+        int visibleVisualColumnStart,
+        int visibleVisualColumnEnd,
+        out int drawStart,
+        out int drawLength,
+        out int visualColumn)
+    {
+        drawStart = 0;
+        drawLength = 0;
+        visualColumn = 0;
+        if (length <= 0 || start < 0 || start >= text.Length)
+        {
+            return false;
+        }
+
+        var safeLength = Math.Min(length, text.Length - start);
+        var end = start + safeLength;
+        visualColumn = hasTabs ? CodeTextLayout.GetVisualColumn(text, start) : start;
+        var visualEnd = hasTabs ? CodeTextLayout.GetVisualColumn(text, end) : end;
+        if (visualEnd <= visibleVisualColumnStart || visualColumn >= visibleVisualColumnEnd)
+        {
+            return false;
+        }
+
+        drawStart = start;
+        var drawEnd = end;
+        if (!hasTabs)
+        {
+            drawStart = Math.Max(start, Math.Min(end, visibleVisualColumnStart));
+            drawEnd = Math.Min(end, Math.Max(drawStart, visibleVisualColumnEnd));
+            visualColumn = drawStart;
+        }
+        else
+        {
+            var currentVisualColumn = visualColumn;
+            while (drawStart < end)
+            {
+                var nextVisualColumn = currentVisualColumn + GetCharacterVisualWidth(text[drawStart]);
+                if (nextVisualColumn > visibleVisualColumnStart)
+                {
+                    break;
+                }
+
+                currentVisualColumn = nextVisualColumn;
+                drawStart++;
+            }
+
+            visualColumn = currentVisualColumn;
+            drawEnd = drawStart;
+            while (drawEnd < end && currentVisualColumn < visibleVisualColumnEnd)
+            {
+                currentVisualColumn += GetCharacterVisualWidth(text[drawEnd]);
+                drawEnd++;
+            }
+        }
+
+        drawLength = drawEnd - drawStart;
+        return drawLength > 0;
+    }
+
+    private static int GetCharacterVisualWidth(char character) =>
+        character == '\t' ? CodeTextLayout.TabSize : 1;
+
+    private static SKTextBlob? CreateTextBlob(string text, int start, int length, bool hasTabs, SKFont font)
+    {
+        if (length <= 0)
+        {
+            return null;
+        }
+
+        var span = text.AsSpan(start, length);
+        if (!hasTabs || span.IndexOf('\t') < 0)
+        {
+            return SKTextBlob.Create(span, font, new SKPoint(0, 0));
+        }
+
+        var buffer = ArrayPool<char>.Shared.Rent(length * TabReplacement.Length);
+        try
+        {
+            var written = 0;
+            for (var index = 0; index < span.Length; index++)
+            {
+                if (span[index] == '\t')
+                {
+                    TabReplacement.AsSpan().CopyTo(buffer.AsSpan(written));
+                    written += TabReplacement.Length;
+                }
+                else
+                {
+                    buffer[written++] = span[index];
+                }
+            }
+
+            return SKTextBlob.Create(buffer.AsSpan(0, written), font, new SKPoint(0, 0));
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(buffer);
+        }
     }
 
     private static void DrawEmptyState(SKCanvas canvasSurface, float width, float height, SKPaint paint, SKFont font, TextFontDescriptor fontDescriptor)
@@ -3696,8 +4138,7 @@ public sealed class CodeFileViewerControl : Grid
         IReadOnlyList<DiffLine> lines,
         float width,
         float height,
-        double viewportHeight,
-        bool isScrollDragRendering)
+        double viewportHeight)
     {
         EnsureVisibleRows();
         if (visibleRows.Length == 0)
@@ -3720,19 +4161,14 @@ public sealed class CodeFileViewerControl : Grid
         using (new SKAutoCanvasRestore(canvasSurface, doSave: true))
         {
             canvasSurface.ClipRect(inner);
-            var contentPicture = isScrollDragRendering && !IsMinimapContentCacheCurrent(lines, inner)
-                ? null
-                : GetOrCreateMinimapContentPicture(palette, lines, inner);
+            var contentPicture = GetOrCreateMinimapContentPicture(palette, lines, inner);
             if (contentPicture is not null)
             {
                 canvasSurface.DrawPicture(contentPicture);
             }
 
-            if (!isScrollDragRendering)
-            {
-                using var minimapPaint = new SKPaint { Style = SKPaintStyle.Fill, IsAntialias = false };
-                DrawMinimapSelection(canvasSurface, palette, inner, minimapPaint);
-            }
+            using var minimapPaint = new SKPaint { Style = SKPaintStyle.Fill, IsAntialias = false };
+            DrawMinimapSelection(canvasSurface, palette, inner, minimapPaint);
         }
 
         var viewport = GetMinimapViewport(bounds, viewportHeight);
@@ -3848,8 +4284,10 @@ public sealed class CodeFileViewerControl : Grid
             var start = Math.Clamp((int)Math.Floor(bucket * rowsPerBucket), 0, visibleRows.Length - 1);
             var end = Math.Clamp((int)Math.Ceiling((bucket + 1) * rowsPerBucket), start + 1, visibleRows.Length);
             var dominantKind = DiffLineKind.Context;
-            var hasText = false;
             var isCollapsed = false;
+            var textRows = 0;
+            var totalStart = 0;
+            var totalEnd = 0;
 
             for (var index = start; index < end; index++)
             {
@@ -3860,20 +4298,26 @@ public sealed class CodeFileViewerControl : Grid
                 }
 
                 var line = lines[row.LineIndex];
-                hasText |= !string.IsNullOrWhiteSpace(line.Text);
                 isCollapsed |= row.CollapsedRegion is not null;
                 if (GetMinimapKindPriority(line.Kind) < GetMinimapKindPriority(dominantKind))
                 {
                     dominantKind = line.Kind;
+                }
+
+                if (TryGetMinimapTextSpan(line.Text, out var startVisual, out var endVisual))
+                {
+                    totalStart += startVisual;
+                    totalEnd += endVisual;
+                    textRows++;
                 }
             }
 
             var y = inner.Top + bucket;
             var kind = ShowDiffAnnotations ? dominantKind : DiffLineKind.Context;
             DrawMinimapChangeAnnotation(canvasSurface, palette, kind, inner, y, 1, paint);
-            if (hasText)
+            if (textRows > 0)
             {
-                DrawAggregatedMinimapStructure(canvasSurface, palette, lines, start, end, inner, y, isCollapsed, paint);
+                DrawAggregatedMinimapStructure(canvasSurface, palette, inner, y, isCollapsed, textRows, totalStart, totalEnd, paint);
             }
         }
     }
@@ -3881,35 +4325,14 @@ public sealed class CodeFileViewerControl : Grid
     private void DrawAggregatedMinimapStructure(
         SKCanvas canvasSurface,
         CodeFileViewerPalette palette,
-        IReadOnlyList<DiffLine> lines,
-        int start,
-        int end,
         SKRect inner,
         float y,
         bool isCollapsed,
+        int textRows,
+        int totalStart,
+        int totalEnd,
         SKPaint paint)
     {
-        var textRows = 0;
-        var totalStart = 0;
-        var totalEnd = 0;
-        for (var index = start; index < end; index++)
-        {
-            var row = visibleRows[index];
-            if (row.LineIndex < 0 || row.LineIndex >= lines.Count)
-            {
-                continue;
-            }
-
-            if (!TryGetMinimapTextSpan(lines[row.LineIndex].Text, out var startVisual, out var endVisual))
-            {
-                continue;
-            }
-
-            totalStart += startVisual;
-            totalEnd += endVisual;
-            textRows++;
-        }
-
         if (textRows == 0)
         {
             return;
@@ -4574,7 +4997,18 @@ public sealed class CodeFileViewerControl : Grid
         EnsureEditorDocument();
         if (editableLinesVersion == editorDocument.Version && !editableLines.IsDefault)
         {
-            return editableLines;
+            if (!IsTokenizationEnabled)
+            {
+                return editableLines;
+            }
+
+            var (firstLineIndex, lineCount) = GetEditableTokenizationWindow(editorDocument.LineCount);
+            if (editableLinesTokenWindowFirst == firstLineIndex &&
+                editableLinesTokenWindowLineCount == lineCount &&
+                editableLinesTokenCacheRevision == Volatile.Read(ref editableTokenCacheRevision))
+            {
+                return editableLines;
+            }
         }
 
         var originalLines = GetBoundLines();
@@ -4607,25 +5041,253 @@ public sealed class CodeFileViewerControl : Grid
 
         if (!IsTokenizationEnabled)
         {
+            editableLinesTokenWindowFirst = -1;
+            editableLinesTokenWindowLineCount = -1;
+            editableLinesTokenCacheRevision = Volatile.Read(ref editableTokenCacheRevision);
             return lines;
         }
 
-        var document = CreateEditableDocument(lines);
+        var document = GetOrCreateEditableTokenDocument(lines);
+        var (firstLineIndex, lineCount) = GetEditableTokenizationWindow(lines.Length);
+        editableLinesTokenWindowFirst = firstLineIndex;
+        editableLinesTokenWindowLineCount = lineCount;
+        editableLinesTokenCacheRevision = Volatile.Read(ref editableTokenCacheRevision);
+        if (lineCount <= 0)
+        {
+            return lines;
+        }
+
+        if (editableTextMateTokenizer.TryGetTokenizedLines(document, firstLineIndex, lineCount, out var tokenizedLines))
+        {
+            return ApplyTokenizedLines(lines, tokenizedLines);
+        }
+
+        if (firstLineIndex + lineCount <= ForegroundTextMateLineBudget)
+        {
+            try
+            {
+                tokenizedLines = editableTextMateTokenizer
+                    .TokenizePageAsync(document, firstLineIndex, lineCount, CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                return ApplyTokenizedLines(lines, tokenizedLines);
+            }
+            catch
+            {
+                // Fall through to the fast visible-window tokenizer below. The background path still
+                // tries to prime TextMate for grammars that are available but expensive.
+            }
+        }
+
+        var useVisibleFallback = ShouldUseVisibleFallbackTokenizer(document);
+        if (!useVisibleFallback)
+        {
+            ScheduleEditableTokenization(document, firstLineIndex + lineCount - 1);
+            return lines;
+        }
+
         try
         {
-            editableTokenizer.ClearCache();
-            return editableTokenizer
-                .TokenizePageAsync(document, 0, document.LineCount, CancellationToken.None)
+            var fallbackLines = editableFallbackTokenizer
+                .TokenizePageAsync(document, firstLineIndex, lineCount, CancellationToken.None)
                 .GetAwaiter()
                 .GetResult();
+            return ApplyTokenizedLines(lines, fallbackLines);
         }
         catch
         {
-            return editableFallbackTokenizer
-                .TokenizePageAsync(document, 0, document.LineCount, CancellationToken.None)
-                .GetAwaiter()
-                .GetResult();
+            return lines;
         }
+    }
+
+    private static bool ShouldUseVisibleFallbackTokenizer(DiffDocumentSnapshot document)
+    {
+        var extension = System.IO.Path.GetExtension(document.Metadata.Path).TrimStart('.');
+        return !string.Equals(extension, "cs", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(extension, "csx", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(document.Metadata.Language, "C#", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(document.Metadata.Language, "csharp", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(document.Metadata.Language, "cs", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private DiffDocumentSnapshot GetOrCreateEditableTokenDocument(ImmutableArray<DiffLine> lines)
+    {
+        if (editableTokenDocumentVersion == editorDocument.Version &&
+            editableTokenDocument is { } cachedDocument &&
+            cachedDocument.LineCount == lines.Length)
+        {
+            return cachedDocument;
+        }
+
+        ResetEditableTokenization(cancelRunningWork: true);
+        editableTokenDocument = CreateEditableDocument(lines);
+        editableTokenDocumentVersion = editorDocument.Version;
+        return editableTokenDocument;
+    }
+
+    private (int FirstLineIndex, int LineCount) GetEditableTokenizationWindow(int lineCount)
+    {
+        if (lineCount <= 0)
+        {
+            return (0, 0);
+        }
+
+        var viewportHeight = lastCanvasSize.Height > 0
+            ? lastCanvasSize.Height
+            : Math.Max(DefaultViewportHeight, ActualHeight);
+        var visibleLineCount = Math.Max(1, (int)Math.Ceiling(viewportHeight / Math.Max(1, LineHeight)));
+        var firstLineIndex = Math.Clamp(
+            (int)Math.Floor(Math.Max(0, scrollOffsetY - TopPadding) / Math.Max(1, LineHeight)) - EditableTokenizationOverscanRows,
+            0,
+            lineCount - 1);
+        var lastLineIndex = Math.Clamp(
+            firstLineIndex + visibleLineCount + EditableTokenizationOverscanRows * 2,
+            firstLineIndex + 1,
+            lineCount);
+
+        return (firstLineIndex, lastLineIndex - firstLineIndex);
+    }
+
+    private static ImmutableArray<DiffLine> ApplyTokenizedLines(
+        ImmutableArray<DiffLine> lines,
+        ImmutableArray<DiffLine> tokenizedLines)
+    {
+        if (tokenizedLines.IsDefaultOrEmpty)
+        {
+            return lines;
+        }
+
+        var builder = lines.ToBuilder();
+        for (var index = 0; index < tokenizedLines.Length; index++)
+        {
+            var tokenizedLine = tokenizedLines[index];
+            if ((uint)tokenizedLine.Index < (uint)builder.Count)
+            {
+                builder[tokenizedLine.Index] = tokenizedLine;
+            }
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private void ScheduleEditableTokenization(DiffDocumentSnapshot document, int targetLineIndex)
+    {
+        if (document.LineCount == 0)
+        {
+            return;
+        }
+
+        var clampedTarget = Math.Clamp(targetLineIndex, 0, document.LineCount - 1);
+        var currentTarget = Volatile.Read(ref editableTokenPrimeTargetLine);
+        while (clampedTarget > currentTarget)
+        {
+            var previous = Interlocked.CompareExchange(ref editableTokenPrimeTargetLine, clampedTarget, currentTarget);
+            if (previous == currentTarget)
+            {
+                break;
+            }
+
+            currentTarget = previous;
+        }
+
+        lock (editableTokenizationGate)
+        {
+            if (editableTokenizationTask is { IsCompleted: false })
+            {
+                return;
+            }
+
+            editableTokenizationCts?.Dispose();
+            editableTokenizationCts = new CancellationTokenSource();
+            var token = editableTokenizationCts.Token;
+            editableTokenizationTask = Task.Run(
+                () => PrimeEditableTokenizationLoopAsync(document, token),
+                token);
+        }
+    }
+
+    private async Task PrimeEditableTokenizationLoopAsync(DiffDocumentSnapshot document, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var targetLineIndex = Volatile.Read(ref editableTokenPrimeTargetLine);
+            if (targetLineIndex < 0)
+            {
+                return;
+            }
+
+            var primed = await editableTextMateTokenizer.PrimeTokenizationAsync(document, targetLineIndex, cancellationToken).ConfigureAwait(false);
+            if (!primed)
+            {
+                Interlocked.CompareExchange(ref editableTokenPrimeTargetLine, -1, targetLineIndex);
+                return;
+            }
+
+            var updated = Interlocked.CompareExchange(ref editableTokenPrimeTargetLine, -1, targetLineIndex);
+            if (updated == targetLineIndex)
+            {
+                EnqueueEditableTokenizationRender(document);
+                return;
+            }
+        }
+    }
+
+    private void EnqueueEditableTokenizationRender(DiffDocumentSnapshot document)
+    {
+        var dispatcher = DispatcherQueue;
+        if (dispatcher is null)
+        {
+            return;
+        }
+
+        _ = dispatcher.TryEnqueue(() =>
+        {
+            if (!ReferenceEquals(editableTokenDocument, document))
+            {
+                return;
+            }
+
+            Interlocked.Increment(ref editableTokenCacheRevision);
+            editableLinesVersion = -1;
+            InvalidateMinimapContentCache();
+            ClearPreparedLineCache();
+            RequestRender();
+        });
+    }
+
+    private void ResetEditableTokenization(bool cancelRunningWork)
+    {
+        var clearCacheNow = true;
+        if (cancelRunningWork)
+        {
+            lock (editableTokenizationGate)
+            {
+                if (editableTokenizationTask is { IsCompleted: false })
+                {
+                    editableTokenizationCts?.Cancel();
+                    clearCacheNow = false;
+                }
+                else
+                {
+                    editableTokenizationCts?.Dispose();
+                    editableTokenizationCts = null;
+                    editableTokenizationTask = null;
+                }
+            }
+        }
+
+        Interlocked.Exchange(ref editableTokenPrimeTargetLine, -1);
+        Interlocked.Increment(ref editableTokenCacheRevision);
+        editableLinesTokenCacheRevision = -1;
+        editableLinesTokenWindowFirst = -1;
+        editableLinesTokenWindowLineCount = -1;
+        if (clearCacheNow)
+        {
+            editableTextMateTokenizer.ClearCache();
+        }
+
+        editableTokenDocument = null;
+        editableTokenDocumentVersion = -1;
     }
 
     private DiffDocumentSnapshot CreateEditableDocument(ImmutableArray<DiffLine> lines)
@@ -4759,6 +5421,7 @@ public sealed class CodeFileViewerControl : Grid
         hasActiveMinimapScrollMetrics = false;
         InvalidateLineMetricsCache();
         InvalidateMinimapContentCache();
+        ClearPreparedLineCache();
     }
 
     private float CalculateGutterWidth(float charWidth, IReadOnlyList<DiffLine> lines)
@@ -5069,6 +5732,29 @@ public sealed class CodeFileViewerControl : Grid
         canvas.Invalidate();
     }
 
+    private void TrimPreparedLineCache()
+    {
+        while (preparedLineCache.Count > PreparedLineCacheLimit && preparedLineCacheOrder.Count > 0)
+        {
+            var oldestKey = preparedLineCacheOrder.Dequeue();
+            if (preparedLineCache.Remove(oldestKey, out var preparedLine))
+            {
+                preparedLine.Dispose();
+            }
+        }
+    }
+
+    private void ClearPreparedLineCache()
+    {
+        foreach (var preparedLine in preparedLineCache.Values)
+        {
+            preparedLine.Dispose();
+        }
+
+        preparedLineCache.Clear();
+        preparedLineCacheOrder.Clear();
+    }
+
     private void ClearTransientScrollState()
     {
         hasActiveMinimapScrollMetrics = false;
@@ -5101,6 +5787,35 @@ public sealed class CodeFileViewerControl : Grid
         Color = color,
         IsAntialias = true
     };
+
+    private readonly record struct PendingTextRun(int Start, int Length, bool IsBold, SKColor Color);
+
+    private readonly record struct PreparedTextRun(SKTextBlob Blob, int VisualColumn, SKColor Color);
+
+    private sealed class PreparedCodeLine : IDisposable
+    {
+        public PreparedCodeLine(PreparedTextRun[] runs)
+        {
+            Runs = runs;
+        }
+
+        public static PreparedCodeLine Empty => new([]);
+
+        public PreparedTextRun[] Runs { get; }
+
+        public static PreparedCodeLine Create(List<PreparedTextRun>? runs) =>
+            runs is { Count: > 0 }
+                ? new PreparedCodeLine(runs.ToArray())
+                : Empty;
+
+        public void Dispose()
+        {
+            for (var index = 0; index < Runs.Length; index++)
+            {
+                Runs[index].Blob.Dispose();
+            }
+        }
+    }
 
     private sealed class TokenPaintCache : IDisposable
     {

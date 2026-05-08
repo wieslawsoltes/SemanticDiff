@@ -834,7 +834,16 @@ public sealed class AdaptiveDocumentTokenizer : IDocumentTokenizer
             return true;
         }
 
-        if (IsLargeDocument(document) && !Matches(options.EffectivePreferTextMateLanguageIds, document, descriptor))
+        var prefersPreciseTokenizer = Matches(options.EffectivePreferTextMateLanguageIds, document, descriptor);
+        if (prefersPreciseTokenizer)
+        {
+            return false;
+        }
+
+        if (IsLargeDocument(
+                document,
+                options.LargeDocumentLineThreshold,
+                options.LargeDocumentCharacterThreshold))
         {
             return true;
         }
@@ -842,14 +851,14 @@ public sealed class AdaptiveDocumentTokenizer : IDocumentTokenizer
         return false;
     }
 
-    private bool IsLargeDocument(DiffDocumentSnapshot document)
+    private static bool IsLargeDocument(DiffDocumentSnapshot document, int lineThreshold, int characterThreshold)
     {
-        if (options.LargeDocumentLineThreshold > 0 && document.LineCount >= options.LargeDocumentLineThreshold)
+        if (lineThreshold > 0 && document.LineCount >= lineThreshold)
         {
             return true;
         }
 
-        if (options.LargeDocumentCharacterThreshold <= 0)
+        if (characterThreshold <= 0)
         {
             return false;
         }
@@ -858,7 +867,7 @@ public sealed class AdaptiveDocumentTokenizer : IDocumentTokenizer
         foreach (var line in document.Lines)
         {
             characterCount += line.Text.Length;
-            if (characterCount >= options.LargeDocumentCharacterThreshold)
+            if (characterCount >= characterThreshold)
             {
                 return true;
             }
@@ -918,6 +927,7 @@ public sealed class AdaptiveDocumentTokenizer : IDocumentTokenizer
 public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
 {
     private const int DefaultPageSize = 128;
+    private const int ScopeClassificationCacheLimit = 4096;
     private static readonly TimeSpan TokenizeLineTimeout = TimeSpan.FromMilliseconds(50);
 
     private readonly object gate = new();
@@ -926,6 +936,7 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
     private readonly Registry registry;
     private readonly Dictionary<string, IGrammar?> grammars = new(StringComparer.Ordinal);
     private readonly Dictionary<DiffDocumentSnapshot, DocumentTokenCache> documentCaches = new(DocumentReferenceComparer.Instance);
+    private readonly Dictionary<ScopeSequenceKey, ScopeClassification> scopeClassifications = new(ScopeSequenceKeyComparer.Instance);
     private readonly int pageSize;
 
     public TextMateDocumentTokenizer()
@@ -947,16 +958,38 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
         lock (gate)
         {
             documentCaches.Clear();
+            scopeClassifications.Clear();
         }
     }
 
-    public async ValueTask<ImmutableArray<TokenSpan>> TokenizeLineAsync(
+    public ValueTask<ImmutableArray<TokenSpan>> TokenizeLineAsync(
         DiffDocumentSnapshot document,
         DiffLine line,
         CancellationToken cancellationToken)
     {
-        var lines = await TokenizePageAsync(document, line.Index, 1, cancellationToken).ConfigureAwait(false);
-        return lines.Length > 0 ? lines[0].Tokens : ImmutableArray<TokenSpan>.Empty;
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var language = LanguageServiceRegistry.Identify(document);
+        var grammar = GetGrammar(document, language);
+        if (grammar is null)
+        {
+            return fallback.TokenizeLineAsync(document, line, cancellationToken);
+        }
+
+        if ((uint)line.Index >= (uint)document.LineCount)
+        {
+            return new ValueTask<ImmutableArray<TokenSpan>>(ImmutableArray<TokenSpan>.Empty);
+        }
+
+        lock (gate)
+        {
+            var page = GetOrCreatePage(document, grammar, language.Id, AlignPageStart(line.Index), cancellationToken);
+            var pageLineIndex = line.Index - page.FirstLineIndex;
+            return new ValueTask<ImmutableArray<TokenSpan>>(
+                (uint)pageLineIndex < (uint)page.LineTokens.Length
+                    ? page.LineTokens[pageLineIndex]
+                    : ImmutableArray<TokenSpan>.Empty);
+        }
     }
 
     public ValueTask<ImmutableArray<DiffLine>> TokenizePageAsync(
@@ -984,15 +1017,132 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
         lock (gate)
         {
             var builder = ImmutableArray.CreateBuilder<DiffLine>(lastLine - firstLine);
-            for (var lineIndex = firstLine; lineIndex < lastLine; lineIndex++)
+            var pageStart = AlignPageStart(firstLine);
+            while (pageStart < lastLine)
             {
-                var page = GetOrCreatePage(document, grammar, language.Id, AlignPageStart(lineIndex), cancellationToken);
-                var tokens = page.LineTokens[lineIndex - page.FirstLineIndex];
-                builder.Add(document.Lines[lineIndex] with { Tokens = tokens });
+                var page = GetOrCreatePage(document, grammar, language.Id, pageStart, cancellationToken);
+                if (page.LineTokens.IsDefaultOrEmpty)
+                {
+                    break;
+                }
+
+                var pageEnd = page.FirstLineIndex + page.LineTokens.Length;
+                var copyStart = Math.Max(firstLine, page.FirstLineIndex);
+                var copyEnd = Math.Min(lastLine, pageEnd);
+                for (var lineIndex = copyStart; lineIndex < copyEnd; lineIndex++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var tokens = page.LineTokens[lineIndex - page.FirstLineIndex];
+                    builder.Add(document.Lines[lineIndex] with { Tokens = tokens });
+                }
+
+                if (pageEnd <= pageStart)
+                {
+                    break;
+                }
+
+                pageStart = pageEnd >= document.LineCount ? document.LineCount : AlignPageStart(pageEnd);
             }
 
             return new ValueTask<ImmutableArray<DiffLine>>(builder.ToImmutable());
         }
+    }
+
+    public bool TryGetTokenizedLines(
+        DiffDocumentSnapshot document,
+        int firstLineIndex,
+        int lineCount,
+        out ImmutableArray<DiffLine> lines)
+    {
+        var firstLine = Math.Clamp(firstLineIndex, 0, document.LineCount);
+        var lastLine = Math.Clamp(firstLine + Math.Max(0, lineCount), 0, document.LineCount);
+        if (firstLine >= lastLine)
+        {
+            lines = ImmutableArray<DiffLine>.Empty;
+            return true;
+        }
+
+        if (!Monitor.TryEnter(gate))
+        {
+            lines = ImmutableArray<DiffLine>.Empty;
+            return false;
+        }
+
+        try
+        {
+            if (!documentCaches.TryGetValue(document, out var documentCache))
+            {
+                lines = ImmutableArray<DiffLine>.Empty;
+                return false;
+            }
+
+            var builder = ImmutableArray.CreateBuilder<DiffLine>(lastLine - firstLine);
+            for (var lineIndex = firstLine; lineIndex < lastLine;)
+            {
+                var pageStart = AlignPageStart(lineIndex);
+                if (!documentCache.Pages.TryGetValue(pageStart, out var page) ||
+                    page.LineTokens.IsDefaultOrEmpty)
+                {
+                    lines = ImmutableArray<DiffLine>.Empty;
+                    return false;
+                }
+
+                var pageEnd = page.FirstLineIndex + page.LineTokens.Length;
+                var copyEnd = Math.Min(lastLine, pageEnd);
+                for (; lineIndex < copyEnd; lineIndex++)
+                {
+                    var tokenIndex = lineIndex - page.FirstLineIndex;
+                    if ((uint)tokenIndex >= (uint)page.LineTokens.Length)
+                    {
+                        lines = ImmutableArray<DiffLine>.Empty;
+                        return false;
+                    }
+
+                    builder.Add(document.Lines[lineIndex] with { Tokens = page.LineTokens[tokenIndex] });
+                }
+
+                if (lineIndex < lastLine && pageEnd <= pageStart)
+                {
+                    lines = ImmutableArray<DiffLine>.Empty;
+                    return false;
+                }
+            }
+
+            lines = builder.ToImmutable();
+            return true;
+        }
+        finally
+        {
+            Monitor.Exit(gate);
+        }
+    }
+
+    public ValueTask<bool> PrimeTokenizationAsync(
+        DiffDocumentSnapshot document,
+        int targetLineIndex,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (document.LineCount == 0)
+        {
+            return new ValueTask<bool>(false);
+        }
+
+        var language = LanguageServiceRegistry.Identify(document);
+        var grammar = GetGrammar(document, language);
+        if (grammar is null)
+        {
+            return new ValueTask<bool>(false);
+        }
+
+        var pageStart = AlignPageStart(Math.Clamp(targetLineIndex, 0, document.LineCount - 1));
+        lock (gate)
+        {
+            GetOrCreatePage(document, grammar, language.Id, pageStart, cancellationToken);
+        }
+
+        return new ValueTask<bool>(true);
     }
 
     private IGrammar? GetGrammar(DiffDocumentSnapshot document, LanguageDescriptor language)
@@ -1082,26 +1232,15 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
             return cachedPage;
         }
 
-        IStateStack? state = null;
-        var currentPageStart = 0;
-        TokenPage? previousPage = null;
-        foreach (var candidate in documentCache.Pages.Values)
-        {
-            if (candidate.FirstLineIndex < pageStart &&
-                (previousPage is null || candidate.FirstLineIndex > previousPage.FirstLineIndex))
-            {
-                previousPage = candidate;
-            }
-        }
-
-        if (previousPage is not null)
-        {
-            state = previousPage.EndState;
-            currentPageStart = previousPage.FirstLineIndex + previousPage.LineTokens.Length;
-        }
+        var previousPage = FindNearestPreviousPage(documentCache, pageStart);
+        var state = previousPage?.EndState;
+        var currentPageStart = previousPage is null
+            ? 0
+            : previousPage.FirstLineIndex + previousPage.LineTokens.Length;
 
         while (currentPageStart <= pageStart)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!documentCache.Pages.TryGetValue(currentPageStart, out cachedPage))
             {
                 cachedPage = TokenizePage(document, grammar, languageId, currentPageStart, state, cancellationToken);
@@ -1114,10 +1253,28 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
                 return cachedPage;
             }
 
+            if (cachedPage.LineTokens.IsDefaultOrEmpty)
+            {
+                break;
+            }
+
             currentPageStart += cachedPage.LineTokens.Length;
         }
 
         return documentCache.Pages[pageStart];
+    }
+
+    private TokenPage? FindNearestPreviousPage(DocumentTokenCache documentCache, int pageStart)
+    {
+        for (var previousPageStart = pageStart - pageSize; previousPageStart >= 0; previousPageStart -= pageSize)
+        {
+            if (documentCache.Pages.TryGetValue(previousPageStart, out var previousPage))
+            {
+                return previousPage;
+            }
+        }
+
+        return null;
     }
 
     private TokenPage TokenizePage(
@@ -1151,7 +1308,7 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
         return new TokenPage(firstLineIndex, tokenLines.ToImmutable(), state);
     }
 
-    private static ImmutableArray<TokenSpan> ConvertTokens(string text, IReadOnlyList<IToken> tokens, string languageId)
+    private ImmutableArray<TokenSpan> ConvertTokens(string text, IReadOnlyList<IToken> tokens, string languageId)
     {
         if (text.Length == 0 || tokens.Count == 0)
         {
@@ -1161,8 +1318,8 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
         var builder = ImmutableArray.CreateBuilder<TokenSpan>(tokens.Count);
         foreach (var token in tokens)
         {
-            var (styleId, tokenType, modifiers) = TokenClassification.FromScopes(token.Scopes);
-            if (styleId == "text")
+            var classification = GetScopeClassification(token.Scopes);
+            if (classification.StyleId == "text")
             {
                 continue;
             }
@@ -1174,16 +1331,37 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
                 builder.Add(TokenClassification.Create(
                     startColumn,
                     length,
-                    styleId,
-                    tokenType,
+                    classification.StyleId,
+                    classification.TokenType,
                     languageId,
                     TokenClassification.TextMateSource,
-                    modifiers,
-                    token.Scopes.ToImmutableArray()));
+                    classification.Modifiers,
+                    classification.Scopes));
             }
         }
 
         return builder.ToImmutable();
+    }
+
+    private ScopeClassification GetScopeClassification(IReadOnlyList<string> scopes)
+    {
+        var key = new ScopeSequenceKey(scopes);
+        if (scopeClassifications.TryGetValue(key, out var classification))
+        {
+            return classification;
+        }
+
+        var (styleId, tokenType, modifiers) = TokenClassification.FromScopes(scopes);
+        var immutableScopes = scopes.Count == 0 ? ImmutableArray<string>.Empty : scopes.ToImmutableArray();
+        classification = new ScopeClassification(styleId, tokenType, modifiers, immutableScopes);
+
+        if (scopeClassifications.Count >= ScopeClassificationCacheLimit)
+        {
+            scopeClassifications.Clear();
+        }
+
+        scopeClassifications[new ScopeSequenceKey(immutableScopes)] = classification;
+        return classification;
     }
 
     private sealed class DocumentTokenCache
@@ -1192,6 +1370,54 @@ public sealed class TextMateDocumentTokenizer : IDocumentTokenizer
     }
 
     private sealed record TokenPage(int FirstLineIndex, ImmutableArray<ImmutableArray<TokenSpan>> LineTokens, IStateStack? EndState);
+
+    private readonly record struct ScopeClassification(
+        string StyleId,
+        string TokenType,
+        ImmutableArray<string> Modifiers,
+        ImmutableArray<string> Scopes);
+
+    private readonly record struct ScopeSequenceKey(IReadOnlyList<string> Scopes);
+
+    private sealed class ScopeSequenceKeyComparer : IEqualityComparer<ScopeSequenceKey>
+    {
+        public static ScopeSequenceKeyComparer Instance { get; } = new();
+
+        public bool Equals(ScopeSequenceKey x, ScopeSequenceKey y)
+        {
+            if (ReferenceEquals(x.Scopes, y.Scopes))
+            {
+                return true;
+            }
+
+            if (x.Scopes.Count != y.Scopes.Count)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < x.Scopes.Count; index++)
+            {
+                if (!string.Equals(x.Scopes[index], y.Scopes[index], StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        public int GetHashCode(ScopeSequenceKey obj)
+        {
+            var hash = new HashCode();
+            hash.Add(obj.Scopes.Count);
+            for (var index = 0; index < obj.Scopes.Count; index++)
+            {
+                hash.Add(obj.Scopes[index], StringComparer.Ordinal);
+            }
+
+            return hash.ToHashCode();
+        }
+    }
 
     private sealed class DocumentReferenceComparer : IEqualityComparer<DiffDocumentSnapshot>
     {
