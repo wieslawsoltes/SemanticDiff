@@ -53,7 +53,7 @@ public sealed class QueryCanvasEngine
         }
 
         return scope == QueryCanvasScope.Workspace
-            ? "WorkspaceFiles.Where(f => f.Language == \"C#\").Take(80)"
+            ? QueryCanvasSampleCatalog.WorkspaceOverview.Query
             : "Files.Where(f => f.IsChanged).Take(80)";
     }
 
@@ -66,11 +66,11 @@ public sealed class QueryCanvasEngine
 
         return root.Name.ToLowerInvariant() switch
         {
-            "files" => scopedDocuments.Select(QueryEntity.FromDocument).ToList(),
-            "changedfiles" => scopedDocuments.Where(IsChangedDocument).Select(QueryEntity.FromDocument).ToList(),
-            "difffiles" => diffDocuments.Select(QueryEntity.FromDocument).ToList(),
-            "workspacefiles" => workspaceDocuments.Select(QueryEntity.FromDocument).ToList(),
-            "nodes" => scopedDocuments.Select(QueryEntity.FromDocument).ToList(),
+            "files" => scopedDocuments.Select(document => QueryEntity.FromDocument(document, context.MetricsFor(document))).ToList(),
+            "changedfiles" => scopedDocuments.Where(IsChangedDocument).Select(document => QueryEntity.FromDocument(document, context.MetricsFor(document))).ToList(),
+            "difffiles" => diffDocuments.Select(document => QueryEntity.FromDocument(document, context.MetricsFor(document))).ToList(),
+            "workspacefiles" => workspaceDocuments.Select(document => QueryEntity.FromDocument(document, context.MetricsFor(document))).ToList(),
+            "nodes" => scopedDocuments.Select(document => QueryEntity.FromDocument(document, context.MetricsFor(document))).ToList(),
             "symbols" => symbols.Select(QueryEntity.FromSymbol).ToList(),
             "changedsymbols" => symbols.Where(symbol => symbol.IsChanged).Select(QueryEntity.FromSymbol).ToList(),
             "linkedsymbols" => symbols.Where(symbol => symbol.IsLinked).Select(QueryEntity.FromSymbol).ToList(),
@@ -381,11 +381,17 @@ internal enum QueryEntityKind
     Symbol
 }
 
-internal sealed record QueryEntity(QueryEntityKind Kind, DiffDocumentSnapshot? Document, SemanticNavigationItem? Symbol)
+internal sealed record QueryEntity(
+    QueryEntityKind Kind,
+    DiffDocumentSnapshot? Document,
+    SemanticNavigationItem? Symbol,
+    QueryFileMetrics? FileMetrics)
 {
-    public static QueryEntity FromDocument(DiffDocumentSnapshot document) => new(QueryEntityKind.Document, document, null);
+    public static QueryEntity FromDocument(DiffDocumentSnapshot document, QueryFileMetrics? metrics = null) =>
+        new(QueryEntityKind.Document, document, null, metrics);
 
-    public static QueryEntity FromSymbol(SemanticNavigationItem symbol) => new(QueryEntityKind.Symbol, null, symbol);
+    public static QueryEntity FromSymbol(SemanticNavigationItem symbol) =>
+        new(QueryEntityKind.Symbol, null, symbol, null);
 }
 
 internal static class QueryPredicateEvaluator
@@ -435,7 +441,7 @@ internal static class QueryPredicateEvaluator
         var property = NormalizePropertyExpression(propertyExpression);
         if (row.Document is { } document)
         {
-            return GetDocumentProperty(document, property);
+            return GetDocumentProperty(document, row.FileMetrics, property);
         }
 
         if (row.Symbol is { } symbol)
@@ -571,7 +577,7 @@ internal static class QueryPredicateEvaluator
         return value.Trim('\'');
     }
 
-    private static object? GetDocumentProperty(DiffDocumentSnapshot document, string property) => property.ToLowerInvariant() switch
+    private static object? GetDocumentProperty(DiffDocumentSnapshot document, QueryFileMetrics? metrics, string property) => property.ToLowerInvariant() switch
     {
         "id" => document.Id.Value,
         "path" => document.Metadata.Path,
@@ -582,12 +588,30 @@ internal static class QueryPredicateEvaluator
         "status" => document.Metadata.Status.ToString(),
         "addedlines" or "added" => document.Metadata.AddedLines,
         "deletedlines" or "deleted" => document.Metadata.DeletedLines,
-        "linecount" or "lines" => document.LineCount,
+        "linecount" or "lines" => metrics?.LineCount ?? document.LineCount,
+        "sizebytes" or "filesize" or "bytes" => metrics?.SizeBytes ?? EstimateDocumentSize(document),
+        "sizekb" or "kilobytes" => (metrics?.SizeBytes ?? EstimateDocumentSize(document)) / 1024d,
         "ischanged" => document.Metadata.Status != DiffFileStatus.Unchanged || document.Metadata.AddedLines > 0 || document.Metadata.DeletedLines > 0,
         "isadded" => document.Metadata.Status == DiffFileStatus.Added,
         "isdeleted" => document.Metadata.Status == DiffFileStatus.Deleted,
-        _ => throw new QueryCanvasException($"Unknown file property '{property}'. Try Path, Name, Directory, Language, Status, AddedLines, DeletedLines, LineCount, or IsChanged.")
+        _ => throw new QueryCanvasException($"Unknown file property '{property}'. Try Path, Name, Directory, Language, Status, AddedLines, DeletedLines, LineCount, SizeBytes, or IsChanged.")
     };
+
+    private static long EstimateDocumentSize(DiffDocumentSnapshot document)
+    {
+        if (document.Lines.IsDefaultOrEmpty)
+        {
+            return 0;
+        }
+
+        long size = 0;
+        foreach (var line in document.Lines)
+        {
+            size += line.Text.Length + 1L;
+        }
+
+        return size;
+    }
 
     private static object? GetSymbolProperty(SemanticNavigationItem symbol, string property) => property.ToLowerInvariant() switch
     {

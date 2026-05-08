@@ -38,6 +38,22 @@ public sealed partial class MainViewModel
             EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
             if (string.IsNullOrWhiteSpace(repositoryRoot))
             {
+                if (Directory.Exists(selectedPath))
+                {
+                    appState = appState with
+                    {
+                        RepositoryPath = Path.GetFullPath(selectedPath),
+                        LayoutNodes = null,
+                        SelectedBranchRef = null,
+                        SelectedPullRequestNumber = null
+                    };
+                    previousLayout = null;
+                    pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
+                    await InitializeDirectoryWorkspaceAsync(selectedPath, repositoryRequestId, cancellationToken);
+                    CompleteOperation(operation, "Directory workspace selected");
+                    return;
+                }
+
                 currentRepositoryPath = null;
                 appState = appState with
                 {
@@ -99,6 +115,48 @@ public sealed partial class MainViewModel
             {
                 AddDiagnostic("Error", exception.Message);
             }
+        }
+    }
+
+    public async Task OpenDirectoryWorkspaceAsync(string selectedPath)
+    {
+        if (string.IsNullOrWhiteSpace(selectedPath))
+        {
+            return;
+        }
+
+        if (!Directory.Exists(selectedPath))
+        {
+            AddDiagnostic("Warning", $"Directory not found at {selectedPath}");
+            return;
+        }
+
+        var repositoryRequestId = repositoryLoadRequests.BeginRequest();
+        var operation = BeginOperation("Opening directory workspace");
+        try
+        {
+            var cancellationToken = operation.Token;
+            EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+            appState = appState with
+            {
+                RepositoryPath = Path.GetFullPath(selectedPath),
+                LayoutNodes = null,
+                SelectedBranchRef = null,
+                SelectedPullRequestNumber = null
+            };
+            previousLayout = null;
+            pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
+            await InitializeDirectoryWorkspaceAsync(selectedPath, repositoryRequestId, cancellationToken);
+            CompleteOperation(operation, "Directory workspace selected");
+        }
+        catch (OperationCanceledException)
+        {
+            CompleteOperation(operation, "Directory workspace load canceled");
+        }
+        catch (Exception exception)
+        {
+            AddDiagnostic("Error", exception.Message);
+            CompleteOperation(operation, "Directory workspace load failed");
         }
     }
 

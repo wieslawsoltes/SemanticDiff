@@ -96,14 +96,15 @@ public sealed partial class MainViewModel
 
             if (string.IsNullOrWhiteSpace(repositoryRoot))
             {
-                currentRepositoryPath = null;
-                currentGitSnapshot = null;
-                InvalidateWorkspaceExplorerCache();
-                ClearReferenceOptions("Refs unavailable");
-                await StopRepositoryWatcherAsync();
-                EnsureCurrentRepositoryRequest(requestId, cancellationToken);
-                InitializeSampleDocuments(SampleDiffDocuments.Create());
-                StatusText = "No Git repository found | showing sample diff graph";
+                if (!string.IsNullOrWhiteSpace(appState.RepositoryPath) && Directory.Exists(appState.RepositoryPath))
+                {
+                    await InitializeDirectoryWorkspaceAsync(appState.RepositoryPath, requestId, cancellationToken);
+                    EnsureCurrentRepositoryRequest(requestId, cancellationToken);
+                    CompleteOperation(operation, "Directory workspace ready");
+                    return;
+                }
+
+                await InitializeNoRepositoryFallbackAsync();
                 await RestorePendingWorkspaceSessionAsync(cancellationToken);
                 AddDiagnostic("Info", "No Git repository found; using sample graph");
                 CompleteOperation(operation, "Sample graph ready");
@@ -206,6 +207,98 @@ public sealed partial class MainViewModel
                 AddDiagnostic("Error", exception.Message);
             }
         }
+    }
+
+    private async Task InitializeNoRepositoryFallbackAsync()
+    {
+        currentRepositoryPath = null;
+        currentGitSnapshot = null;
+        InvalidateWorkspaceExplorerCache();
+        ClearReferenceOptions("Refs unavailable");
+        await StopRepositoryWatcherAsync();
+        InitializeSampleDocuments(SampleDiffDocuments.Create());
+        StatusText = "No Git repository found | showing sample diff graph";
+    }
+
+    private async Task InitializeDirectoryWorkspaceAsync(
+        string directoryPath,
+        long repositoryRequestId,
+        CancellationToken cancellationToken)
+    {
+        var workspacePath = Path.GetFullPath(directoryPath);
+        var workspaceName = GetDirectoryWorkspaceName(workspacePath);
+        var isNewWorkspace = !string.Equals(currentRepositoryPath, workspacePath, StringComparison.Ordinal);
+        if (isNewWorkspace)
+        {
+            InvalidateWorkspaceExplorerCache();
+        }
+
+        currentRepositoryPath = workspacePath;
+        currentGitSnapshot = null;
+        currentSemanticGraph = SemanticGraph.Empty;
+        currentDocuments = [];
+        currentStatusPrefix = $"{workspaceName} | directory workspace";
+        currentDocumentsAreRepositoryDocuments = true;
+        previousLayout = null;
+        pinnedDocumentIds = ImmutableHashSet<DiffDocumentId>.Empty;
+        SelectExplorerItem(null);
+        UpdateChangeNavigation(currentDocuments);
+        UpdateSemanticNavigation(SemanticGraph.Empty, currentDocuments);
+        UpdateImpactSummary(currentDocuments, SemanticGraph.Empty);
+        Scene = CreateScene(currentDocuments, SemanticGraph.Empty, null);
+
+        appState = appState with
+        {
+            RepositoryPath = workspacePath,
+            LayoutNodes = null,
+            BaseRef = null,
+            HeadRef = "HEAD",
+            SelectedBranchRef = null,
+            SelectedPullRequestNumber = null
+        };
+        ApplyAppStateToPresentation();
+        ClearReferenceOptions("Directory workspace");
+        await StopRepositoryWatcherAsync();
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+
+        UpdateWorkspaceSummary(
+            workspaceName,
+            $"{workspaceName} | directory workspace",
+            0,
+            0);
+        StatusText = $"{workspaceName} | directory workspace | loading files";
+        diffExplorerItems = [];
+        diffExplorerTreeRoots = [];
+        SetActiveExplorerItems([], []);
+        FileSearchText = string.Empty;
+        await SetFileExplorerModeAsync(FileExplorerMode.Workspace);
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+
+        var fileCount = workspaceExplorerItems.IsDefault ? 0 : workspaceExplorerItems.Length;
+        UpdateWorkspaceSummary(
+            workspaceName,
+            $"{workspaceName} | directory workspace | {fileCount:N0} files",
+            fileCount,
+            0);
+        StatusText = $"{workspaceName} | directory workspace | {fileCount:N0} files | open files from Files or drag them to an editor canvas";
+
+        var hadPendingSession = pendingWorkspaceSessionState?.EffectiveTabs.Length > 0;
+        await RestorePendingWorkspaceSessionAsync(cancellationToken);
+        EnsureCurrentRepositoryRequest(repositoryRequestId, cancellationToken);
+        if (!hadPendingSession && WorkspaceTabs.All(tab => tab.Kind != WorkspaceTabKind.EditorCanvas))
+        {
+            OpenEditorCanvasTab($"Edit {workspaceName}", $"{fileCount:N0} files | {workspacePath}");
+        }
+
+        await SaveOptionsAsync(cancellationToken);
+        AddDiagnostic("Info", $"Opened directory workspace {workspacePath}");
+    }
+
+    private static string GetDirectoryWorkspaceName(string directoryPath)
+    {
+        var trimmedPath = directoryPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var name = Path.GetFileName(trimmedPath);
+        return string.IsNullOrWhiteSpace(name) ? trimmedPath : name;
     }
 
     private void InitializeSampleDocuments(ImmutableArray<DiffDocumentSnapshot> documents)

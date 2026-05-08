@@ -1578,6 +1578,7 @@
           <Button Content="Prev" Style="{StaticResource ChromeButtonStyle}" Click="OnPreviousChangeClicked" IsEnabled="{x:Bind ViewModel.HasNavigableChanges, Mode=OneWay}" />
           <Button Content="Next" Style="{StaticResource ChromeButtonStyle}" Click="OnNextChangeClicked" IsEnabled="{x:Bind ViewModel.HasNavigableChanges, Mode=OneWay}" />
           <Button Content="Open" Style="{StaticResource ChromeButtonStyle}" Click="OnOpenRepositoryClicked" />
+          <Button Content="Folder" Style="{StaticResource ChromeButtonStyle}" Click="OnOpenDirectoryWorkspaceClicked" ToolTipService.ToolTip="Open directory workspace" />
           <Button Content="Reload" Style="{StaticResource ChromeButtonStyle}" Click="OnReloadClicked" />
           <Button Content="Fit" Style="{StaticResource ChromeButtonStyle}" Click="OnFitClicked" />
           <Button Content="Layout" Style="{StaticResource ChromeButtonStyle}" Click="OnLayoutClicked" />

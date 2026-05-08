@@ -11,10 +11,14 @@ public sealed partial class MainViewModel
 {
     public WorkspaceTabViewModel OpenQueryCanvasTab()
     {
+        var initialSample = IsDirectoryWorkspaceModeActive()
+            ? QueryCanvasSampleCatalog.WorkspaceOverview
+            : QueryCanvasSampleCatalog.Default;
         var queryCanvas = new QueryCanvasTabViewModel(
             "Query Canvas",
             "LINQ over files, symbols, and graph nodes",
-            queryCanvasCompletionProvider);
+            queryCanvasCompletionProvider,
+            initialSample);
         var tab = WorkspaceTabViewModel.CreateQueryCanvas(
             $"query:{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}",
             "Query Canvas",
@@ -46,9 +50,14 @@ public sealed partial class MainViewModel
             return;
         }
 
-        queryCanvas.QueryText = QueryCanvasTabViewModel.DefaultQuery;
+        queryCanvas.ResetToSelectedSample();
         RunSelectedQueryCanvas();
     }
+
+    private bool IsDirectoryWorkspaceModeActive() =>
+        currentGitSnapshot is null &&
+        currentDocumentsAreRepositoryDocuments &&
+        !string.IsNullOrWhiteSpace(currentRepositoryPath);
 
     private void ScheduleQueryCanvasExecution(WorkspaceTabViewModel tab, TimeSpan delay)
     {
@@ -106,6 +115,9 @@ public sealed partial class MainViewModel
             var groupingMode = appState.GroupingMode;
             var edgeOptions = CreateEdgeOptions();
             var annotationVisibility = appState.EffectiveAnnotationVisibility;
+            var repositoryPath = currentRepositoryPath;
+            var includeWorkspaceFileMetrics = queryScope == QueryCanvasScope.Workspace &&
+                                              QueryUsesWorkspaceFileMetrics(queryText);
             ReportProgress(operation, 0.35, "Preparing query context");
             var result = await Task.Run(
                 () =>
@@ -120,7 +132,9 @@ public sealed partial class MainViewModel
                         layoutMode,
                         groupingMode,
                         edgeOptions,
-                        annotationVisibility);
+                        annotationVisibility,
+                        repositoryPath,
+                        includeWorkspaceFileMetrics);
                     operation.Token.ThrowIfCancellationRequested();
                     return queryCanvasEngine.Execute(queryText, context, queryScope);
                 },
@@ -178,15 +192,22 @@ public sealed partial class MainViewModel
         GraphLayoutMode layoutMode,
         GraphGroupingMode groupingMode,
         EdgeProjectionOptions edgeOptions,
-        DiffAnnotationVisibilityState annotationVisibility) => new(
+        DiffAnnotationVisibilityState annotationVisibility,
+        string? repositoryPath,
+        bool includeWorkspaceFileMetrics)
+    {
+        var workspaceDocuments = CreateWorkspaceQueryDocuments(diffDocuments, workspaceItems, explorerItems, changedItems);
+        return new QueryCanvasContext(
         diffDocuments,
-        CreateWorkspaceQueryDocuments(diffDocuments, workspaceItems, explorerItems, changedItems),
+        workspaceDocuments,
         semanticItems,
         semanticGraph,
         layoutMode,
         groupingMode,
         edgeOptions,
-        annotationVisibility);
+        annotationVisibility,
+        FileMetrics: CreateWorkspaceQueryFileMetrics(workspaceDocuments, repositoryPath, includeWorkspaceFileMetrics));
+    }
 
     private static ImmutableArray<DiffDocumentSnapshot> CreateWorkspaceQueryDocuments(
         ImmutableArray<DiffDocumentSnapshot> currentDocuments,
@@ -229,6 +250,55 @@ public sealed partial class MainViewModel
                 0);
             var text = $"// {normalizedPath}{Environment.NewLine}// {metadata.Language} workspace file";
             builder.Add(factory.CreateFromText(metadata, text, DiffLineKind.Context));
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static bool QueryUsesWorkspaceFileMetrics(string? query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return false;
+        }
+
+        return query.Contains("SizeBytes", StringComparison.OrdinalIgnoreCase) ||
+               query.Contains("FileSize", StringComparison.OrdinalIgnoreCase) ||
+               query.Contains("SizeKB", StringComparison.OrdinalIgnoreCase) ||
+               query.Contains("Bytes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ImmutableDictionary<DiffDocumentId, QueryFileMetrics> CreateWorkspaceQueryFileMetrics(
+        ImmutableArray<DiffDocumentSnapshot> workspaceDocuments,
+        string? repositoryPath,
+        bool includeWorkspaceFileMetrics)
+    {
+        if (!includeWorkspaceFileMetrics || workspaceDocuments.IsDefaultOrEmpty || string.IsNullOrWhiteSpace(repositoryPath))
+        {
+            return ImmutableDictionary<DiffDocumentId, QueryFileMetrics>.Empty;
+        }
+
+        var builder = ImmutableDictionary.CreateBuilder<DiffDocumentId, QueryFileMetrics>();
+        foreach (var document in workspaceDocuments)
+        {
+            var normalizedPath = NormalizeRepositoryPath(document.Metadata.Path);
+            var absolutePath = Path.IsPathRooted(normalizedPath)
+                ? normalizedPath
+                : Path.Combine(repositoryPath, normalizedPath);
+            if (!File.Exists(absolutePath))
+            {
+                continue;
+            }
+
+            try
+            {
+                var fileInfo = new FileInfo(absolutePath);
+                builder[document.Id] = new QueryFileMetrics(fileInfo.Length);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or PathTooLongException)
+            {
+                // File metrics are best-effort query hints; inaccessible files should not fail the query.
+            }
         }
 
         return builder.ToImmutable();

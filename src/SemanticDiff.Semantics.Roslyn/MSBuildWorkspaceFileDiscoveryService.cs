@@ -45,7 +45,8 @@ public sealed class MSBuildWorkspaceFileDiscoveryService
             .OrderBy(file => file.Path, StringComparer.OrdinalIgnoreCase)
             .ToImmutableArray();
 
-        return new MSBuildWorkspaceFileDiscoveryResult(workspacePath, files);
+        var displayWorkspacePath = string.IsNullOrWhiteSpace(workspacePath) ? repositoryPath : workspacePath;
+        return new MSBuildWorkspaceFileDiscoveryResult(displayWorkspacePath, files);
     }
 
     private async Task<ImmutableArray<FileExplorerFile>> EnumerateRepositoryWorkspaceFilesAsync(

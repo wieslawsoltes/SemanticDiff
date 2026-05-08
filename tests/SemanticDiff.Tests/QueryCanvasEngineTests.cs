@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using SemanticDiff.Core;
 using SemanticDiff.Diff;
 using SemanticDiff.Rendering;
@@ -45,6 +46,49 @@ public sealed class QueryCanvasEngineTests
         Assert.False(result.HasError);
         var node = Assert.Single(result.Scene.Nodes);
         Assert.Equal("src/Services/WorkspaceQuery.cs", node.DiffDocument.Metadata.Path);
+    }
+
+    [Fact]
+    public void Execute_UsesWorkspaceOverviewWhenWorkspaceQueryIsEmpty()
+    {
+        var diff = CreateDocument("src/Changed.cs", DiffFileStatus.Modified, "C#", added: 1, deleted: 0);
+        var workspace = CreateDocument("docs/guide.md", DiffFileStatus.Unchanged, "Markdown", added: 0, deleted: 0);
+        var context = CreateContext([diff], [workspace], [], SemanticGraph.Empty);
+
+        var result = new QueryCanvasEngine().Execute(
+            "",
+            context,
+            QueryCanvasScope.Workspace);
+
+        Assert.False(result.HasError);
+        var node = Assert.Single(result.Scene.Nodes);
+        Assert.Equal("docs/guide.md", node.DiffDocument.Metadata.Path);
+    }
+
+    [Fact]
+    public void Execute_OrdersWorkspaceFilesByProvidedSizeBytes()
+    {
+        var small = CreateDocument("src/Small.cs", DiffFileStatus.Unchanged, "C#", added: 0, deleted: 0);
+        var large = CreateDocument("src/Large.cs", DiffFileStatus.Unchanged, "C#", added: 0, deleted: 0);
+        var context = CreateContext(
+            [],
+            [small, large],
+            [],
+            SemanticGraph.Empty,
+            new Dictionary<DiffDocumentId, QueryFileMetrics>
+            {
+                [small.Id] = new(128),
+                [large.Id] = new(4096)
+            }.ToImmutableDictionary());
+
+        var result = new QueryCanvasEngine().Execute(
+            "WorkspaceFiles.OrderByDescending(f => f.SizeBytes).Take(1)",
+            context,
+            QueryCanvasScope.Workspace);
+
+        Assert.False(result.HasError);
+        var node = Assert.Single(result.Scene.Nodes);
+        Assert.Equal("src/Large.cs", node.DiffDocument.Metadata.Path);
     }
 
     [Fact]
@@ -161,7 +205,8 @@ public sealed class QueryCanvasEngineTests
         DiffDocumentSnapshot[] diffDocuments,
         DiffDocumentSnapshot[] workspaceDocuments,
         SemanticNavigationItem[] symbols,
-        SemanticGraph graph) => new(
+        SemanticGraph graph,
+        ImmutableDictionary<DiffDocumentId, QueryFileMetrics>? fileMetrics = null) => new(
         [.. diffDocuments],
         [.. workspaceDocuments],
         [.. symbols],
@@ -170,5 +215,6 @@ public sealed class QueryCanvasEngineTests
         GraphGroupingMode.Folder,
         new EdgeProjectionOptions(MinimumConfidence: 0, MaxEdgesPerDocumentPair: 6),
         DiffAnnotationVisibilityState.Default,
-        SymbolGraphViewMode.FilesAndSymbols);
+        SymbolGraphViewMode.FilesAndSymbols,
+        fileMetrics);
 }

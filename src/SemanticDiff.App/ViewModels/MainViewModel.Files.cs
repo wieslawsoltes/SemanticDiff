@@ -347,14 +347,14 @@ public sealed partial class MainViewModel
         }
 
         var sourceDocumentId = ResolveSourceDocumentId(documentId);
-        var document = currentDocuments.FirstOrDefault(document => string.Equals(document.Id.Value, sourceDocumentId, StringComparison.Ordinal));
-        if (document is null)
+        var document = FindCurrentDiffDocumentByIdOrPath(sourceDocumentId);
+        if (document is not null)
         {
-            AddDiagnostic("Warning", $"No document node for {sourceDocumentId}");
+            await OpenFileDiffTabAsync(document, displayMode);
             return;
         }
 
-        await OpenFileDiffTabAsync(document, displayMode);
+        await OpenFileDiffTabByPathAsync(sourceDocumentId, displayMode);
     }
 
     public async Task OpenBlameTabAsync(string documentId)
@@ -365,14 +365,14 @@ public sealed partial class MainViewModel
         }
 
         var sourceDocumentId = ResolveSourceDocumentId(documentId);
-        var document = currentDocuments.FirstOrDefault(document => string.Equals(document.Id.Value, sourceDocumentId, StringComparison.Ordinal));
-        if (document is null)
+        var document = FindCurrentDiffDocumentByIdOrPath(sourceDocumentId);
+        if (document is not null)
         {
-            AddDiagnostic("Warning", $"No document node for {sourceDocumentId}");
+            await OpenBlameTabAsync(document);
             return;
         }
 
-        await OpenBlameTabAsync(document);
+        await OpenBlameTabByPathAsync(sourceDocumentId);
     }
 
     private async Task OpenFileDiffTabByPathAsync(string path, FileDiffDisplayMode displayMode)
@@ -661,7 +661,7 @@ public sealed partial class MainViewModel
 
     private async Task<DiffDocumentSnapshot?> CreateWorkspaceFileDocumentAsync(string path, CancellationToken cancellationToken)
     {
-        if (currentGitSnapshot is null || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        if (string.IsNullOrWhiteSpace(currentRepositoryPath))
         {
             return null;
         }
@@ -669,14 +669,23 @@ public sealed partial class MainViewModel
         var normalizedPath = NormalizeRepositoryPath(path);
         var language = LanguageFromPath(normalizedPath);
         var fileChange = new GitFileChange(normalizedPath, null, DiffFileStatus.Unchanged, 0, 0, language);
-        string text;
-        try
+        string? text = null;
+        if (currentGitSnapshot is not null)
         {
-            text = await new GitDiffService().GetFileContentAsync(currentGitSnapshot.Request, fileChange, cancellationToken);
+            try
+            {
+                text = await new GitDiffService().GetFileContentAsync(currentGitSnapshot.Request, fileChange, cancellationToken);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                AddDiagnostic("Warning", $"Git workspace file load failed: {exception.Message}");
+            }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+
+        text ??= await TryReadWorkspaceFileTextAsync(normalizedPath, cancellationToken);
+
+        if (text is null)
         {
-            AddDiagnostic("Warning", $"Workspace file load failed: {exception.Message}");
             return null;
         }
 
@@ -739,20 +748,41 @@ public sealed partial class MainViewModel
             : null;
     }
 
+    private async Task<string?> TryReadWorkspaceFileTextAsync(string normalizedPath, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(currentRepositoryPath))
+        {
+            return null;
+        }
+
+        var absolutePath = Path.IsPathRooted(normalizedPath)
+            ? normalizedPath
+            : Path.Combine(currentRepositoryPath, normalizedPath);
+        return File.Exists(absolutePath)
+            ? await File.ReadAllTextAsync(absolutePath, cancellationToken)
+            : null;
+    }
+
     private async Task<bool> HasRepositoryFileAsync(string path, CancellationToken cancellationToken)
     {
-        if (currentGitSnapshot is null || string.IsNullOrWhiteSpace(currentRepositoryPath))
+        if (string.IsNullOrWhiteSpace(currentRepositoryPath))
         {
             return false;
         }
 
-        if (File.Exists(Path.Combine(currentRepositoryPath, path)))
+        var normalizedPath = NormalizeRepositoryPath(path);
+        if (File.Exists(Path.Combine(currentRepositoryPath, normalizedPath)))
         {
             return true;
         }
 
+        if (currentGitSnapshot is null)
+        {
+            return false;
+        }
+
         var result = await new GitCommandRunner()
-            .RunAsync(currentRepositoryPath, ["cat-file", "-e", $"{ResolveRepositoryContentRevision()}:{path}"], cancellationToken)
+            .RunAsync(currentRepositoryPath, ["cat-file", "-e", $"{ResolveRepositoryContentRevision()}:{normalizedPath}"], cancellationToken)
             .ConfigureAwait(false);
         return result.Succeeded;
     }
@@ -986,11 +1016,35 @@ public sealed partial class MainViewModel
         }
 
         var sourceDocumentId = ResolveSourceDocumentId(documentId);
-        var item = allExplorerItems.FirstOrDefault(item => string.Equals(item.DocumentId, sourceDocumentId, StringComparison.Ordinal));
+        var item = FindExplorerItemByDocumentOrPath(allExplorerItems, sourceDocumentId);
+        var targetMode = FileExplorerMode;
+        if (item is null)
+        {
+            item = FindExplorerItemByDocumentOrPath(workspaceExplorerItems, sourceDocumentId);
+            targetMode = FileExplorerMode.Workspace;
+        }
+
+        if (item is null)
+        {
+            item = FindExplorerItemByDocumentOrPath(diffExplorerItems, sourceDocumentId);
+            targetMode = FileExplorerMode.Diff;
+        }
+
         if (item is null)
         {
             AddDiagnostic("Warning", $"No file tree item for {sourceDocumentId}");
             return;
+        }
+
+        if (targetMode != FileExplorerMode)
+        {
+            FileExplorerMode = targetMode;
+            IsDiffFileExplorerModeSelected = targetMode == FileExplorerMode.Diff;
+            IsWorkspaceFileExplorerModeSelected = targetMode == FileExplorerMode.Workspace;
+            UpdateFileExplorerModeLabels();
+            SetActiveExplorerItems(
+                targetMode == FileExplorerMode.Workspace ? workspaceExplorerItems : diffExplorerItems,
+                targetMode == FileExplorerMode.Workspace ? workspaceExplorerTreeRoots : diffExplorerTreeRoots);
         }
 
         FileSearchText = string.Empty;
@@ -999,6 +1053,30 @@ public sealed partial class MainViewModel
         SelectExplorerItem(item);
         SelectedRailTabIndex = 0;
         AddDiagnostic("Info", $"Revealed {item.Path} in the file tree");
+    }
+
+    private DiffDocumentSnapshot? FindCurrentDiffDocumentByIdOrPath(string documentIdOrPath)
+    {
+        var sourceDocumentId = ResolveSourceDocumentId(documentIdOrPath);
+        var normalizedPath = NormalizeRepositoryPath(sourceDocumentId);
+        return currentDocuments.FirstOrDefault(document =>
+            string.Equals(document.Id.Value, sourceDocumentId, StringComparison.Ordinal) ||
+            MatchesDocumentPath(document, normalizedPath));
+    }
+
+    private static ExplorerItemViewModel? FindExplorerItemByDocumentOrPath(
+        ImmutableArray<ExplorerItemViewModel> items,
+        string documentIdOrPath)
+    {
+        if (items.IsDefaultOrEmpty)
+        {
+            return null;
+        }
+
+        var normalizedPath = NormalizeRepositoryPath(documentIdOrPath);
+        return items.FirstOrDefault(item =>
+            string.Equals(item.DocumentId, documentIdOrPath, StringComparison.Ordinal) ||
+            string.Equals(NormalizeRepositoryPath(item.Path), normalizedPath, StringComparison.OrdinalIgnoreCase));
     }
 
     public FocusRequest? FocusReviewThread(ReviewThreadItemViewModel? thread)

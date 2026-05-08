@@ -10,7 +10,7 @@ public sealed class QueryCanvasCompletionProvider : ICodeCompletionProvider
         Root("Files", "Files in the selected query scope"),
         Root("ChangedFiles", "Files with changed status or changed lines"),
         Root("DiffFiles", "Files from the active diff graph"),
-        Root("WorkspaceFiles", "Files from the loaded MSBuild workspace"),
+        Root("WorkspaceFiles", "Files from the loaded MSBuild or directory workspace"),
         Root("Nodes", "Alias for Files"),
         Root("Symbols", "Semantic anchors from the active semantic model"),
         Root("ChangedSymbols", "Semantic anchors touched by the diff"),
@@ -42,6 +42,8 @@ public sealed class QueryCanvasCompletionProvider : ICodeCompletionProvider
         Property("AddedLines", "Added line count"),
         Property("DeletedLines", "Deleted line count"),
         Property("LineCount", "Rendered line count"),
+        Property("SizeBytes", "On-disk file size when available"),
+        Property("SizeKB", "On-disk file size in KB when available"),
         Property("IsChanged", "True when the file has changes"),
         Property("IsAdded", "True when the file is added"),
         Property("IsDeleted", "True when the file is deleted")

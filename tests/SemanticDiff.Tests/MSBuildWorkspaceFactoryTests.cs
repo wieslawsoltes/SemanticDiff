@@ -94,6 +94,22 @@ public sealed class MSBuildWorkspaceFactoryTests
         Assert.Single(runner.Calls);
     }
 
+    [Fact]
+    public async Task LoadFilesAsync_UsesDirectoryAsWorkspaceWhenNoMsBuildFileExists()
+    {
+        using var temp = new TemporaryRepository();
+        temp.Write("src/App/App.cs", "public sealed class App { }");
+        temp.Write("docs/readme.md", "# Docs");
+        var runner = new FakeGitCommandRunner(_ => new GitCommandResult(128, string.Empty, "not a git repository"));
+        var service = new MSBuildWorkspaceFileDiscoveryService(new ThrowingWorkspaceFactory(), runner);
+
+        var result = await service.LoadFilesAsync(temp.Root, CancellationToken.None);
+
+        Assert.Equal(temp.Root, result.WorkspacePath);
+        Assert.Contains(result.Files, file => file.Path == "src/App/App.cs" && file.Language == "C#");
+        Assert.Contains(result.Files, file => file.Path == "docs/readme.md" && file.Language == "Markdown");
+    }
+
     private sealed class TemporaryRepository : IDisposable
     {
         public TemporaryRepository()

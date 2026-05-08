@@ -683,10 +683,15 @@ public sealed record PatchCompareItemViewModel(
 public sealed partial class QueryCanvasTabViewModel : ObservableObject
 {
     public static string DefaultQuery => QueryCanvasSampleCatalog.Default.Query;
+    public static string DefaultWorkspaceQuery => QueryCanvasSampleCatalog.WorkspaceOverview.Query;
 
     private readonly DiffDocumentFactory documentFactory = new();
 
-    public QueryCanvasTabViewModel(string title, string description, ICodeCompletionProvider completionProvider)
+    public QueryCanvasTabViewModel(
+        string title,
+        string description,
+        ICodeCompletionProvider completionProvider,
+        QueryCanvasSample? initialSample = null)
     {
         Title = title;
         Description = description;
@@ -694,11 +699,11 @@ public sealed partial class QueryCanvasTabViewModel : ObservableObject
         ScopeOptions =
         [
             new QueryCanvasScopeOption(QueryCanvasScope.Diff, "Current diff", "Query files and symbols from the active diff workspace"),
-            new QueryCanvasScopeOption(QueryCanvasScope.Workspace, "MSBuild workspace", "Query files from the loaded MSBuild workspace and current semantic symbols")
+            new QueryCanvasScopeOption(QueryCanvasScope.Workspace, "Workspace files", "Query files from the loaded MSBuild or directory workspace and current semantic symbols")
         ];
         SampleOptions = QueryCanvasSampleCatalog.All;
-        selectedScopeOption = ScopeOptions[0];
-        selectedSampleOption = QueryCanvasSampleCatalog.Default;
+        selectedSampleOption = initialSample ?? QueryCanvasSampleCatalog.Default;
+        selectedScopeOption = ScopeOptions.FirstOrDefault(option => option.Scope == selectedSampleOption.PreferredScope) ?? ScopeOptions[0];
         queryText = selectedSampleOption.Query;
         queryLines = CreateQueryLines(queryText);
         queryRefreshKey = Guid.NewGuid().ToString("N");
@@ -794,6 +799,11 @@ public sealed partial class QueryCanvasTabViewModel : ObservableObject
     {
         StatusText = "Running query...";
         HasError = false;
+    }
+
+    public void ResetToSelectedSample()
+    {
+        QueryText = SelectedSampleOption?.Query ?? DefaultQuery;
     }
 
     private void RaiseQueryChanged() => QueryChanged?.Invoke(this, EventArgs.Empty);

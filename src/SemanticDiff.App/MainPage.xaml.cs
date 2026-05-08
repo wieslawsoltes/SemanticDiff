@@ -652,6 +652,27 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private async Task OpenDirectoryWorkspaceFromPickerAsync()
+    {
+        try
+        {
+            var folderPicker = new FolderPicker
+            {
+                SuggestedStartLocation = PickerLocationId.ComputerFolder
+            };
+            folderPicker.FileTypeFilter.Add("*");
+            var folder = await folderPicker.PickSingleFolderAsync();
+            if (folder is not null)
+            {
+                await ViewModel.OpenDirectoryWorkspaceAsync(folder.Path);
+            }
+        }
+        catch (Exception exception)
+        {
+            ViewModel.ReportInteractionError(exception.Message);
+        }
+    }
+
     private async Task ExportWorkspaceGraphAsync(WorkspaceGraphExportFormat format)
     {
         try
@@ -968,6 +989,11 @@ public sealed partial class MainPage : Page
     private async void OnOpenRepositoryClicked(object sender, RoutedEventArgs args)
     {
         await OpenRepositoryFromPickerAsync();
+    }
+
+    private async void OnOpenDirectoryWorkspaceClicked(object sender, RoutedEventArgs args)
+    {
+        await OpenDirectoryWorkspaceFromPickerAsync();
     }
 
     private async void OnLayoutClicked(object sender, RoutedEventArgs args)
@@ -1635,15 +1661,15 @@ public sealed partial class MainPage : Page
         }
     }
 
-    private void OnExplorerTreeItemClick(object sender, ItemClickEventArgs args)
+    private async void OnExplorerTreeItemClick(object sender, ItemClickEventArgs args)
     {
         if (args.ClickedItem is ViewModels.FileExplorerNodeViewModel item)
         {
-            FocusCanvas(ViewModel.FocusExplorerNode(item));
+            await ActivateExplorerNodeAsync(item);
         }
     }
 
-    private void OnExplorerTreeKeyDown(object sender, KeyRoutedEventArgs args)
+    private async void OnExplorerTreeKeyDown(object sender, KeyRoutedEventArgs args)
     {
         if (sender is not ListView { SelectedItem: ViewModels.FileExplorerNodeViewModel item })
         {
@@ -1652,7 +1678,7 @@ public sealed partial class MainPage : Page
 
         if (args.Key == VirtualKey.Enter)
         {
-            FocusCanvas(ViewModel.FocusExplorerNode(item));
+            await ActivateExplorerNodeAsync(item);
             args.Handled = true;
         }
         else if (args.Key == VirtualKey.Space && item.HasChildren)
@@ -1670,11 +1696,33 @@ public sealed partial class MainPage : Page
         }
     }
 
-    private void OnExplorerNodeContextNavigateClicked(object sender, RoutedEventArgs args)
+    private async void OnExplorerNodeContextNavigateClicked(object sender, RoutedEventArgs args)
     {
         if (sender is FrameworkElement { Tag: ViewModels.FileExplorerNodeViewModel item })
         {
-            FocusCanvas(ViewModel.FocusExplorerNode(item));
+            await ActivateExplorerNodeAsync(item);
+        }
+    }
+
+    private async Task ActivateExplorerNodeAsync(ViewModels.FileExplorerNodeViewModel item)
+    {
+        try
+        {
+            var focusRequest = ViewModel.FocusExplorerNode(item);
+            if (focusRequest is not null)
+            {
+                FocusCanvas(focusRequest);
+                return;
+            }
+
+            if (item.IsFile && ViewModel.FileExplorerMode == ViewModels.FileExplorerMode.Workspace)
+            {
+                await ViewModel.OpenFileDiffTabAsync(item, ViewModels.FileDiffDisplayMode.FullFile);
+            }
+        }
+        catch (Exception exception)
+        {
+            ViewModel.ReportInteractionError(exception.Message);
         }
     }
 
@@ -1688,7 +1736,9 @@ public sealed partial class MainPage : Page
         var menu = new MenuFlyout();
         var primaryItem = new MenuFlyoutItem
         {
-            Text = item.ContextMenuPrimaryText,
+            Text = item.IsFile && ViewModel.FileExplorerMode == ViewModels.FileExplorerMode.Workspace
+                ? "Open full file"
+                : item.ContextMenuPrimaryText,
             Tag = item
         };
         primaryItem.Click += OnExplorerNodeContextNavigateClicked;
@@ -2070,26 +2120,30 @@ public sealed partial class MainPage : Page
 
     private async void OnDiffCanvasNodeFullFileViewRequested(object? sender, DiffCanvasNodeFullFileViewRequestedEventArgs args)
     {
-        await ViewModel.ToggleNodeFullFileViewAsync(args.DocumentId);
-        DiffCanvas.InvalidateScene();
+        var canvas = sender as DiffCanvasControl;
+        await ViewModel.ToggleNodeFullFileViewAsync(args.DocumentId, canvas?.Scene);
+        (canvas ?? DiffCanvas).InvalidateScene();
     }
 
     private void OnDiffCanvasNodeFullFileViewResetRequested(object? sender, DiffCanvasNodeFullFileViewResetRequestedEventArgs args)
     {
-        ViewModel.ClearNodeFullFileViewOverride(args.DocumentId);
-        DiffCanvas.InvalidateScene();
+        var canvas = sender as DiffCanvasControl;
+        ViewModel.ClearNodeFullFileViewOverride(args.DocumentId, canvas?.Scene);
+        (canvas ?? DiffCanvas).InvalidateScene();
     }
 
     private async void OnDiffCanvasNodeEditingRequested(object? sender, DiffCanvasNodeEditingRequestedEventArgs args)
     {
-        await ViewModel.ToggleNodeEditingAsync(args.DocumentId);
-        DiffCanvas.InvalidateScene();
+        var canvas = sender as DiffCanvasControl;
+        await ViewModel.ToggleNodeEditingAsync(args.DocumentId, canvas?.Scene);
+        (canvas ?? DiffCanvas).InvalidateScene();
     }
 
     private void OnDiffCanvasNodeEditingResetRequested(object? sender, DiffCanvasNodeEditingResetRequestedEventArgs args)
     {
-        ViewModel.ClearNodeEditingOverride(args.DocumentId);
-        DiffCanvas.InvalidateScene();
+        var canvas = sender as DiffCanvasControl;
+        ViewModel.ClearNodeEditingOverride(args.DocumentId, canvas?.Scene);
+        (canvas ?? DiffCanvas).InvalidateScene();
     }
 
     private async void OnDiffCanvasAnnotationInteractionRequested(object? sender, DiffCanvasAnnotationInteractionRequestedEventArgs args)
