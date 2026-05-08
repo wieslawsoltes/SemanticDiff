@@ -628,7 +628,7 @@ public sealed class DiffSceneRenderer
             DrawLineAnnotationBand(canvas, lineAnnotations, lineRect, palette, hoveredAnnotationId);
             if (node.IsShowingFullFile)
             {
-                DrawFoldGuide(canvas, node, visibleLine, bodyRect.Left, codeX, (float)y, (float)lineHeight, lineStyle, codeStyles.Default, foldGuidePaint, foldMarkerFillPaint, foldMarkerStrokePaint);
+                DrawFoldGuide(canvas, visibleLine, bodyRect.Left, (float)y, (float)lineHeight, foldGuidePaint, foldMarkerFillPaint, foldMarkerStrokePaint);
                 DrawFullLineNumber(canvas, lineNumberText.Full, bodyRect.Left + gutterWidth - 10, (float)(y + lineHeight * 0.73), lineStyle);
             }
             else
@@ -738,23 +738,22 @@ public sealed class DiffSceneRenderer
 
     private static void DrawFoldGuide(
         SKCanvas canvas,
-        DiffNode node,
         DiffNodeVisibleLine visibleLine,
         float gutterLeft,
-        float codeX,
         float y,
         float lineHeight,
-        TextStyle lineStyle,
-        TextStyle codeStyle,
         SKPaint guidePaint,
         SKPaint markerFill,
         SKPaint markerStroke)
     {
-        var guideCount = Math.Min(5, visibleLine.ActiveFoldRegions.Length);
+        const float gutterGuideStartX = 12;
+        const float gutterGuideSpacing = 5;
+        const int maximumGutterGuides = 4;
+
+        var guideCount = Math.Min(maximumGutterGuides, visibleLine.ActiveFoldRegions.Length);
         for (var index = 0; index < guideCount; index++)
         {
-            var region = visibleLine.ActiveFoldRegions[index];
-            var x = GetFoldGuideX(node, region, codeX, codeStyle);
+            var x = gutterLeft + gutterGuideStartX + index * gutterGuideSpacing;
             canvas.DrawLine(x, y, x, y + lineHeight, guidePaint);
         }
 
@@ -772,53 +771,7 @@ public sealed class DiffSceneRenderer
         if (visibleLine.IsFoldCollapsed)
         {
             canvas.DrawLine(centerX, rect.Top + 2, centerX, rect.Bottom - 2, markerStroke);
-            var label = $"... {visibleLine.FoldRegion.CollapsedLineCount:N0}";
-            canvas.DrawText(label, codeX + 96, y + lineHeight * 0.73f, lineStyle.Font, lineStyle.Paint);
         }
-    }
-
-    private static float GetFoldGuideX(DiffNode node, CodeFoldRegion region, float codeX, TextStyle codeStyle)
-    {
-        if (region.GuideVisualColumn is { } guideColumn)
-        {
-            return codeX + Math.Min(160, Math.Max(0, guideColumn)) * codeStyle.MonospaceAdvance + codeStyle.MonospaceAdvance * 0.5f;
-        }
-
-        if (region.StartLineIndex < 0 || region.StartLineIndex >= node.Document.LineCount)
-        {
-            return codeX;
-        }
-
-        var text = node.Document.Lines[region.StartLineIndex].Text;
-        var indentColumns = CountIndentColumns(text);
-        if (!text.TrimStart().StartsWith("{", StringComparison.Ordinal))
-        {
-            indentColumns += 4;
-        }
-
-        return codeX + Math.Min(80, indentColumns) * codeStyle.MonospaceAdvance;
-    }
-
-    private static int CountIndentColumns(string text)
-    {
-        var columns = 0;
-        foreach (var character in text)
-        {
-            if (character == ' ')
-            {
-                columns++;
-            }
-            else if (character == '\t')
-            {
-                columns += 4;
-            }
-            else
-            {
-                break;
-            }
-        }
-
-        return columns;
     }
 
     private static void DrawEditorCaret(
